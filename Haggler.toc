@@ -2,6 +2,8 @@
 ## Title: Haggler (powered by AHledger)
 ## Notes: Gold-making for WoW: Forever: crafting, selling, bags and flips. Prices from AHledger.
 ## Version: 0.2.0-dev
+## IconTexture: Interface\AddOns\Haggler\media\icon.png
+## Category: Concord
 ## Author: Eiluviann
 ## SavedVariables: HagglerDB
 ## SavedVariablesPerCharacter: HagglerCharDB
