@@ -1,11 +1,38 @@
-std = "lua51"
+-- Lua 5.1, as in the game. Globals are allow-listed: a new client API must be added here on
+-- purpose, and only Engine/Wow.lua and Haggler.lua may read them.
+std = 'lua51'
 max_line_length = false
-exclude_files = { "tests/" }
-globals = { "HagglerDB", "SLASH_HAGGLER1", "SLASH_HAGGLER2", "SlashCmdList" }
-read_globals = {
-	"BagPadAPI", "ItemLocation", "DEFAULT_CHAT_FRAME",
-	"AHledgerAPI", "AHledgerDB", "C_AuctionHouse", "C_Timer", "C_TradeSkillUI", "CreateFrame", "Enum",
-	"GameTooltip", "GetItemInfo", "C_Item", "GetRealmName", "GetTradeSkillItemLink", "IsShiftKeyDown", "ItemRefTooltip",
-	"ProfessionsFrame", "Professions", "ProfessionsRecipeListRecipeMixin", "ScrollBoxListMixin", "TooltipDataProcessor", "TradeSkillDetailScrollChildFrame", "TradeSkillFrame",
-	"TradeSkillFrame_SetSelection", "TradeSkillReagentLabel", "UnitFactionGroup", "GetServerTime", "hooksecurefunc", "PostAuction", "GetAuctionSellItemInfo", "GetInboxNumItems", "GetInboxHeaderInfo", "GetInboxInvoiceInfo", "GetInboxItem", "time", "_G",
+codes = true
+self = false
+
+exclude_files = {
+	'.claude/',
+	'.luarocks/',
+}
+
+-- Globals the add-on writes: its SavedVariables and its slash command.
+globals = {
+	'HagglerDB',
+	'HagglerCharDB',
+	'SlashCmdList',
+	'SLASH_HAGGLER1',
+}
+
+files['Engine/Wow.lua'] = {
+	read_globals = {
+		'C_Item',
+		'CreateFrame',
+		'DEFAULT_CHAT_FRAME',
+		'GetCurrentRegion',
+		'GetItemInfo',
+		'GetRealmName',
+		'GetServerTime',
+		'UnitFactionGroup',
+		'UnitName',
+		'time',
+	},
+}
+
+files['tests/'] = {
+	std = 'luajit',
 }

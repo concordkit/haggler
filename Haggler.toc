@@ -1,21 +1,24 @@
-## Interface: 16001, 11509
-## Title: Haggler
-## Notes: Realistic crafting margins, a sell log, bag prices and vendor flips for WoW: Forever. Prices from AHledger: needs AHledger installed, which scans and syncs the data.
-## Version: 0.1.0
-## Dependencies: AHledger
-## OptionalDeps: BagPad
+## Interface: 16001
+## Title: Haggler (powered by AHledger)
+## Notes: Gold-making for WoW: Forever: crafting, selling, bags and flips. Prices from AHledger.
+## Version: 0.2.0-dev
+## Author: Eiluviann
 ## SavedVariables: HagglerDB
+## SavedVariablesPerCharacter: HagglerCharDB
 ## X-Category: Auction & Economy
 ## X-Credit: Prices from AHledger (https://ahledger.com)
 
-Pricing.lua
-SellLog.lua
-Display.lua
-Scan.lua
-Flips.lua
-Profession.lua
-RecipeList.lua
-Tooltip.lua
-Sales.lua
-BagPadSection.lua
-Core.lua
+# Host layer (Concord's API shape; dropped inside Concord)
+Host\Tokens.lua
+Host\Bus.lua
+Host\Settings.lua
+Host\Host.lua
+
+# Engine (UI-free)
+Engine\Wow.lua
+Engine\ItemMarket.lua
+Engine\PriceData.lua
+Engine\Rules.lua
+Engine\Store.lua
+
+Haggler.lua

@@ -1,35 +1,59 @@
-# Haggler
+# Haggler (powered by AHledger)
 
-Gold-making rules and display for WoW: Forever. **Prices from [AHledger](https://ahledger.com).**
+A gold-making add-on for WoW: Forever (Interface 16001) covering crafting, selling, bags and flips.
 
-Haggler doesn't scan or upload anything itself. AHledger scans the auction house and contributes
-the data; AHledger sync uploads it and brings back the shared price table. Haggler reads what
-AHledger holds:
+Prices from [AHledger](https://ahledger.com).
 
-- `AHledgerAPI.GetPrice` — the public in-game API (median, lowest buyout, 7- and 30-day figures, sales per day)
-- `AHledgerDB.scans` — your own full scans, for listing depth and flips
-- `AHledgerDB.recipes` — recipes AHledger records while a profession window is open (keep AHledger's *Crafting margins* option on)
+## Status
 
-On first load Haggler switches AHledger's display options off once (`/hag quiet` does it again).
+Build step 1 of 8: the host layer, the engine core and their tests. There is no UI yet; `/hag` lists and changes settings.
 
-## Commands
+## Layout
 
-- `/hag` — status: scan read, price mode, sell log
-- `/hag mode realistic | median | lowest`
-- `/hag flips [count]` — listings under the vendor price in your latest scan
-- `/hag quiet`
+| Path | What it is |
+| --- | --- |
+| `Host/` | Haggler's own host layer, shaped like Concord's API: `AddModule`, `Provide` / `Get`, the bus, settings schemas and the generated `/hag` commands |
+| `Host/Tokens.lua` | Generated from the Concord design system by `tools/sync-tokens.sh`; do not edit |
+| `Engine/` | UI-free: the WoW API wrapper, saved data and migrations, the AHledger price table, calculation rules and price steps |
+| `Haggler.lua` | Bootstrap: opens the saved data on `ADDON_LOADED` and starts the host |
+| `tests/` | luajit specs |
+
+## Price data
+
+Haggler reads AHledger's price table as it is. The desktop app writes `Data/PriceTable.lua` in AHledger's own saved shape:
+
+```lua
+HagglerPriceTable = {
+	['forever/normal/alliance/us'] = { updated = 1762800000, count = 15234, text = 'AHL1|forever/normal/alliance/us|1762800000|15234\n2589:1200:950:340:1180:1250:800:1900:1505\n...' },
+}
+```
+
+- The key is the market key, `forever/<ruleset>/<faction>/<region>`.
+- `updated` is unix seconds, and `count` is the number of rows.
+- `text` is the table exactly as AHledger serves it. Each row is `id:median:min:qty:m7:m30:lo:hi:sold`. Prices are in copper, and `sold` is units sold a day times ten.
+
+`PriceData.newLibrary():AddSavedTables(HagglerPriceTable)` loads it without changing anything, and `PriceData.parse` reads each `text`. Empty fields mean unknown, and any fields after `sold` are ignored.
 
 ## Development
 
 ```bash
-luacheck .
-for t in tests/*_spec.lua; do luajit "$t"; done
+luacheck -q .
 ```
 
-Installed by a symlink: `Interface/AddOns/Haggler` → this folder.
+```bash
+stylua --check .
+```
 
-## Credit
+```bash
+luajit tests/run.lua
+```
 
-AHledger's data is free for personal and community use with the credit "Prices from AHledger"
-linked to ahledger.com; commercial use needs a licence from them. Haggler bundles none of
-AHledger's code.
+To refresh the design tokens from the Concord design system:
+
+```bash
+tools/sync-tokens.sh
+```
+
+## Credits
+
+Prices from [AHledger](https://ahledger.com). Their data is free for personal and community use with this linked credit.
