@@ -7,7 +7,7 @@
 	    AHledger: median · median7 · median30 · low30 · high30
 	    listings: lowest · afterPercent (past the cheapest percent) · firstWithUnits: the first
 	              price at which the cheaper units cover max(n, units sold in `hours`), where units
-	              sold an hour is the AHledger sold-a-day figure / 24 (n is minUnits, hours minHours)
+	              sold an hour is sales a day / 24 (n is minUnits, hours minHours)
 	    other:    vendor · craftCost · realized (the price you actually got)
 	  Step = { kind = 'cap'|'floor', percent, base } · { kind = 'lower'|'higher', base }
 	       · { kind = 'multiply', factor } · { kind = 'undercut', copper }
@@ -30,7 +30,8 @@
 	Confidence = { level = 'high'|'medium'|'low', reasons = { { code, level, text }... } }, always
 	present; the weakest reason sets the level and every reason is also in the trace. Low
 	confidence is always shown to the player, so this field is never optional. Codes: stale,
-	fewSales, fewListings, fallbackBase, inferredStep, baitTrimmed, capOverridden.
+	fewSales, fewListings, fallbackBase, inferredStep, baitTrimmed, capOverridden, badInput, and
+	whatever ctx.sales adds (ownSalesThin, trollBuys).
 
 	ctx (every source optional):
 	  now                       unix seconds
@@ -40,6 +41,13 @@
 	  craftCost(itemId)         -> copper, at
 	  realized(itemId)          -> copper, at
 	  confidence                { staleMediumHours?, staleLowHours? } from the settings
+	sales(itemId)             -> { perDay, source = 'own'|'ahledger', reasons } (Sales.choose):
+	                          sales a day for anti-bait, depth and confidence; without it,
+	                          sales a day is the AHledger row's sold
+
+	Every value a source returns is checked where it is read: a string, NaN, infinity or a
+	source that throws is unknown, never an error, and adds a badInput reason (medium) so the
+	player sees the price stands on broken input. A base that is junk fails like a missing one.
 ]]
 local _, ns = ...
 
@@ -81,7 +89,8 @@ local validateBase, validateStep, validateAntiBait, resolveBase, resolveRowBase,
 local resolveOtherBase, applyStep, readListing, depthUnits, buildItemMarket, sortedLevels, copyTable
 local describeBase, isPositiveInteger, isPercent, isFinitePositive, olderOf, ageSince, lookup, sumUnits
 local recordSales, recordListing, assessConfidence, addStaleReason, addSalesReason, addReason
-local confidenceThresholds
+local confidenceThresholds, readCopper, noteBadInput, tableOrNil, isFiniteNumber, recordSalesView
+local salesReasonsOf
 
 --- The built-in rules, as fresh copies (the store keeps its own, tunable and resettable).
 --- @return table { [ruleId] = Rule }
@@ -273,7 +282,7 @@ function Rules.evaluate(rule, itemId, ctx)
 			trace[#trace + 1] = { kind = 'floor', label = 'held at the floor', copper = copper }
 		end
 	end
-	local market = buildItemMarket(itemId, ctx)
+	local market = buildItemMarket(itemId, ctx, facts)
 	local snapped = ns.ItemMarket.snapPrice(market, copper)
 	local snapLabel = string.format('price step %dc', market.step)
 	local snappedFloor = floorCopper and ns.ItemMarket.snapUp(market, floorCopper)
@@ -312,24 +321,35 @@ function resolveBase(base, rule, itemId, ctx, trace, facts)
 	if LISTING_BASES[base.kind] then
 		return resolveListingBase(base, rule, itemId, ctx, trace, facts)
 	end
-	return resolveOtherBase(base, itemId, ctx, trace)
+	return resolveOtherBase(base, itemId, ctx, trace, facts)
 end
 
 function resolveRowBase(base, itemId, ctx, trace, facts)
-	local row, updated = lookup(ctx.priceRow, itemId)
-	local copper = row and row[ROW_FIELD_BY_BASE[base.kind]]
+	local row, updated = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	row = tableOrNil(row)
+	local field = ROW_FIELD_BY_BASE[base.kind]
+	local copper, isJunk = readCopper(row and row[field])
+	if isJunk then
+		noteBadInput(facts, 'AHledger ' .. field)
+		return nil, string.format('AHledger %s is not a number', describeBase(base))
+	end
 	if not copper then
 		return nil, string.format('no AHledger %s', describeBase(base))
 	end
-	recordSales(facts, row)
+	recordSales(facts, row, ctx, itemId)
 	trace[#trace + 1] = { kind = 'base', label = 'AHledger ' .. describeBase(base), copper = copper }
 	return copper, ageSince(ctx, updated), 'ahledger'
 end
 
 function resolveListingBase(base, rule, itemId, ctx, trace, facts)
-	local scanItem, scannedAt = lookup(ctx.scanItem, itemId)
-	local row, updated = lookup(ctx.priceRow, itemId)
-	local soldPerDay = row and row.sold
+	local scanItem, scannedAt = lookup(ctx.scanItem, itemId, facts, 'scan')
+	if type(scanItem) == 'table' and scanItem.isMalformed == true then
+		noteBadInput(facts, 'saved scan of this item')
+	end
+	local row, updated = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	row = tableOrNil(row)
+	recordSales(facts, row, ctx, itemId)
+	local soldPerDay = facts.salesPerDay
 	local listed = sortedLevels(type(scanItem) == 'table' and scanItem.levels or nil)
 	if #listed > 0 then
 		local levels, skipped, isAllBait = Rules.passOverBait(listed, rule.antiBait, soldPerDay)
@@ -343,24 +363,30 @@ function resolveListingBase(base, rule, itemId, ctx, trace, facts)
 		local copper, isThin = readListing(base, levels, soldPerDay)
 		local note = isThin and ' (listing too thin; dearest level)' or ''
 		trace[#trace + 1] = { kind = 'base', label = 'scan ' .. describeBase(base) .. note, copper = copper }
-		recordSales(facts, row)
 		recordListing(facts, sumUnits(listed), skipped, isAllBait, isThin)
 		return copper, ageSince(ctx, scannedAt), 'scan'
 	end
-	local lowest = row and row.min
+	local lowest, isJunk = readCopper(row and row.min)
+	if isJunk then
+		noteBadInput(facts, 'AHledger min')
+		return nil, 'AHledger lowest buyout is not a number'
+	end
 	if not lowest then
 		return nil, 'no listings'
 	end
-	recordSales(facts, row)
 	facts.isFallbackBase = true
 	trace[#trace + 1] = { kind = 'base', label = 'AHledger lowest buyout (no scan depth)', copper = lowest }
 	return lowest, ageSince(ctx, updated), 'ahledger'
 end
 
-function resolveOtherBase(base, itemId, ctx, trace)
+function resolveOtherBase(base, itemId, ctx, trace, facts)
 	if base.kind == 'vendor' then
-		local info = ctx.itemInfo and ctx.itemInfo(itemId)
-		local vendorPrice = info and info.vendorPrice
+		local info = tableOrNil(lookup(ctx.itemInfo, itemId, facts, 'item info'))
+		local vendorPrice, isJunk = readCopper(info and info.vendorPrice)
+		if isJunk then
+			noteBadInput(facts, 'vendor price')
+			return nil, 'vendor price is not a number'
+		end
 		if not vendorPrice or vendorPrice <= 0 then
 			return nil, 'no vendor price'
 		end
@@ -368,7 +394,12 @@ function resolveOtherBase(base, itemId, ctx, trace)
 		return vendorPrice, 0, 'vendor'
 	end
 	local source = base.kind == 'craftCost' and 'craft' or 'realized'
-	local copper, at = lookup(ctx[base.kind], itemId)
+	local raw, at = lookup(ctx[base.kind], itemId, facts, describeBase(base))
+	local copper, isJunk = readCopper(raw)
+	if isJunk then
+		noteBadInput(facts, describeBase(base))
+		return nil, describeBase(base) .. ' is not a number'
+	end
 	if not copper or copper <= 0 then
 		return nil, 'no ' .. describeBase(base)
 	end
@@ -450,6 +481,9 @@ function assessConfidence(facts, ageSeconds, market, ctx)
 	if facts.usesMarket then
 		addStaleReason(reasons, ageSeconds, thresholds)
 		addSalesReason(reasons, facts, thresholds)
+		for _, reason in ipairs(facts.salesReasons or {}) do
+			addReason(reasons, reason.code, reason.level, reason.text)
+		end
 	end
 	local isFewListings = facts.listedUnits ~= nil and facts.listedUnits < thresholds.fewListingUnits
 	if isFewListings or facts.isListingThin then
@@ -460,6 +494,9 @@ function assessConfidence(facts, ageSeconds, market, ctx)
 	end
 	if market.isStepInferred then
 		addReason(reasons, 'inferredStep', 'medium', 'max stack unknown; whole silver assumed')
+	end
+	for _, input in ipairs(facts.badInputs or {}) do
+		addReason(reasons, 'badInput', 'medium', input .. ' was not usable; treated as unknown')
 	end
 	if facts.isCapOverridden then
 		addReason(reasons, 'capOverridden', 'medium', 'a cap was overridden to keep the floor')
@@ -518,11 +555,56 @@ function confidenceThresholds(ctx)
 end
 
 -- Market facts: the sales figure of any AHledger row a market base read.
-function recordSales(facts, row)
+-- Sales a day comes from ctx.sales when the context has it (PriceContext: the own troll-filtered
+-- count or AHledger's, with reasons), else from the AHledger row.
+function recordSales(facts, row, ctx, itemId)
 	facts.usesMarket = true
-	if row and row.sold ~= nil then
-		facts.salesPerDay = row.sold
+	local view = tableOrNil((lookup(ctx.sales, itemId, facts, 'sales')))
+	if view then
+		recordSalesView(facts, view)
+		return
 	end
+	if not row or row.sold == nil then
+		return
+	end
+	if isFiniteNumber(row.sold) and row.sold >= 0 then
+		facts.salesPerDay = row.sold
+	else
+		noteBadInput(facts, 'AHledger sold a day')
+	end
+end
+
+function recordSalesView(facts, view)
+	local isOwn = view.source == 'own'
+	facts.salesSource = isOwn and 'own' or 'ahledger'
+	facts.salesReasons = salesReasonsOf(view.reasons)
+	facts.salesPerDay = nil
+	if view.perDay == nil then
+		return
+	end
+	if isFiniteNumber(view.perDay) and view.perDay >= 0 then
+		facts.salesPerDay = view.perDay
+	else
+		noteBadInput(facts, isOwn and 'own sales a day' or 'AHledger sold a day')
+	end
+end
+
+-- The well-formed reasons of a sales view; the rest are dropped.
+function salesReasonsOf(reasons)
+	local kept = {}
+	if type(reasons) ~= 'table' then
+		return kept
+	end
+	for _, reason in ipairs(reasons) do
+		local isWellFormed = type(reason) == 'table'
+			and type(reason.code) == 'string'
+			and LEVEL_RANK[reason.level] ~= nil
+			and type(reason.text) == 'string'
+		if isWellFormed then
+			kept[#kept + 1] = { code = reason.code, level = reason.level, text = reason.text }
+		end
+	end
+	return kept
 end
 
 function recordListing(facts, listedUnits, skipped, isAllBait, isThin)
@@ -533,6 +615,37 @@ function recordListing(facts, listedUnits, skipped, isAllBait, isThin)
 end
 
 -- Helpers ---------------------------------------------------------------------------------
+
+-- A copper amount from another source: the number when finite, else nil and whether the value
+-- was junk (present but not a finite number) rather than simply missing.
+function readCopper(value)
+	if value == nil then
+		return nil, false
+	end
+	if isFiniteNumber(value) then
+		return value, false
+	end
+	return nil, true
+end
+
+function noteBadInput(facts, what)
+	facts.badInputs = facts.badInputs or {}
+	for _, seen in ipairs(facts.badInputs) do
+		if seen == what then
+			return
+		end
+	end
+	facts.badInputs[#facts.badInputs + 1] = what
+end
+
+function tableOrNil(value)
+	return type(value) == 'table' and value or nil
+end
+
+-- A real number: not NaN, not infinite, not a string that looks like one.
+function isFiniteNumber(value)
+	return type(value) == 'number' and value == value and value > -math.huge and value < math.huge
+end
 
 function validateBase(base)
 	if type(base) ~= 'table' then
@@ -598,14 +711,22 @@ function validateAntiBait(antiBait)
 end
 
 -- The item's price grid: max stack and vendor price from item info, copper seen from the scan.
-function buildItemMarket(itemId, ctx)
-	local info = ctx.itemInfo and ctx.itemInfo(itemId)
-	local scanItem = ctx.scanItem and ctx.scanItem(itemId)
-	local copperSeen = type(scanItem) == 'table'
+function buildItemMarket(itemId, ctx, facts)
+	local info = tableOrNil(lookup(ctx.itemInfo, itemId, facts, 'item info'))
+	local scanItem = tableOrNil(lookup(ctx.scanItem, itemId))
+	local copperSeen = scanItem ~= nil
 		and (scanItem.copperSeen == true or ns.ItemMarket.hasCopper(sortedLevels(scanItem.levels), scanItem.min))
+	local maxStack = info and info.maxStack
+	local vendor = info and info.vendorPrice
+	if maxStack ~= nil and not isFinitePositive(maxStack) then
+		noteBadInput(facts, 'item max stack')
+	end
+	if vendor ~= nil and not (isFiniteNumber(vendor) and vendor >= 0) then
+		noteBadInput(facts, 'item vendor price')
+	end
 	return ns.ItemMarket.forItem({
-		maxStack = info and info.maxStack,
-		vendor = info and info.vendorPrice,
+		maxStack = isFinitePositive(maxStack) and maxStack or nil,
+		vendor = isFinitePositive(vendor) and vendor or nil,
 		copperSeen = copperSeen,
 	})
 end
@@ -668,18 +789,26 @@ end
 
 -- Seconds since a unix time, never negative; nil when the time is unknown.
 function ageSince(ctx, at)
-	if type(at) ~= 'number' then
+	if not isFiniteNumber(at) then
 		return nil
 	end
 	return math.max(0, ctx.now - at)
 end
 
--- Calls an optional ctx source.
-function lookup(source, itemId)
-	if not source then
+-- Calls an optional ctx source. A source that throws counts as no data and, when facts are
+-- given, as bad input.
+function lookup(source, itemId, facts, what)
+	if type(source) ~= 'function' then
 		return nil
 	end
-	return source(itemId)
+	local ok, value, at = pcall(source, itemId)
+	if not ok then
+		if facts then
+			noteBadInput(facts, what .. ' source')
+		end
+		return nil
+	end
+	return value, at
 end
 
 -- The older of two ages; an unknown (nil) age never wins.

@@ -55,10 +55,42 @@ end)
 
 t.test('0 -> 1 parks an unversioned layout under legacy', function()
 	local db = { sellLog = { 1, 2 }, mode = 'realistic' }
-	Store.migrate(db)
+	Store.migrate(db, nil, 1)
 	t.eq(db.version, 1)
 	t.same(db.legacy, { sellLog = { 1, 2 }, mode = 'realistic' })
 	t.eq(db.sellLog, nil)
+end)
+
+t.test('1 -> 2 packs saved scan items; broken ones are dropped', function()
+	local db = {
+		version = 1,
+		markets = {
+			['forever/normal/alliance/us'] = {
+				scan = {
+					at = 10,
+					hasBands = true,
+					items = {
+						[2589] = {
+							min = 91,
+							units = 37,
+							copperSeen = true,
+							maxStackSeen = 20,
+							levels = { { price = 91, qty = 5 }, { price = 100, qty = 32, short = 12 } },
+						},
+						[2592] = { min = 1, units = 1, levels = { { price = 'x', qty = 1 } } },
+						[2488] = 'junk',
+					},
+				},
+			},
+			['forever/normal/horde/us'] = { scan = 'junk' },
+		},
+	}
+	Store.migrate(db, nil, 2)
+	t.eq(db.version, 2)
+	local scan = db.markets['forever/normal/alliance/us'].scan
+	t.eq(scan.isPacked, true)
+	t.same(scan.items, { [2589] = '37,1,20;91:5,100:32:12' })
+	t.eq(db.markets['forever/normal/horde/us'].scan, 'junk', 'left for ScanStore.latest to ignore')
 end)
 
 t.group('store')
@@ -91,7 +123,7 @@ t.test('opening again keeps tuned built-ins and adds missing ones', function()
 end)
 
 t.test('open refuses newer data, account or character', function()
-	local store, reason = Store.open({ version = 2 }, {})
+	local store, reason = Store.open({ version = Store.SCHEMA_VERSION + 1 }, {})
 	t.eq(store, nil)
 	t.eq(reason, 'newer schema')
 	local db = {}

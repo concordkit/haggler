@@ -13,6 +13,8 @@ Host\Tokens.lua
 Host\Bus.lua
 Host\Settings.lua
 Host\Host.lua
+Host\Theme.lua
+Host\Tooltip.lua
 
 # Engine (UI-free)
 Engine\Wow.lua
@@ -20,5 +22,20 @@ Engine\ItemMarket.lua
 Engine\PriceData.lua
 Engine\Rules.lua
 Engine\Store.lua
+Engine\ScanStore.lua
+Engine\Sales.lua
+Engine\Scan.lua
+Engine\PriceContext.lua
+Engine\PriceService.lua
+
+# Shared services, then features (each registers its module)
+Init.lua
+Features\Pricing.lua
+Features\Scan.lua
+Features\Tooltip\Lines.lua
+Features\Tooltip\Tooltip.lua
+
+# Bootstrap. Data\PriceTable.lua (HagglerPriceTable, written by the desktop app) is added
+# to this list when the desktop app ships; until then the global is read if anything set it.
 
 Haggler.lua

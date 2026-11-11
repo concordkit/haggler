@@ -11,6 +11,14 @@ local ADDON_FILES = {
 	'Engine/PriceData.lua',
 	'Engine/Rules.lua',
 	'Engine/Store.lua',
+	'Engine/ScanStore.lua',
+	'Engine/Sales.lua',
+	'Engine/Scan.lua',
+	'Engine/PriceContext.lua',
+	'Engine/PriceService.lua',
+	'Host/Theme.lua',
+	'Host/Tooltip.lua',
+	'Features/Tooltip/Lines.lua',
 }
 
 local currentGroup = ''

@@ -9,6 +9,7 @@
 	  shownRules               surface -> { ruleId... } (tooltip, crafting, ah, bar)
 	  recipes                  recipeId -> Recipe
 	  markets[marketKey]       one auction house: scan, scanDays, ventures, auctions, ledger, costPools
+	  vendorPrices             itemId -> copper a vendor pays, kept once the client has shown it
 	  characters[charKey]      inventory counts, gold, last seen, faction
 	  sessions                 session start points
 	  legacy                   anything an older layout left that no migration claimed
@@ -23,16 +24,17 @@ local _, ns = ...
 local Store = {}
 ns.Store = Store
 
-Store.SCHEMA_VERSION = 1
+Store.SCHEMA_VERSION = 2
 Store.CHAR_SCHEMA_VERSION = 1
 Store.SURFACES = { 'tooltip', 'crafting', 'ah', 'bar' }
 
 local MARKET_KEY_PATTERN = '^forever/[%l%d]+/[%l%d]+/[%l%d]+$'
-local TOP_LEVEL_TABLES = { 'settings', 'rules', 'shownRules', 'recipes', 'markets', 'characters', 'sessions' }
+local TOP_LEVEL_TABLES =
+	{ 'settings', 'rules', 'shownRules', 'recipes', 'markets', 'characters', 'sessions', 'vendorPrices' }
 local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys
+local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
 
 --- Migration n upgrades a database from version n - 1 to n. Each changes db in place.
 Store.MIGRATIONS = {
@@ -42,6 +44,19 @@ Store.MIGRATIONS = {
 		local legacy = collectLegacyKeys(db)
 		if next(legacy) then
 			db.legacy = legacy
+		end
+	end,
+	-- 1 -> 2: scan items saved as one string each (see Engine/ScanStore.lua); an item that
+	-- cannot be packed is dropped, a scan that is not a table is left for ScanStore to ignore.
+	[2] = function(db)
+		if type(db.markets) ~= 'table' then
+			return
+		end
+		for _, market in pairs(db.markets) do
+			local scan = type(market) == 'table' and market.scan or nil
+			if type(scan) == 'table' and type(scan.items) == 'table' then
+				packSavedScan(scan)
+			end
 		end
 	end,
 }
@@ -265,6 +280,31 @@ function StoreMethods:ShownRules(surface)
 	return shown
 end
 
+--- Every market, keyed by market key (for pruning across markets).
+function StoreMethods:Markets()
+	return self.db.markets
+end
+
+--- The vendor price last seen for an item, or nil when it was never seen (or the saved value
+--- is broken).
+--- @param itemId number
+--- @return number|nil copper
+function StoreMethods:VendorPrice(itemId)
+	local copper = self.db.vendorPrices[itemId]
+	local isUsable = type(copper) == 'number' and copper >= 0 and copper < math.huge
+	return isUsable and copper or nil
+end
+
+--- Keeps an item's vendor price, so it is known before the client caches the item again.
+--- @param itemId number
+--- @param copper number
+function StoreMethods:RememberVendorPrice(itemId, copper)
+	if type(itemId) ~= 'number' or type(copper) ~= 'number' or copper < 0 or copper >= math.huge then
+		error('Store:RememberVendorPrice: itemId and copper must be numbers', 2)
+	end
+	self.db.vendorPrices[itemId] = copper
+end
+
 --- Per-character UI state.
 function StoreMethods:Ui()
 	return self.charDb.ui
@@ -324,6 +364,20 @@ function collectLegacyKeys(db)
 		db[key] = nil
 	end
 	return legacy
+end
+
+function packSavedScan(scan)
+	-- Store.lua loads before ScanStore.lua; migrations run later, at ADDON_LOADED.
+	local ScanStore = ns.ScanStore
+	local packedItems = {}
+	for itemId, item in pairs(scan.items) do
+		local packed = type(item) == 'string' and item or ScanStore.packItem(item)
+		if packed and not ScanStore.unpackItem(packed).isMalformed then
+			packedItems[itemId] = packed
+		end
+	end
+	scan.items = packedItems
+	scan.isPacked = true
 end
 
 return Store

@@ -760,3 +760,79 @@ t.test('a level with a non-finite quantity or price is junk', function()
 		200
 	)
 end)
+
+t.group('rules: inputs from other sources')
+
+-- Step 1 review: a string or non-finite value from another module threw inside Rules (the
+-- sales comparison and the craft cost / realized check). They are unknown, with a reason.
+local function hasReason(price, code)
+	for _, reason in ipairs(price.confidence.reasons) do
+		if reason.code == code then
+			return true
+		end
+	end
+	return false
+end
+
+t.test('a string sold figure is unknown sales, not an error', function()
+	local row = { median = 500, min = 300, sold = '12' }
+	local price = evaluate(rule({ kind = 'median' }), { row = row, levels = false })
+	t.eq(price.copper, 500)
+	t.truthy(hasReason(price, 'badInput'), 'badInput reason')
+	t.truthy(hasReason(price, 'fewSales'), 'sales treated as unknown')
+end)
+
+t.test('a non-finite sold figure is unknown sales', function()
+	local row = { median = 500, sold = 0 / 0 }
+	local price = evaluate(rule({ kind = 'median' }), { row = row, levels = false })
+	t.truthy(hasReason(price, 'badInput'), 'NaN sold flagged')
+end)
+
+t.test('a string or non-finite craft cost or realized price is no base', function()
+	for _, bad in ipairs({ '500', math.huge, 0 / 0, {} }) do
+		local price, reason = evaluate(rule({ kind = 'craftCost' }), { craftCost = bad, levels = false })
+		t.eq(price, nil, 'craftCost ' .. tostring(bad))
+		t.truthy(reason:find('not a number'), 'reason says why: ' .. tostring(reason))
+		price, reason = evaluate(rule({ kind = 'realized' }), { realized = bad, levels = false })
+		t.eq(price, nil, 'realized ' .. tostring(bad))
+		t.truthy(reason:find('not a number'), 'reason says why: ' .. tostring(reason))
+	end
+end)
+
+t.test('a junk AHledger field is no base; a junk min is no fallback', function()
+	local price, reason = evaluate(rule({ kind = 'median' }), { row = { median = '500', sold = 10 }, levels = false })
+	t.eq(price, nil)
+	t.truthy(reason:find('not a number'), tostring(reason))
+	price, reason = evaluate(rule({ kind = 'lowest' }), { row = { min = math.huge, sold = 10 }, levels = false })
+	t.eq(price, nil)
+	t.truthy(reason:find('not a number'), tostring(reason))
+end)
+
+t.test('a step whose base is junk is skipped with the reason; the rule still prices', function()
+	local price = evaluate(
+		rule({ kind = 'median' }, { { kind = 'floor', percent = 100, base = { kind = 'craftCost' } } }),
+		{ row = ROW, levels = false, craftCost = 'lots' }
+	)
+	t.eq(price.copper, 500)
+	t.truthy(hasReason(price, 'badInput'), 'badInput reason from the skipped step')
+end)
+
+t.test('a string vendor price is no vendor base', function()
+	local price, reason = evaluate(rule({ kind = 'vendor' }), { info = { maxStack = 20, vendorPrice = '13' } })
+	t.eq(price, nil)
+	t.truthy(reason:find('not a number'), tostring(reason))
+end)
+
+t.test('a source that throws is no data, not an error', function()
+	local ctx = context({ row = ROW, levels = false })
+	ctx.craftCost = function()
+		error('boom')
+	end
+	local price = Rules.evaluate(
+		rule({ kind = 'median' }, { { kind = 'floor', percent = 100, base = { kind = 'craftCost' } } }),
+		ITEM,
+		ctx
+	)
+	t.eq(price.copper, 500)
+	t.truthy(hasReason(price, 'badInput'), 'failing source flagged')
+end)

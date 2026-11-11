@@ -1,0 +1,592 @@
+local t = ...
+local FakeGame = require('tests.fake_game')
+local ns = t.loadAddon()
+local TooltipLines, Theme = ns.TooltipLines, ns.Theme
+
+local LINEN, WOOL, SWORD = 2589, 2592, 2488
+local MARKET = 'forever/normal/alliance/us'
+local NOW = 1000000
+local TABLE_TEXT = 'AHL1|' .. MARKET .. '|' .. (NOW - 7200) .. '|1\n2589:120:95:500:118:125:90:160:450'
+
+local theme = Theme.new(ns.Tokens)
+
+local function price(copper, level, reasons, trace)
+	return {
+		copper = copper,
+		ageSeconds = 60,
+		source = 'scan',
+		step = 1,
+		confidence = { level = level or 'high', reasons = reasons or {} },
+		trace = trace or { { kind = 'base', label = 'scan lowest', copper = copper } },
+	}
+end
+
+local function quote(options)
+	options = options or {}
+	return {
+		prices = options.prices or {
+			{ ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94) },
+			{ ruleId = 'median', name = 'Median', isDefault = false, price = price(120) },
+		},
+		facts = options.facts or {
+			salesPerDay = 45,
+			listedUnits = 60,
+			levelCount = 2,
+			levels = { { price = 90, qty = 20 }, { price = 99, qty = 40 } },
+			lowestListed = 90,
+			vendor = 13,
+		},
+		ages = options.ages or { scanAge = 12 * 60, tableAge = 3 * 3600 },
+	}
+end
+
+local function build(input)
+	input.theme = input.theme or theme
+	input.quote = input.quote or quote()
+	return TooltipLines.build(input)
+end
+
+local function texts(lines)
+	local result = {}
+	for index, line in ipairs(lines) do
+		result[index] = line.right and (line.left .. ' | ' .. line.right) or line.left
+	end
+	return result
+end
+
+local function find(lines, text)
+	for _, line in ipairs(texts(lines)) do
+		if line:find(text, 1, true) then
+			return line
+		end
+	end
+	return nil
+end
+
+t.group('tooltip lines')
+
+t.test('compact: the age header, then one line per rule with the stack price', function()
+	t.same(texts(build({ stackCount = 20 })), {
+		'Haggler | scan 12 min · table 3 h',
+		'Realistic ×20 | 18s 80c',
+		'Median ×20 | 24s',
+	})
+end)
+
+t.test('a single item shows no count; the unit view shows the price each', function()
+	t.same(texts(build({ stackCount = 1 }))[2], 'Realistic | 94c')
+	t.same(texts(build({ stackCount = 20, isUnitView = true }))[2], 'Realistic (each) | 94c')
+end)
+
+t.test('low confidence is marked on the line itself; medium is not', function()
+	local lines = build({
+		quote = quote({
+			prices = {
+				{ ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low') },
+				{ ruleId = 'median', name = 'Median', isDefault = false, price = price(120, 'medium') },
+			},
+		}),
+	})
+	t.truthy(lines[2].right:find('(!) low', 1, true))
+	t.truthy(lines[2].right:find('|c' .. theme:Hex('color.state.danger'), 1, true), 'in the danger colour')
+	t.eq(lines[3].right:find('(!)', 1, true), nil)
+end)
+
+t.test('with the detail off, a low line names its top reason inline', function()
+	local reasons = {
+		{ code = 'stale', level = 'medium', text = 'scan is 3 h old' },
+		{ code = 'fewSales', level = 'low', text = 'few sales' },
+	}
+	local lowQuote = quote({
+		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) } },
+	})
+	t.eq(
+		texts(build({ quote = lowQuote }))[2],
+		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low: few sales')
+	)
+	t.eq(
+		texts(build({ quote = lowQuote, isDetail = true }))[2],
+		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low')
+	)
+end)
+
+t.test('a rule without a price says so', function()
+	local lines = build({
+		quote = quote({
+			prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, reason = 'no data' } },
+		}),
+	})
+	t.eq(lines[2].right, 'no price')
+end)
+
+t.test('missing data is named in the header', function()
+	local lines = build({ quote = quote({ ages = {} }) })
+	t.eq(lines[1].right, 'no scan · no table')
+end)
+
+t.test('an item Haggler knows nothing about gets no lines', function()
+	local unknown = quote({
+		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, reason = 'no data' } },
+		facts = { vendor = 50 },
+	})
+	t.same(build({ quote = unknown, isDetail = true }), {})
+end)
+
+t.test('detail: the trace, reasons, sales, listings, vendor and sell time with its note', function()
+	local reasons = {
+		{ code = 'stale', level = 'medium', text = 'AHledger data is 30 hours old' },
+	}
+	local trace = {
+		{ kind = 'base', label = 'scan first price with 5 units', copper = 99 },
+		{ kind = 'skip', label = 'cap skipped: no median' },
+		{ kind = 'step', label = 'undercut by 1c', copper = 98 },
+		{ kind = 'snap', label = 'price step 1c', copper = 98 },
+		{ kind = 'confidence', label = 'medium confidence: AHledger data is 30 hours old' },
+	}
+	local detailed = quote({
+		prices = {
+			{ ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(98, 'medium', reasons, trace) },
+			{
+				ruleId = 'median',
+				name = 'Median',
+				isDefault = false,
+				price = price(120, 'low', { { code = 'fewSales', level = 'low', text = 'under 1 sale a day' } }),
+			},
+		},
+	})
+	t.same(texts(build({ quote = detailed, stackCount = 20, isDetail = true })), {
+		'Haggler | scan 12 min · table 3 h',
+		'Realistic ×20 | 19s 60c',
+		'Median ×20 | 24s ' .. theme:Wrap('color.state.danger', '(!) low'),
+		'Realistic, each:',
+		'  scan first price with 5 units | 99c',
+		'  cap skipped: no median',
+		'  undercut by 1c | 98c',
+		'  price step 1c | 98c',
+		'(?) AHledger data is 30 hours old',
+		'(!) Median: under 1 sale a day',
+		'Sold a day | 45',
+		'Listed | 60 units · 2 prices',
+		'Vendor | 2s 60c',
+		'Sell time | ~21 h', -- (20 listed under 98c + 20) / 45 a day
+		'  ' .. TooltipLines.SELL_TIME_NOTE,
+	})
+end)
+
+t.test('detail lines follow their settings; the reasons always show', function()
+	local reasons = { { code = 'stale', level = 'low', text = 'old data' } }
+	local lowQuote = quote({
+		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) } },
+	})
+	local options = {
+		detailTrace = false,
+		detailSales = false,
+		detailListings = false,
+		detailVendor = false,
+		detailSellTime = false,
+	}
+	t.same(texts(build({ quote = lowQuote, isDetail = true, options = options })), {
+		'Haggler | scan 12 min · table 3 h',
+		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low'),
+		'(!) old data',
+	})
+end)
+
+t.test('an informational reason gets its own marker, never a bare leading space', function()
+	local reasons = { { code = 'ownSalesThin', level = 'high', text = 'sold a day from AHledger' } }
+	local infoQuote = quote({
+		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'high', reasons) } },
+	})
+	local lines = build({ quote = infoQuote, isDetail = true, options = { detailTrace = false } })
+	t.truthy(find(lines, '(i) sold a day from AHledger'))
+end)
+
+t.test('the sales line says when sales a day is the own count', function()
+	local facts = { salesPerDay = 12.5, salesSource = 'own', listedUnits = 3, levelCount = 1 }
+	local lines = build({ isDetail = true, quote = quote({ facts = facts }) })
+	t.eq(find(lines, 'Sold a day'), 'Sold a day | 12.5 · own scans')
+end)
+
+t.test('the sell-time note can be switched off', function()
+	local lines = build({ isDetail = true, options = { sellTimeNote = false } })
+	t.truthy(find(lines, 'Sell time'))
+	t.eq(find(lines, TooltipLines.SELL_TIME_NOTE), nil)
+end)
+
+t.test('without sales data the sell time is unknown and has no note', function()
+	local lines = build({
+		isDetail = true,
+		quote = quote({ facts = { listedUnits = 3, levelCount = 1, levels = { { price = 90, qty = 3 } } } }),
+	})
+	t.eq(find(lines, 'Sell time'), 'Sell time | unknown, no sales data')
+	t.eq(find(lines, 'Sold a day'), 'Sold a day | unknown')
+	t.eq(find(lines, TooltipLines.SELL_TIME_NOTE), nil)
+	t.eq(find(lines, 'Vendor'), nil)
+end)
+
+t.test('sell time counts the units at or under the price plus the stack', function()
+	local facts =
+		{ salesPerDay = 10, levels = { { price = 90, qty = 20 }, { price = 94, qty = 5 }, { price = 99, qty = 40 } } }
+	t.eq((TooltipLines.sellTimeDays(facts, 94, 5)), 3)
+	t.eq((TooltipLines.sellTimeDays(facts, 89, 5)), 0.5)
+	local days, isLow = TooltipLines.sellTimeDays({ salesPerDay = 0.5, levels = {} }, 94, 1)
+	t.eq(days, 2)
+	t.eq(isLow, true, 'under one sale a day')
+	t.eq(select(2, TooltipLines.sellTimeDays(facts, 94, 5)), false)
+	t.eq(TooltipLines.sellTimeDays({ salesPerDay = 0 }, 94, 1), nil)
+	t.eq(TooltipLines.sellTimeDays({ levels = { 'junk', { price = '1', qty = 2 } }, salesPerDay = 1 }, 94, 1), 1)
+end)
+
+t.test('a slow sell time is marked low', function()
+	local lines = build({ isDetail = true, quote = quote({ facts = { salesPerDay = 0.2, levels = {} } }) })
+	t.truthy(find(lines, 'Sell time | ~5.0 days ' .. theme:Wrap('color.state.danger', '(!) low')))
+end)
+
+t.test('money and ages read short', function()
+	t.eq(TooltipLines.money(0), '0c')
+	t.eq(TooltipLines.money(5), '5c')
+	t.eq(TooltipLines.money(100), '1s')
+	t.eq(TooltipLines.money(10000), '1g')
+	t.eq(TooltipLines.money(12005), '1g 20s 5c')
+	t.eq(TooltipLines.money(1230000), '123g')
+	t.eq(TooltipLines.age(5), 'just now')
+	t.eq(TooltipLines.age(150), '2 min')
+	t.eq(TooltipLines.age(7300), '2 h')
+	t.eq(TooltipLines.age(3 * 86400), '3 d')
+end)
+
+t.test('lines use theme colours', function()
+	local lines = build({})
+	t.same(lines[1].color, theme:Color('color.text.accent'))
+	t.same(lines[1].rightColor, theme:Color('color.text.muted'))
+end)
+
+t.group('theme')
+
+t.test('colours come from the theme, then what it extends, then the default theme, then grey', function()
+	local tokens = {
+		themes = {
+			banneret = {
+				tokens = { ['color.a'] = { 1, 0, 0, 1 }, ['color.b'] = { 0, 1, 0, 1 }, ['color.c'] = { 0, 0, 1 } },
+			},
+			base = { tokens = { ['color.b'] = { 0, 0, 0, 1 } } },
+			child = { extends = 'base', tokens = { ['color.a'] = { 1, 1, 1, 0.5 } } },
+			loop = { extends = 'loop', tokens = {} },
+		},
+	}
+	local child = Theme.new(tokens, 'child')
+	t.same(child:Color('color.a'), { r = 1, g = 1, b = 1, a = 0.5 })
+	t.same(child:Color('color.b'), { r = 0, g = 0, b = 0, a = 1 }, 'from what it extends')
+	t.same(child:Color('color.c'), { r = 0, g = 0, b = 1, a = 1 }, 'from the default theme')
+	t.same(child:Color('color.none'), Theme.FALLBACK_COLOR)
+	t.same(Theme.new(tokens, 'loop'):Color('color.a'), { r = 1, g = 0, b = 0, a = 1 }, 'a loop ends')
+	t.eq(Theme.new(tokens, 'missing').key, 'banneret')
+	t.eq(Theme.new(tokens):Hex('color.a'), 'ffff0000')
+	t.eq(Theme.new(tokens):Wrap('color.b', 'hi'), '|cff00ff00hi|r')
+	t.same(Theme.new(nil, 'x'):Color('color.text.accent'), theme:Color('color.text.accent'))
+	t.same(Theme.new({}):Color('color.a'), Theme.FALLBACK_COLOR)
+end)
+
+t.test('the generated tokens have the colours the tooltip uses', function()
+	for _, name in ipairs({
+		'color.text.accent',
+		'color.text.primary',
+		'color.text.secondary',
+		'color.text.muted',
+		'color.state.danger',
+		'color.state.warning',
+	}) do
+		t.truthy(theme:Color(name) ~= Theme.FALLBACK_COLOR, name)
+	end
+end)
+
+t.group('tooltip host')
+
+local function newRegistry(options)
+	local game = FakeGame.new(options)
+	local errors = {}
+	local wow = ns.Wow.create(game.env)
+	local tooltips = ns.Tooltip.new({
+		wow = wow,
+		onError = function(owner, err)
+			errors[#errors + 1] = owner .. ': ' .. tostring(err)
+		end,
+	})
+	return game, tooltips, errors
+end
+
+t.test('the hook goes in with the first provider; lines draw and the tooltip is shown again', function()
+	local game, tooltips = newRegistry()
+	t.eq(#game.postCalls, 0)
+	tooltips:AddProvider('a', function(itemId, info)
+		return {
+			{ left = 'item ' .. itemId, right = 'x' .. info.stackCount, color = { r = 1, g = 0, b = 0 } },
+			{ left = 'note' },
+		}
+	end)
+	t.eq(#game.postCalls, 1)
+	local lines = game:ShowItemTooltip(LINEN)
+	t.same(lines[1], { left = 'item 2589', right = 'x1', lr = 1, lg = 0, lb = 0, rr = 1, rg = 1, rb = 1 })
+	t.same(lines[2], { left = 'note', r = 1, g = 1, b = 1, wrap = false })
+	t.eq(game.env.GameTooltip.shownCount, 1)
+end)
+
+t.test('one failing provider is reported; the others still draw', function()
+	local game, tooltips, errors = newRegistry()
+	tooltips:AddProvider('broken', function()
+		error('oops')
+	end)
+	tooltips:AddProvider('junk', function()
+		return { 'not a line', { right = 'no left' }, { left = 'kept' } }
+	end)
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(#lines, 1)
+	t.eq(lines[1].left, 'kept')
+	t.eq(#errors, 1)
+	t.truthy(errors[1]:find('broken'))
+end)
+
+t.test('no lines: the tooltip is left alone', function()
+	local game, tooltips = newRegistry()
+	tooltips:AddProvider('quiet', function()
+		return {}
+	end)
+	game:ShowItemTooltip(LINEN)
+	t.eq(game.env.GameTooltip.shownCount, 0)
+end)
+
+t.test('removing the last provider stops drawing; adding again reuses the one hook', function()
+	local game, tooltips = newRegistry()
+	local provider = function()
+		return { { left = 'line' } }
+	end
+	tooltips:AddProvider('a', provider)
+	tooltips:AddProvider('a', provider)
+	t.eq(#game:ShowItemTooltip(LINEN), 1, 'adding again replaces')
+	tooltips:RemoveProvider('a')
+	t.eq(tooltips:HasProviders(), false)
+	t.eq(#game:ShowItemTooltip(LINEN), 0)
+	tooltips:AddProvider('a', provider)
+	t.eq(#game:ShowItemTooltip(LINEN), 1)
+	t.eq(#game.postCalls, 1, 'the client hook cannot be undone, so it goes in once')
+end)
+
+t.test('without the data processor the tooltip scripts are hooked instead', function()
+	local game, tooltips = newRegistry({ hasProcessor = false })
+	tooltips:AddProvider('a', function()
+		return { { left = 'line' } }
+	end)
+	t.truthy(game.env.GameTooltip.scripts.OnTooltipSetItem)
+	t.eq(#game:ShowItemTooltip(LINEN), 1)
+end)
+
+t.test('the stack count comes from the bag slot under the cursor, when it holds the item', function()
+	local game, tooltips = newRegistry()
+	local seen = {}
+	tooltips:AddProvider('a', function(_, info)
+		seen[#seen + 1] = info.stackCount
+		return {}
+	end)
+	local slot = {
+		GetBagID = function()
+			return 0
+		end,
+		GetID = function()
+			return 3
+		end,
+	}
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 17 }
+	game.env.GameTooltip.owner = slot
+	game:ShowItemTooltip(LINEN)
+	game:ShowItemTooltip(WOOL)
+	game.env.GameTooltip.owner = nil
+	game:ShowItemTooltip(LINEN)
+	t.same(seen, { 17, 1, 1 })
+end)
+
+t.test('modifiers reach the providers; a forbidden tooltip is skipped', function()
+	local game, tooltips = newRegistry()
+	local seen
+	tooltips:AddProvider('a', function(_, info)
+		seen = info.modifiers
+		return { { left = 'x' } }
+	end)
+	game.modifiers.shift = true
+	game:ShowItemTooltip(LINEN)
+	t.same(seen, { shift = true, ctrl = false, alt = false })
+	game.env.GameTooltip.isForbidden = true
+	t.eq(#game:ShowItemTooltip(LINEN), 0)
+end)
+
+t.group('wow events')
+
+t.test('several owners can listen to one event; each is removed on its own', function()
+	local game = FakeGame.new()
+	local reported = {}
+	local wow = ns.Wow.create(game.env, {
+		onError = function(where, err)
+			reported[#reported + 1] = where .. ' ' .. tostring(err)
+		end,
+	})
+	local heard = {}
+	wow:OnEvent('BAG_UPDATE', function(_, bag)
+		heard[#heard + 1] = 'a' .. bag
+	end, 'a')
+	wow:OnEvent('BAG_UPDATE', function()
+		error('broken')
+	end, 'b')
+	wow:OnEvent('BAG_UPDATE', function(_, bag)
+		heard[#heard + 1] = 'c' .. bag
+	end, 'c')
+	game:Fire('BAG_UPDATE', 1)
+	table.sort(heard)
+	t.same(heard, { 'a1', 'c1' })
+	t.eq(#reported, 1, 'the broken handler is reported, the others still run')
+	wow:OffEvent('BAG_UPDATE', 'a')
+	wow:OffEvent('BAG_UPDATE', 'b')
+	heard = {}
+	game:Fire('BAG_UPDATE', 2)
+	t.same(heard, { 'c2' })
+	t.eq(game.frame.events.BAG_UPDATE, true)
+	wow:OffEvent('BAG_UPDATE', 'c')
+	t.eq(game.frame.events.BAG_UPDATE, nil)
+end)
+
+t.test('timers, clock and replicate calls go through the env', function()
+	local game = FakeGame.new({ listings = { { LINEN, 5, 500, 400 } } })
+	local wow = ns.Wow.create(game.env)
+	local ran = false
+	t.eq(
+		wow:After(2, function()
+			ran = true
+		end),
+		true
+	)
+	game:Advance(2)
+	t.eq(ran, true)
+	t.eq(wow:CanReplicate(), true)
+	t.eq(wow:RequestReplicate(), true)
+	t.eq(game.replicateRequests, 1)
+	t.eq(wow:NumReplicateItems(), 1)
+	t.same({ wow:ReplicateItem(0) }, { LINEN, 5, 500, 400, 4 })
+	for raw, band in pairs({
+		[1] = 1,
+		[3] = 3,
+		[0] = 'none',
+		[5] = 'none',
+		[-1] = 'none',
+		[2.5] = 'none',
+		['2'] = 'none',
+	}) do
+		game.listings[1][5] = raw
+		t.eq(select(5, wow:ReplicateItem(0)) or 'none', band, 'raw time left ' .. raw)
+	end
+	t.eq(wow:ReplicateItemLink(0), '|Hitem:2589|h')
+	t.eq(type(wow:ClockMs()), 'number')
+	local bare = ns.Wow.create({})
+	t.eq(bare:After(1, function() end), false)
+	t.eq(bare:CanReplicate(), false)
+	t.eq(bare:NumReplicateItems(), 0)
+	t.eq(select(1, bare:RequestReplicate()), false)
+end)
+
+t.group('tooltip module')
+
+local function startWithTable(options)
+	local game = FakeGame.new({
+		now = NOW,
+		itemInfo = { [LINEN] = { name = 'Linen Cloth', maxStack = 20, vendorPrice = 13 } },
+		hasProcessor = options and options.hasProcessor,
+	})
+	game.env.HagglerPriceTable = { [MARKET] = { updated = NOW - 7200, count = 1, text = TABLE_TEXT } }
+	return game, FakeGame.startAddon(t, game)
+end
+
+t.test('item tooltips get the header and the default rule; a modifier change redraws', function()
+	local game, addon = startWithTable()
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(lines[1].left, 'Haggler')
+	t.eq(lines[1].right, 'no scan · table 2 h')
+	t.eq(lines[2].left, 'Realistic')
+	t.eq(#lines, 2)
+	game.modifiers.shift = true
+	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
+	t.eq(game.env.GameTooltip.refreshed, 1)
+	local detailed = game.env.GameTooltip.lines
+	t.eq(detailed[2].left, 'Realistic (each)')
+	t.truthy(#detailed > 4, 'Shift shows the detail block too')
+	t.same(addon.errors, {})
+end)
+
+t.test('shown rules come from the store, default first', function()
+	local game, addon = startWithTable()
+	addon.store.db.shownRules.tooltip = { 'median' }
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(lines[2].left, 'Realistic')
+	t.eq(lines[3].left, 'Median')
+	t.eq(lines[3].right, '1s 20c')
+end)
+
+t.test('detail mode and modifier are settings', function()
+	local game, addon = startWithTable()
+	addon.host.RunCommand('set tooltip.detailMode always')
+	t.truthy(#game:ShowItemTooltip(LINEN) > 4)
+	addon.host.RunCommand('set tooltip.detailMode modifier')
+	addon.host.RunCommand('set tooltip.detailModifier alt')
+	game.modifiers.alt = true
+	local lines = game:ShowItemTooltip(LINEN)
+	t.truthy(#lines > 4)
+	t.eq(lines[2].left, 'Realistic', 'Alt shows the detail but not the unit view')
+	addon.host.RunCommand('set tooltip.detailMode off')
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
+end)
+
+t.test('items without data get no lines', function()
+	local game = startWithTable()
+	t.same(game:ShowItemTooltip(SWORD), {})
+end)
+
+t.test('switching the module off removes its lines and its event, and back on restores them', function()
+	local game, addon = startWithTable()
+	addon.host.Disable('tooltip')
+	t.same(game:ShowItemTooltip(LINEN), {})
+	t.eq(game.frame.events.MODIFIER_STATE_CHANGED, nil)
+	addon.host.Enable('tooltip')
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
+	t.eq(#game.postCalls, 1)
+end)
+
+t.test('a modifier change redraws only an item tooltip, and never in combat', function()
+	local game = startWithTable()
+	game:ShowItemTooltip(LINEN)
+	local tooltip = game.env.GameTooltip
+	game.inCombat = true
+	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
+	t.eq(tooltip.refreshed, nil, 'in combat')
+	game.inCombat = false
+	tooltip.itemLink = nil
+	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
+	t.eq(tooltip.refreshed, nil, 'no item shown')
+end)
+
+t.test('a tooltip hook that breaks is reported, never thrown into the client', function()
+	local game, addon = startWithTable()
+	local brokenData = setmetatable({}, {
+		__index = function()
+			error('data broke')
+		end,
+	})
+	game.postCalls[1].handler(game.env.GameTooltip, brokenData)
+	t.eq(#addon.errors, 1)
+	t.truthy(addon.errors[1]:find('data broke', 1, true), addon.errors[1])
+end)
+
+t.test('secret values on a tooltip are skipped', function()
+	local game, addon = startWithTable()
+	game.secretValues = { [LINEN] = true }
+	local tooltip = game.env.GameTooltip
+	tooltip.lines, tooltip.itemLink = {}, nil
+	game.postCalls[1].handler(tooltip, { id = LINEN })
+	t.same(tooltip.lines, {})
+	t.same(addon.errors, {})
+end)

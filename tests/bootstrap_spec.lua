@@ -2,6 +2,15 @@ local t = ...
 
 -- Loads Haggler.lua with a fake game: the event frame, chat and slash table live in _G, as in
 -- the client. Everything set here is removed again afterwards.
+-- The files the TOC loads after the Engine, in its order.
+local BOOT_FILES = {
+	'Init.lua',
+	'Features/Pricing.lua',
+	'Features/Scan.lua',
+	'Features/Tooltip/Tooltip.lua',
+	'Haggler.lua',
+}
+
 local FAKE_GLOBALS = { 'CreateFrame', 'DEFAULT_CHAT_FRAME', 'SlashCmdList', 'GetServerTime' }
 
 local function withFakeGame(run)
@@ -42,7 +51,9 @@ end
 
 local function loadWithBootstrap()
 	local ns = t.loadAddon()
-	assert(loadfile('Haggler.lua'))('Haggler', ns)
+	for _, path in ipairs(BOOT_FILES) do
+		assert(loadfile(path))('Haggler', ns)
+	end
 	return ns
 end
 
@@ -58,10 +69,14 @@ t.test('starts on ADDON_LOADED, builds saved data and answers /hag', function()
 		t.eq(rawget(_G, 'HagglerDB').version, ns.Store.SCHEMA_VERSION)
 		t.eq(rawget(_G, 'SLASH_HAGGLER1'), '/hag')
 		local lines = ns.host.RunCommand('list')
-		t.same(lines, {
-			'pricing.staleMediumHours = 24  (Prices older than this many hours are medium confidence)',
-			'pricing.staleLowHours = 72  (Prices older than this many hours are low confidence)',
-		})
+		t.eq(lines[1], 'pricing.staleMediumHours = 24  (Prices older than this many hours are medium confidence)')
+		t.eq(lines[2], 'pricing.staleLowHours = 72  (Prices older than this many hours are low confidence)')
+		local listed = table.concat(lines, '\n')
+		t.truthy(listed:find('scan.autoScan = on', 1, true), listed)
+		t.truthy(listed:find('tooltip.detailMode = modifier', 1, true), listed)
+		t.truthy(ns.host.Get('price'), 'price provided')
+		t.truthy(ns.host.Get('haggler.price'), 'haggler.price provided')
+		t.eq(frame.events.AUCTION_HOUSE_SHOW, true, 'the scanner listens')
 		t.eq(ns.pricing:Setting('staleLowHours'), 72)
 		rawget(_G, 'SlashCmdList').HAGGLER('help')
 	end)

@@ -1,28 +1,12 @@
 --[[
 	Haggler.lua: the bootstrap, loaded last. It opens the saved data once the game has loaded
-	it, starts the host and registers /hag. Features register themselves with ns.host before
-	this runs. The always-on pricing module owns the settings every price reads (the confidence
-	age thresholds); step 2 builds the rules context from them.
+	it, starts the host and registers /hag. Init.lua made the shared services, and the features
+	registered their modules with ns.host before this runs.
 ]]
 local addonName, ns = ...
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local onAddonLoaded, printLines
-
-ns.wow = ns.Wow.create()
-ns.host = ns.Host.create({
-	onError = function(owner, where, err)
-		ns.wow:Print(string.format('%s failed in %s: %s', owner, where, err))
-	end,
-})
-
-ns.pricing = ns.host.AddModule({
-	key = 'pricing',
-	label = 'Pricing',
-	category = 'core',
-	canDisable = false,
-	settings = ns.Rules.confidenceSettings(),
-})
 
 ns.wow:OnEvent('ADDON_LOADED', function(_, loadedName)
 	if loadedName ~= addonName then
