@@ -473,6 +473,31 @@ t.test('sellers the client has not loaded yet never turn listings into sales', f
 	t.same(addon.store:Market(MARKET).scanDays[math.floor((NOW + HOUR) / DAY)].items, {})
 end)
 
+t.test('a scan the store refuses records no sales', function()
+	local game = FakeGame.new({
+		now = NOW,
+		listings = { { LINEN, 20, 2000, 0, 4, 'Ann' }, { LINEN, 20, 2000, 0, 4, 'Bob' } },
+		itemInfo = { [LINEN] = { name = 'Linen', maxStack = 20, vendorPrice = 13 } },
+	})
+	local addon = FakeGame.startAddon(t, game)
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	-- A later scan that compares fine but that the store refuses (its rules may tighten).
+	local save = addon.ScanStore.save
+	addon.ScanStore.save = function()
+		return false
+	end
+	game.now = game.now + HOUR
+	game.listings = { { LINEN, 20, 2000, 0, 4, 'Bob' } }
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	addon.ScanStore.save = save
+	local market = addon.store:Market(MARKET)
+	t.eq(market.scan.at, NOW, 'the earlier scan is kept')
+	t.eq(market.scanDays[math.floor((NOW + HOUR) / DAY)], nil, 'no sales from the refused scan')
+end)
+
 t.test('an uncached item: data is requested, units held, then classified from the saved vendor price', function()
 	local game = FakeGame.new({ now = NOW, listings = { { WOOL, 5, 50, 0, 4 }, { LINEN, 1, 100, 0, 4 } } })
 	local addon = FakeGame.startAddon(t, game)

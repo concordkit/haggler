@@ -6,11 +6,8 @@ local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 -- Linen sells on the AH (no badge); silk's AH price is under its vendor price (vendor badge);
 -- the unknown item has no price at all (low confidence).
-local TABLE_TEXT = 'AHL1|'
-	.. MARKET
-	.. '|'
-	.. (NOW - 7200)
-	.. '|2\n2589:120:95:500:118:125:90:160:450\n4306:10:9:500:10:11:8:12:450'
+-- AHledger rows: median, min buyout, quantity, 7- and 30-day median, 30-day low and high, sold a day.
+local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 }, [4306] = { 10, 9, 500, 10, 11, 8, 12, 45 } }
 local COINS = 0.015625
 local ALERT = 0.265625
 
@@ -55,7 +52,7 @@ local function newGame()
 			[SILK] = { name = 'Silk Cloth', maxStack = 20, vendorPrice = 50 },
 		},
 	})
-	game.env.HagglerPriceTable = { [MARKET] = { updated = NOW - 7200, count = 2, text = TABLE_TEXT } }
+	game.env.AHledgerAPI = FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 7200, rows = AHLEDGER_ROWS })
 	game.bagSlots[0] = 4
 	game.containerItems['0:1'] = { itemID = SILK, stackCount = 1, hyperlink = 'item:4306' }
 	game.containerItems['0:2'] = { itemID = UNKNOWN, stackCount = 1, hyperlink = 'item:9999' }
@@ -249,7 +246,9 @@ t.test('Bagnon loaded later: attached on ADDON_LOADED, groups painted after Layo
 	game:RunTimers()
 	t.eq(bagHookCount(game), 2)
 	local list = newButtons()
-	game.env.Bagnon.InventoryItemGroup.Layout({ buttons = list })
+	-- Kept in a local to the end, as Bagnon keeps its live groups.
+	local group = { buttons = list }
+	game.env.Bagnon.InventoryItemGroup.Layout(group)
 	t.same(badgeRow(list), { 'vendor', 'low', '', '', '' })
 	-- Some versions keep buttons as a bag -> slot map.
 	local mapped = { newButton(0, 1), newButton(0, 2) }
@@ -258,9 +257,13 @@ t.test('Bagnon loaded later: attached on ADDON_LOADED, groups painted after Layo
 	local total = inventory.children[#inventory.children]
 	t.truthy(total.text:find('^Bags: '))
 	game.containerItems['0:3'] = { itemID = SILK, stackCount = 2, hyperlink = 'item:4306' }
+	-- Bagnon's adapter holds groups weakly, as Bagnon holds them; collect now so the test
+	-- does not depend on when the collector runs.
+	collectgarbage()
 	game:Fire('BAG_UPDATE_DELAYED')
 	game:RunTimers()
 	t.eq(badgesOf(list[3]), 'vendor', 'known groups repaint on bag updates')
+	t.eq(group.buttons, list)
 	t.same(addon.errors, {})
 end)
 

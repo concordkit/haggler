@@ -30,12 +30,20 @@
 	Confidence = { level = 'high'|'medium'|'low', reasons = { { code, level, text }... } }, always
 	present; the weakest reason sets the level and every reason is also in the trace. Low
 	confidence is always shown to the player, so this field is never optional. Codes: stale,
-	fewSales, fewListings, fallbackBase, inferredStep, baitTrimmed, capOverridden, badInput, and
-	whatever ctx.sales adds (ownSalesThin, trollBuys).
+	fewSales, fewListings, fallbackBase, inferredStep, baitTrimmed, capOverridden, badInput,
+	snapshot (an AHledger figure from its bundled copy, not synced), the price source problems
+	(low, scans only): noPriceSource (AHledger missing), priceSourceFailing (its calls fail),
+	noMarketTable (no AHledger prices for this market), marketMismatch (medium: AHledger is set
+	to another market) and whatever ctx.sales adds (ownSalesThin, trollBuys).
+
+	A Price also says whether any AHledger figure went into it (usesPriceSource), so the credit
+	shows only with prices that used AHledger.
 
 	ctx (every source optional):
 	  now                       unix seconds
-	  priceRow(itemId)          -> PriceRow, updated     AHledger table
+	  priceRow(itemId)          -> PriceRow, updated, problem?   AHledger (PriceData source)
+	  priceSourceProblem        { code, text } why the price source has no prices, or nil
+	  marketMismatch            { sourceMarket, marketKey } when AHledger is set elsewhere
 	  scanItem(itemId)          -> { min, units, levels = { { price, qty }... }, copperSeen? }, at
 	  itemInfo(itemId)          -> { maxStack, vendorPrice }
 	  craftCost(itemId)         -> copper, at
@@ -90,7 +98,7 @@ local resolveOtherBase, applyStep, readListing, depthUnits, buildItemMarket, sor
 local describeBase, isPositiveInteger, isPercent, isFinitePositive, olderOf, ageSince, lookup, sumUnits
 local recordSales, recordListing, assessConfidence, addStaleReason, addSalesReason, addReason
 local confidenceThresholds, readCopper, noteBadInput, tableOrNil, isFiniteNumber, recordSalesView
-local salesReasonsOf
+local salesReasonsOf, noteSourceFigure, noteRowProblem, sourceProblemOf
 
 --- The built-in rules, as fresh copies (the store keeps its own, tunable and resettable).
 --- @return table { [ruleId] = Rule }
@@ -308,6 +316,7 @@ function Rules.evaluate(rule, itemId, ctx)
 		step = market.step,
 		confidence = confidence,
 		trace = trace,
+		usesPriceSource = facts.usesSourceFigure == true,
 	}
 end
 
@@ -325,7 +334,8 @@ function resolveBase(base, rule, itemId, ctx, trace, facts)
 end
 
 function resolveRowBase(base, itemId, ctx, trace, facts)
-	local row, updated = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	local row, updated, problem = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	noteRowProblem(facts, problem)
 	row = tableOrNil(row)
 	local field = ROW_FIELD_BY_BASE[base.kind]
 	local copper, isJunk = readCopper(row and row[field])
@@ -337,6 +347,7 @@ function resolveRowBase(base, itemId, ctx, trace, facts)
 		return nil, string.format('no AHledger %s', describeBase(base))
 	end
 	recordSales(facts, row, ctx, itemId)
+	noteSourceFigure(facts, row)
 	trace[#trace + 1] = { kind = 'base', label = 'AHledger ' .. describeBase(base), copper = copper }
 	return copper, ageSince(ctx, updated), 'ahledger'
 end
@@ -346,7 +357,8 @@ function resolveListingBase(base, rule, itemId, ctx, trace, facts)
 	if type(scanItem) == 'table' and scanItem.isMalformed == true then
 		noteBadInput(facts, 'saved scan of this item')
 	end
-	local row, updated = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	local row, updated, problem = lookup(ctx.priceRow, itemId, facts, 'AHledger row')
+	noteRowProblem(facts, problem)
 	row = tableOrNil(row)
 	recordSales(facts, row, ctx, itemId)
 	local soldPerDay = facts.salesPerDay
@@ -375,6 +387,7 @@ function resolveListingBase(base, rule, itemId, ctx, trace, facts)
 		return nil, 'no listings'
 	end
 	facts.isFallbackBase = true
+	noteSourceFigure(facts, row)
 	trace[#trace + 1] = { kind = 'base', label = 'AHledger lowest buyout (no scan depth)', copper = lowest }
 	return lowest, ageSince(ctx, updated), 'ahledger'
 end
@@ -479,11 +492,27 @@ function assessConfidence(facts, ageSeconds, market, ctx)
 	local thresholds = confidenceThresholds(ctx)
 	local reasons = {}
 	if facts.usesMarket then
+		local problem = sourceProblemOf(ctx, facts)
+		if problem then
+			addReason(reasons, problem.code, 'low', problem.text .. '; own scans only')
+		end
+		if facts.isSnapshot then
+			addReason(reasons, 'snapshot', 'medium', 'bundled AHledger prices, older than synced ones')
+		end
 		addStaleReason(reasons, ageSeconds, thresholds)
 		addSalesReason(reasons, facts, thresholds)
 		for _, reason in ipairs(facts.salesReasons or {}) do
 			addReason(reasons, reason.code, reason.level, reason.text)
 		end
+	end
+	local mismatch = tableOrNil(ctx.marketMismatch)
+	if facts.usesSourceFigure and mismatch then
+		local text = string.format(
+			'AHledger is set to %s; Haggler prices %s',
+			tostring(mismatch.sourceMarket),
+			tostring(mismatch.marketKey)
+		)
+		addReason(reasons, 'marketMismatch', 'medium', text)
 	end
 	local isFewListings = facts.listedUnits ~= nil and facts.listedUnits < thresholds.fewListingUnits
 	if isFewListings or facts.isListingThin then
@@ -562,6 +591,9 @@ function recordSales(facts, row, ctx, itemId)
 	local view = tableOrNil((lookup(ctx.sales, itemId, facts, 'sales')))
 	if view then
 		recordSalesView(facts, view)
+		if facts.salesSource == 'ahledger' and facts.salesPerDay ~= nil then
+			noteSourceFigure(facts, row)
+		end
 		return
 	end
 	if not row or row.sold == nil then
@@ -569,6 +601,7 @@ function recordSales(facts, row, ctx, itemId)
 	end
 	if isFiniteNumber(row.sold) and row.sold >= 0 then
 		facts.salesPerDay = row.sold
+		noteSourceFigure(facts, row)
 	else
 		noteBadInput(facts, 'AHledger sold a day')
 	end
@@ -626,6 +659,36 @@ function readCopper(value)
 		return value, false
 	end
 	return nil, true
+end
+
+-- An AHledger figure went into the price; from its bundled copy when the row says so.
+function noteSourceFigure(facts, row)
+	if not row then
+		return
+	end
+	facts.usesSourceFigure = true
+	if row.isSnapshot == true then
+		facts.isSnapshot = true
+	end
+end
+
+-- A row call that failed (the source said so) rather than an item without a price.
+function noteRowProblem(facts, problem)
+	if problem == 'priceSourceFailing' then
+		facts.isRowFailing = true
+	end
+end
+
+-- The price source's problem for this market, or a failed row call; nil when neither.
+function sourceProblemOf(ctx, facts)
+	local problem = tableOrNil(ctx.priceSourceProblem)
+	if problem and type(problem.code) == 'string' and type(problem.text) == 'string' then
+		return problem
+	end
+	if facts.isRowFailing then
+		return { code = 'priceSourceFailing', text = 'AHledger calls fail' }
+	end
+	return nil
 end
 
 function noteBadInput(facts, what)
@@ -801,14 +864,14 @@ function lookup(source, itemId, facts, what)
 	if type(source) ~= 'function' then
 		return nil
 	end
-	local ok, value, at = pcall(source, itemId)
+	local ok, value, at, extra = pcall(source, itemId)
 	if not ok then
 		if facts then
 			noteBadInput(facts, what .. ' source')
 		end
 		return nil
 	end
-	return value, at
+	return value, at, extra
 end
 
 -- The older of two ages; an unknown (nil) age never wins.

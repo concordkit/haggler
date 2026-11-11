@@ -502,6 +502,95 @@ FakeGame.FEATURE_FILES = {
 	'Features/Trade/Trade.lua',
 }
 
+-- AHledger --------------------------------------------------------------------------------
+
+-- AHledgerAPI's price fields, in the order a fake row lists them.
+FakeGame.AHLEDGER_FIELDS =
+	{ 'median', 'minBuyout', 'quantity', 'median7d', 'median30d', 'low30d', 'high30d', 'soldPerDay' }
+
+--- A stand-in for AHledger's AHledgerAPI v1 (AHledger's API.lua), read-only like the real one.
+--- options = { market, pinnedMarket, updated, snapshot, version, credit, mode,
+---             rows = { [itemId] = { median, minBuyout, quantity, median7d, median30d, low30d,
+---                                   high30d, soldPerDay } } }
+--- market is the player's market (and the only one priced); pinnedMarket is a market pinned in
+--- AHledger's options, which GetMarket then returns. Like the real API, a key that is not
+--- shaped like a market key falls back to GetMarket's. version defaults to 1. mode 'broken'
+--- makes every call throw (the real API never does; Haggler must not trust that), mode
+--- 'priceBroken' only GetPrice; mode 'junk' answers with strings where numbers belong. Calls
+--- are counted in state.calls.
+--- @return table api, table state (change state.rows, state.snapshot... between calls)
+function FakeGame.newAHledgerAPI(options)
+	options = options or {}
+	local state = {
+		market = options.market or 'forever/normal/alliance/us',
+		pinnedMarket = options.pinnedMarket,
+		updated = options.updated,
+		snapshot = options.snapshot == true,
+		rows = options.rows or {},
+		mode = options.mode,
+		calls = 0,
+	}
+	local function marketOf(market)
+		if type(market) == 'string' and market:match('^[%w%-]+/[%w%-]+/[%w%-]+/[%w%-]+$') then
+			return market
+		end
+		return state.pinnedMarket or state.market
+	end
+	local api = {
+		VERSION = options.version or 1,
+		CREDIT = options.credit or 'Prices from AHledger (ahledger.com)',
+	}
+	function api.GetMarket()
+		return state.pinnedMarket or state.market
+	end
+	function api.GetTableInfo(market)
+		state.calls = state.calls + 1
+		if state.mode == 'broken' then
+			error('AHledger broke')
+		end
+		local m = marketOf(market)
+		if m ~= state.market then
+			return nil
+		end
+		local count = 0
+		for _ in pairs(state.rows) do
+			count = count + 1
+		end
+		return { market = m, updated = state.updated, count = count, snapshot = state.snapshot }
+	end
+	function api.GetPrice(item, market)
+		state.calls = state.calls + 1
+		if state.mode == 'broken' or state.mode == 'priceBroken' then
+			error('AHledger broke')
+		end
+		local m = marketOf(market)
+		local row = m == state.market and state.rows[item] or nil
+		if not row then
+			return nil
+		end
+		local price = { itemID = item, market = m, updated = state.updated, snapshot = state.snapshot }
+		for index, field in ipairs(FakeGame.AHLEDGER_FIELDS) do
+			price[field] = row[index]
+		end
+		if state.mode == 'junk' then
+			price.median, price.soldPerDay, price.updated = 'lots', 'many', 'yesterday'
+		end
+		return price
+	end
+	function api.GetMedian(item, market)
+		local price = api.GetPrice(item, market)
+		return price and price.median
+	end
+	local proxy = setmetatable({}, {
+		__index = api,
+		__newindex = function()
+			error('AHledgerAPI is read-only', 2)
+		end,
+		__metatable = false,
+	})
+	return proxy, state
+end
+
 --- Starts the add-on's features on a fake game, as Init.lua and Haggler.lua do in the client.
 --- @param t table the harness
 --- @param game table FakeGame.new(...)

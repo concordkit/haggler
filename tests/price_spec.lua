@@ -5,12 +5,9 @@ local LINEN, WOOL, SWORD = 2589, 2592, 2488
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 local TABLE_UPDATED = NOW - 3 * 3600
--- id:median:min:qty:m7:m30:lo:hi:sold (sold a day times ten)
-local TABLE_TEXT = 'AHL1|'
-	.. MARKET
-	.. '|'
-	.. TABLE_UPDATED
-	.. '|2\n2589:120:95:500:118:125:90:160:450\n2592:300:280:80:290:310:250:400:5'
+-- AHledger rows: median, min buyout, quantity, 7- and 30-day median, 30-day low and high, sold a day.
+local AHLEDGER_ROWS =
+	{ [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 }, [2592] = { 300, 280, 80, 290, 310, 250, 400, 0.5 } }
 
 local function newGame(options)
 	options = options or {}
@@ -23,7 +20,8 @@ local function newGame(options)
 		},
 	})
 	if options.hasTable ~= false then
-		game.env.HagglerPriceTable = { [MARKET] = { updated = TABLE_UPDATED, count = 2, text = TABLE_TEXT } }
+		game.env.AHledgerAPI =
+			FakeGame.newAHledgerAPI({ market = MARKET, updated = TABLE_UPDATED, rows = AHLEDGER_ROWS })
 	end
 	return game
 end
@@ -42,10 +40,15 @@ t.group('price context')
 local ns = t.loadAddon()
 local PriceContext, ScanStore = ns.PriceContext, ns.ScanStore
 
-local function libraryWithTable()
-	local library = ns.PriceData.newLibrary()
-	library:AddRaw(MARKET, TABLE_TEXT)
-	return library
+local function sourceWithTable(options)
+	local apiOptions = { market = MARKET, updated = TABLE_UPDATED, rows = AHLEDGER_ROWS }
+	for key, value in pairs(options or {}) do
+		apiOptions[key] = value
+	end
+	local api = FakeGame.newAHledgerAPI(apiOptions)
+	return ns.PriceData.newAHledgerSource(function()
+		return api
+	end)
 end
 
 t.test('joins the AHledger row, the scan item and the item info', function()
@@ -54,7 +57,7 @@ t.test('joins the AHledger row, the scan item and the item info', function()
 	local ctx = PriceContext.build({
 		now = NOW,
 		marketKey = MARKET,
-		library = libraryWithTable(),
+		priceSource = sourceWithTable(),
 		snapshot = snapshot,
 		itemInfo = function(itemId)
 			return itemId == LINEN and { maxStack = 20, vendorPrice = 13 } or nil
@@ -89,7 +92,7 @@ t.test('a scan stack over one stands in for a max stack the client has not cache
 	t.eq(ctx.itemInfo(LINEN).maxStack, 12)
 	t.eq(ctx.itemInfo(WOOL).maxStack, nil, 'one proves nothing')
 	t.eq(ctx.itemInfo(SWORD).maxStack, 1, 'the client wins when it knows')
-	t.eq(ctx.priceRow, nil, 'no library, no row source')
+	t.eq(ctx.priceRow, nil, 'no price source, no row source')
 end)
 
 t.test('junk from saved scans and the client is unknown, never an error', function()
@@ -107,7 +110,7 @@ t.test('junk from saved scans and the client is unknown, never an error', functi
 	local ctx = PriceContext.build({
 		now = NOW,
 		marketKey = MARKET,
-		library = libraryWithTable(),
+		priceSource = sourceWithTable(),
 		snapshot = snapshot,
 		itemInfo = function()
 			return { maxStack = '20', vendorPrice = 0 / 0 }
@@ -129,7 +132,7 @@ t.test('a throwing source reads as no data for display and as bad input for a pr
 	local ctx = PriceContext.build({
 		now = NOW,
 		marketKey = MARKET,
-		library = libraryWithTable(),
+		priceSource = sourceWithTable(),
 		itemInfo = function()
 			error('client not ready')
 		end,
@@ -149,7 +152,8 @@ t.test('facts give ages and depth from the sources', function()
 		at = NOW - 120,
 		items = { [LINEN] = { min = 90, units = 45, levels = { { price = 90, qty = 5 }, { price = 99, qty = 40 } } } },
 	}
-	local ctx = PriceContext.build({ now = NOW, marketKey = MARKET, library = libraryWithTable(), snapshot = snapshot })
+	local ctx =
+		PriceContext.build({ now = NOW, marketKey = MARKET, priceSource = sourceWithTable(), snapshot = snapshot })
 	t.same(PriceContext.facts(ctx, LINEN), {
 		salesPerDay = 45,
 		salesSource = 'ahledger',
@@ -182,7 +186,7 @@ local function newService(options)
 			return NOW
 		end,
 		store = store,
-		library = libraryWithTable(),
+		priceSource = sourceWithTable(),
 		marketKey = function()
 			return options.marketKey == nil and MARKET or options.marketKey or nil
 		end,
@@ -275,7 +279,7 @@ t.test('the latest scan is used once it is saved', function()
 	local minimum = service:Get(LINEN, 'minimum')
 	t.eq(minimum.source, 'scan')
 	t.eq(minimum.ageSeconds, 60)
-	t.same(service:Ages(), { scanAge = 60, tableAge = 3 * 3600 })
+	t.same(service:Ages(), { scanAge = 60, tableAge = 3 * 3600, isSnapshot = false })
 end)
 
 t.test('without a market key there is no table and no scan, and nothing breaks', function()
@@ -284,7 +288,7 @@ t.test('without a market key there is no table and no scan, and nothing breaks',
 	local price, reason = service:Get(LINEN)
 	t.eq(price, nil)
 	t.eq(type(reason), 'string')
-	t.same(service:Ages(), {})
+	t.same(service:Ages(), { isSnapshot = false })
 end)
 
 t.test('rules list the default first; the default can move', function()

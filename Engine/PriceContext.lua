@@ -3,17 +3,22 @@
 	the tooltip's detail block shows.
 
 	  build(sources) -> ctx
-	  sources = { now, marketKey?, library?, snapshot?, itemInfo = fun(itemId)?, craftCost?,
+	  sources = { now, marketKey?, priceSource?, snapshot?, itemInfo = fun(itemId)?, craftCost?,
 	              realized?, confidence?, scanDays?, salesSettings? }
 
-	The joined sources are the AHledger row (library:Row), the latest scan item (ScanStore.item),
-	the client's item info and, when given, craft cost and realized price. Rules checks every
+	The joined sources are the AHledger row (priceSource:Row, see PriceData), the latest scan
+	item (ScanStore.item), the client's item info and, when given, craft cost and realized
+	price. Rules checks every
 	value where it reads it (a string, NaN, infinity or a throwing source is unknown with a
 	badInput reason), so the context passes values through and only joins them. One join is its
 	own: the client may not have cached an item yet, and a scan stack over one proves the item
 	stacks, so the scan's maxStackSeen stands in for a missing maxStack. The other is sales a
 	day: ctx.sales(itemId) is Sales.choose over the market's daily summaries (scanDays) and the
 	AHledger row, so Rules and the tooltip read the same figure and reasons.
+
+	ctx.sourceStatus is the price source's status for the market (PriceData.statusOf). When it
+	has no prices there, ctx.priceSourceProblem = { code, text }; when it is set to another
+	market than Haggler's, ctx.marketMismatch = { sourceMarket, marketKey }.
 
 	facts(ctx, itemId) reads the same sources for display: salesPerDay, salesSource, listedUnits,
 	levelCount, lowestListed, vendor, scanAge, rowAge. A value that is not a finite number reads
@@ -25,7 +30,7 @@ local PriceContext = {}
 ns.PriceContext = PriceContext
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local joinItemInfo, finiteOrNil, ageOrNil, callSource, newSalesSource
+local joinItemInfo, finiteOrNil, ageOrNil, callSource, newSalesSource, problemOf, mismatchOf
 
 --- Builds the context for Rules.evaluate.
 --- @param sources table see the file header
@@ -34,16 +39,20 @@ function PriceContext.build(sources)
 	if type(sources) ~= 'table' or type(sources.now) ~= 'number' then
 		error('PriceContext.build: sources need now', 2)
 	end
-	local library, marketKey, snapshot = sources.library, sources.marketKey, sources.snapshot
+	local priceSource, marketKey, snapshot = sources.priceSource, sources.marketKey, sources.snapshot
+	local sourceStatus = priceSource and ns.PriceData.statusOf(priceSource, marketKey) or nil
 	local ctx = {
 		now = sources.now,
 		confidence = sources.confidence,
 		craftCost = sources.craftCost,
 		realized = sources.realized,
+		sourceStatus = sourceStatus,
+		priceSourceProblem = problemOf(sourceStatus),
+		marketMismatch = mismatchOf(sourceStatus, marketKey),
 	}
-	if library and marketKey then
+	if priceSource and marketKey then
 		ctx.priceRow = function(itemId)
-			return library:Row(marketKey, itemId)
+			return priceSource:Row(marketKey, itemId)
 		end
 	end
 	if snapshot then
@@ -122,6 +131,22 @@ function callSource(source, itemId)
 		return nil
 	end
 	return value, at
+end
+
+-- Why the price source has no prices, or nil when it has them (or there is none to ask).
+function problemOf(sourceStatus)
+	if sourceStatus == nil or sourceStatus.isAvailable then
+		return nil
+	end
+	return { code = sourceStatus.code, text = sourceStatus.reason }
+end
+
+function mismatchOf(sourceStatus, marketKey)
+	local sourceMarket = sourceStatus and sourceStatus.market
+	if not sourceMarket or not marketKey or sourceMarket == marketKey then
+		return nil
+	end
+	return { sourceMarket = sourceMarket, marketKey = marketKey }
 end
 
 function finiteOrNil(value)

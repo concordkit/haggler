@@ -48,6 +48,7 @@ table.sort(TradeModel.EVENTS)
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local readSide, describeSide, describeWarning, isTradeComplete, topLowReason, armKeyOf, slotText
+local isAccepted
 
 local ModelMethods = {}
 ModelMethods.__index = ModelMethods
@@ -80,7 +81,7 @@ function ModelMethods:OnEvent(event, ...)
 		end
 		if event == 'TRADE_ACCEPT_UPDATE' then
 			local playerAccepted, targetAccepted = ...
-			local isBothAccepted = playerAccepted == 1 and targetAccepted == 1
+			local isBothAccepted = isAccepted(playerAccepted) and isAccepted(targetAccepted)
 			if isBothAccepted and self.snapshot then
 				-- The client may clear the slots before it reports the trade complete.
 				self.isFrozen = true
@@ -262,6 +263,11 @@ function topLowReason(confidence)
 		end
 	end
 	return nil
+end
+
+-- TRADE_ACCEPT_UPDATE's flags: 1 on the classic client, a boolean on newer ones.
+function isAccepted(flag)
+	return flag == 1 or flag == true
 end
 
 function isTradeComplete(wow, messageType, text)

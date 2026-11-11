@@ -6,7 +6,7 @@ local TooltipLines, Theme = ns.TooltipLines, ns.Theme
 local LINEN, WOOL, SWORD = 2589, 2592, 2488
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
-local TABLE_TEXT = 'AHL1|' .. MARKET .. '|' .. (NOW - 7200) .. '|1\n2589:120:95:500:118:125:90:160:450'
+local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 } }
 
 local theme = Theme.new(ns.Tokens)
 
@@ -504,7 +504,7 @@ local function startWithTable(options)
 		itemInfo = { [LINEN] = { name = 'Linen Cloth', maxStack = 20, vendorPrice = 13 } },
 		hasProcessor = options and options.hasProcessor,
 	})
-	game.env.HagglerPriceTable = { [MARKET] = { updated = NOW - 7200, count = 1, text = TABLE_TEXT } }
+	game.env.AHledgerAPI = FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 7200, rows = AHLEDGER_ROWS })
 	return game, FakeGame.startAddon(t, game)
 end
 
@@ -514,7 +514,8 @@ t.test('item tooltips get the header and the default rule; a modifier change red
 	t.eq(lines[1].left, 'Haggler')
 	t.eq(lines[1].right, 'no scan · table 2 h')
 	t.eq(lines[2].left, 'Realistic')
-	t.eq(#lines, 2)
+	t.eq(lines[3].left, 'Prices from AHledger (ahledger.com)', 'the credit closes the block')
+	t.eq(#lines, 3)
 	game.modifiers.shift = true
 	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
 	t.eq(game.env.GameTooltip.refreshed, 1)
@@ -544,7 +545,7 @@ t.test('detail mode and modifier are settings', function()
 	t.truthy(#lines > 4)
 	t.eq(lines[2].left, 'Realistic', 'Alt shows the detail but not the unit view')
 	addon.host.RunCommand('set tooltip.detailMode off')
-	t.eq(#game:ShowItemTooltip(LINEN), 2)
+	t.eq(#game:ShowItemTooltip(LINEN), 3)
 end)
 
 t.test('items without data get no lines', function()
@@ -558,7 +559,7 @@ t.test('switching the module off removes its lines and its event, and back on re
 	t.same(game:ShowItemTooltip(LINEN), {})
 	t.eq(game.frame.events.MODIFIER_STATE_CHANGED, nil)
 	addon.host.Enable('tooltip')
-	t.eq(#game:ShowItemTooltip(LINEN), 2)
+	t.eq(#game:ShowItemTooltip(LINEN), 3)
 	t.eq(#game.postCalls, 1)
 end)
 

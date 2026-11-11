@@ -1,246 +1,314 @@
 --[[
-	PriceData: the AHledger price table. Prices from AHledger (https://ahledger.com).
+	PriceData: where market prices come from. Prices from AHledger (https://ahledger.com).
 
-	A table is text in AHledger's own format, the same one its API serves at
-	/v1/pricetable/<market>:
+	Prices go through one swappable source. The default reads AHledger's public, read-only
+	AHledgerAPI (v1); a Haggler-owned source (a table of its own) could plug in later without
+	touching Rules, PriceContext or PriceService, as long as it keeps this shape:
 
-	  AHL1|<market>|<updated unix seconds>|<rows>          optional header
-	  <id>:<median>:<min>:<qty>:<m7>:<m30>:<lo>:<hi>:<sold>
+	  PriceSource
+	    id                              short name, e.g. 'ahledger'
+	    source:Status(marketKey?)    -> { isAvailable, code?, reason?, credit?, market? }
+	                                    with a market key, available only when the source has
+	                                    prices for that market. code says why not:
+	                                    noPriceSource (missing or unusable), priceSourceFailing
+	                                    (its calls fail), noMarketTable (nothing for this
+	                                    market); reason says it to the player. credit is the
+	                                    line to show with prices from it; market is the market
+	                                    the source itself is set to, when it has one
+	    source:Row(marketKey, itemId) -> PriceRow, updated  · or nil when the item has no price
+	                                    (nil, nil, 'priceSourceFailing' when the call failed)
+	    source:Table(marketKey)       -> { market, updated, count, isSnapshot } · or nil, reason
 
-	Rows are separated by newlines or ';'. Prices are copper and an empty field is unknown (nil),
-	quantity included. The ninth field is units sold a day times ten; it may be missing in older
-	tables, and fields after it are ignored so a newer table still reads. Parsed rows are
-	PriceRow = { median, min, qty, m7, m30, lo, hi, sold }, where sold is units sold a day (already
-	divided by ten) or nil.
+	  PriceRow = { median, min, qty, m7, m30, lo, hi, sold, isSnapshot }
+	    copper per unit, qty units listed, sold units sold a day; nil is unknown. A present field
+	    that is not a usable number is passed on as junk (Rules notes it as bad input) and an
+	    out-of-range number reads as infinity, which is junk too. isSnapshot is true when the
+	    figures come from the copy bundled with AHledger rather than a synced table.
+	  updated: unix seconds of the data, nil when unknown (Rules then says the age is unknown).
 
-	A library holds the raw text per market and parses a table on first use, so loading the
-	add-on costs nothing until a price is asked for. The desktop app writes Data/PriceTable.lua in
-	AHledger's own saved shape, HagglerPriceTable[marketKey] = { updated, count, text }, which
-	AddSavedTables loads as it is.
+	A source never throws: a missing add-on, an unknown API version, a missing item or a reply of
+	an unexpected shape gives no row (or a Status with a reason), never an error.
+
+	statusOf(source, marketKey) is the one safe reader of Status for the rest of the add-on: it
+	never throws, whatever the source does, and always returns a well-formed status.
 ]]
 local _, ns = ...
 
 local PriceData = {}
 ns.PriceData = PriceData
 
-PriceData.FORMAT = 'AHL1'
 -- Anything dearer than this is a broken field, not a price (about 110 million gold).
 PriceData.MAX_COPPER = 2 ^ 40
--- Over ten million sold a day is not a market; a pasted figure can overflow to infinity.
+-- Over ten million sold a day is not a market.
 PriceData.MAX_SOLD_PER_DAY = 10000000
+-- The AHledgerAPI version Haggler reads; AHledger changes it only on an incompatible change.
+PriceData.AHLEDGER_API_VERSION = 1
+PriceData.DEFAULT_CREDIT = 'Prices from AHledger (ahledger.com)'
+PriceData.REQUIRED_METHODS = { 'Status', 'Row', 'Table' }
+-- Why a source has no prices for a market; Rules turns each into a low-confidence reason.
+PriceData.PROBLEM_CODES = { noPriceSource = true, priceSourceFailing = true, noMarketTable = true }
 
-local MIN_ROW_FIELDS = 8
-local KNOWN_ROW_FIELDS = 9
-local HEADER_PATTERN = '^(%w+)|([%w/%-]+)|(%d+)|(%d+)'
+local MAX_CREDIT_LENGTH = 120
+-- AHledgerAPI fields -> PriceRow fields, with how each is checked.
+local COPPER_FIELDS = {
+	median = 'median',
+	minBuyout = 'min',
+	median7d = 'm7',
+	median30d = 'm30',
+	low30d = 'lo',
+	high30d = 'hi',
+}
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local parseRow, parseHeader, copperField, splitFields
+local resolveApi, callApi, readApiField, isTableFor, toPriceRow, copperField, countField, timeOrNil
+local creditOf, stringOrNil
 
---- Parses rows only (no header).
---- @param text string
---- @return table items { [itemId] = PriceRow }
---- @return number count rows read
---- @return number skipped lines that were not rows
-function PriceData.parseRows(text)
-	if type(text) ~= 'string' then
-		error('PriceData.parseRows: text must be a string', 2)
+--- Whether a value has the PriceSource shape (see the file header).
+--- @param value any
+--- @return boolean
+function PriceData.isSource(value)
+	if type(value) ~= 'table' then
+		return false
 	end
-	local items, count, skipped = {}, 0, 0
-	for line in text:gmatch('[^\n;]+') do
-		local itemId, row = parseRow(line)
-		if itemId then
-			if not items[itemId] then
-				count = count + 1
-			end
-			items[itemId] = row
-		elseif line:find('%S') then
-			skipped = skipped + 1
+	for _, method in ipairs(PriceData.REQUIRED_METHODS) do
+		if type(value[method]) ~= 'function' then
+			return false
 		end
 	end
-	return items, count, skipped
+	return true
 end
 
---- Parses a full table, with or without the AHL1 header.
---- @param text string
---- @return table|nil table { market, updated, declared, items, count, skipped }
---- @return string|nil reason 'empty', 'unknown format' or 'no rows'
-function PriceData.parse(text)
-	if type(text) ~= 'string' or not text:find('%S') then
-		return nil, 'empty'
+--- A source's status for a market, safe and well-formed whatever the source does.
+--- @param source table|nil a PriceSource
+--- @param marketKey string|nil
+--- @return table { isAvailable = true, credit?, market? } · { isAvailable = false, code, reason, market? }
+function PriceData.statusOf(source, marketKey)
+	if source == nil then
+		return { isAvailable = false, code = 'noPriceSource', reason = 'no price source' }
 	end
-	local body = text:gsub('^%s+', '')
-	local firstLine, rest = body:match('^([^\n]*)\n?(.*)$')
-	local header, reason = parseHeader(firstLine)
-	if reason then
-		return nil, reason
+	local ok, status = pcall(function()
+		return source:Status(marketKey)
+	end)
+	if not ok or type(status) ~= 'table' then
+		return { isAvailable = false, code = 'priceSourceFailing', reason = 'the price source failed' }
 	end
-	local items, count, skipped = PriceData.parseRows(header and rest or body)
-	if count == 0 then
-		return nil, 'no rows'
+	if status.isAvailable == true then
+		return { isAvailable = true, credit = stringOrNil(status.credit), market = stringOrNil(status.market) }
 	end
 	return {
-		market = header and header.market,
-		updated = header and header.updated,
-		declared = header and header.declared,
-		items = items,
-		count = count,
-		skipped = skipped,
+		isAvailable = false,
+		code = PriceData.PROBLEM_CODES[status.code] and status.code or 'noPriceSource',
+		reason = stringOrNil(status.reason) or 'no prices',
+		market = stringOrNil(status.market),
 	}
 end
 
-local LibraryMethods = {}
-LibraryMethods.__index = LibraryMethods
+local AHledgerMethods = {}
+AHledgerMethods.__index = AHledgerMethods
 
---- A set of price tables keyed by market, parsed lazily.
-function PriceData.newLibrary()
-	return setmetatable({ rawByMarket = {}, parsedByMarket = {}, failureByMarket = {} }, LibraryMethods)
+--- The AHledgerAPI source. The API is looked up on every call, so a load order surprise or a
+--- reload of AHledger is picked up without restarting Haggler.
+--- @param getApi function fun(): any, the AHledgerAPI global (or whatever stands in its place)
+--- @return table PriceSource
+function PriceData.newAHledgerSource(getApi)
+	if type(getApi) ~= 'function' then
+		error('PriceData.newAHledgerSource: getApi must be a function', 2)
+	end
+	return setmetatable({ id = 'ahledger', getApi = getApi }, AHledgerMethods)
 end
 
---- Adds (or replaces) a market's raw table text.
---- @param marketKey string
---- @param text string
---- @param updated number|nil unix seconds; the header's value wins when present
-function LibraryMethods:AddRaw(marketKey, text, updated)
-	if type(marketKey) ~= 'string' or type(text) ~= 'string' then
-		error('PriceData library: marketKey and text must be strings', 2)
+--- Whether AHledger has prices (for marketKey, when given). See the file header.
+--- @param marketKey string|nil
+--- @return table { isAvailable, code?, reason?, credit?, market? }
+function AHledgerMethods:Status(marketKey)
+	local api, reason = resolveApi(self.getApi)
+	if not api then
+		return { isAvailable = false, code = 'noPriceSource', reason = reason }
 	end
-	self.rawByMarket[marketKey] = { text = text, updated = updated }
-	self.parsedByMarket[marketKey] = nil
-	self.failureByMarket[marketKey] = nil
-end
-
---- The parsed table of a market.
---- @return table|nil table as PriceData.parse
---- @return string|nil reason 'no table' or a parse reason
-function LibraryMethods:Table(marketKey)
-	local parsed = self.parsedByMarket[marketKey]
-	if parsed then
-		return parsed
-	end
-	if self.failureByMarket[marketKey] then
-		return nil, self.failureByMarket[marketKey]
-	end
-	local raw = self.rawByMarket[marketKey]
-	if not raw then
-		return nil, 'no table'
-	end
-	local result, reason = PriceData.parse(raw.text)
-	if not result then
-		self.failureByMarket[marketKey] = reason
-		return nil, reason
-	end
-	result.market = result.market or marketKey
-	result.updated = result.updated or raw.updated
-	self.parsedByMarket[marketKey] = result
-	return result
-end
-
---- Adds every table of a saved HagglerPriceTable ({ [marketKey] = { updated, count, text } }).
---- Entries of any other shape are skipped.
---- @param savedTables table|nil
---- @return number tables added
-function LibraryMethods:AddSavedTables(savedTables)
-	if type(savedTables) ~= 'table' then
-		return 0
-	end
-	local added = 0
-	for marketKey, saved in pairs(savedTables) do
-		if type(marketKey) == 'string' and type(saved) == 'table' and type(saved.text) == 'string' then
-			self:AddRaw(marketKey, saved.text, tonumber(saved.updated))
-			added = added + 1
+	if type(marketKey) == 'string' then
+		local info, hasFailed = callApi(api, 'GetTableInfo', marketKey)
+		if hasFailed then
+			return { isAvailable = false, code = 'priceSourceFailing', reason = 'AHledger calls fail' }
+		end
+		if not isTableFor(info, marketKey) then
+			return {
+				isAvailable = false,
+				code = 'noMarketTable',
+				reason = 'AHledger has no prices for ' .. marketKey,
+				market = stringOrNil((callApi(api, 'GetMarket'))),
+			}
 		end
 	end
-	return added
+	return { isAvailable = true, credit = creditOf(api), market = stringOrNil((callApi(api, 'GetMarket'))) }
 end
 
---- One item's row and the table's update time.
+--- One item's prices on a market.
+--- @param marketKey string
+--- @param itemId number
 --- @return table|nil row PriceRow
---- @return number|nil updated unix seconds, when known
-function LibraryMethods:Row(marketKey, itemId)
-	local priceTable = self:Table(marketKey)
-	if not priceTable then
+--- @return number|nil updated unix seconds
+--- @return string|nil problem 'priceSourceFailing' when the call failed
+function AHledgerMethods:Row(marketKey, itemId)
+	if type(marketKey) ~= 'string' or type(itemId) ~= 'number' then
 		return nil
 	end
-	local row = priceTable.items[itemId]
-	if not row then
+	local api = resolveApi(self.getApi)
+	if not api then
 		return nil
 	end
-	return row, priceTable.updated
+	local price, hasFailed = callApi(api, 'GetPrice', itemId, marketKey)
+	if hasFailed then
+		return nil, nil, 'priceSourceFailing'
+	end
+	if type(price) ~= 'table' then
+		return nil
+	end
+	-- AHledger answers for the player's own market when it does not know the key asked for;
+	-- those prices are not this market's.
+	local market = readApiField(price, 'market')
+	if market ~= nil and market ~= marketKey then
+		return nil
+	end
+	return toPriceRow(price), timeOrNil(readApiField(price, 'updated'))
+end
+
+--- The table in use for a market.
+--- @param marketKey string
+--- @return table|nil { market, updated, count, isSnapshot }
+--- @return string|nil reason
+function AHledgerMethods:Table(marketKey)
+	if type(marketKey) ~= 'string' then
+		return nil, 'no market'
+	end
+	local api, reason = resolveApi(self.getApi)
+	if not api then
+		return nil, reason
+	end
+	local info = callApi(api, 'GetTableInfo', marketKey)
+	if not isTableFor(info, marketKey) then
+		return nil, 'no AHledger table for this market'
+	end
+	local count = readApiField(info, 'count')
+	return {
+		market = marketKey,
+		updated = timeOrNil(readApiField(info, 'updated')),
+		count = (type(count) == 'number' and count >= 0 and count < math.huge) and count or nil,
+		isSnapshot = readApiField(info, 'snapshot') == true,
+	}
 end
 
 -- Helpers ---------------------------------------------------------------------------------
 
--- Returns itemId, PriceRow; or nil for a line that is not a valid row.
-function parseRow(line)
-	local fields = splitFields(line:match('^%s*(.-)%s*$'))
-	if #fields < MIN_ROW_FIELDS then
-		return nil
+-- The API when it is usable; else nil and a reason the player can read.
+function resolveApi(getApi)
+	local ok, api = pcall(getApi)
+	if not ok or api == nil then
+		return nil, 'AHledger is not loaded'
 	end
-	for index = 1, KNOWN_ROW_FIELDS do
-		if fields[index] ~= nil and not fields[index]:find('^%d*$') then
-			return nil
-		end
+	if type(api) ~= 'table' then
+		return nil, 'AHledger API is not usable'
 	end
-	local id, median, min, qty, m7, m30, lo, hi, sold = unpack(fields, 1, KNOWN_ROW_FIELDS)
-	local itemId = tonumber(id)
-	if not itemId or itemId < 1 then
-		return nil
+	local version = readApiField(api, 'VERSION')
+	if version ~= PriceData.AHLEDGER_API_VERSION then
+		return nil,
+			string.format(
+				'AHledger API version %s is not supported (Haggler reads %d)',
+				tostring(version),
+				PriceData.AHLEDGER_API_VERSION
+			)
 	end
-	local soldTimesTen = tonumber(sold)
-	local soldPerDay = soldTimesTen and soldTimesTen / 10
-	if soldPerDay and soldPerDay > PriceData.MAX_SOLD_PER_DAY then
-		soldPerDay = nil
+	if type(readApiField(api, 'GetPrice')) ~= 'function' then
+		return nil, 'AHledger API has no GetPrice'
 	end
-	local quantity = tonumber(qty)
-	return itemId,
-		{
-			median = copperField(median),
-			min = copperField(min),
-			qty = (quantity and quantity <= PriceData.MAX_COPPER) and quantity or nil,
-			m7 = copperField(m7),
-			m30 = copperField(m30),
-			lo = copperField(lo),
-			hi = copperField(hi),
-			sold = soldPerDay,
-		}
+	return api
 end
 
--- Returns the header, nil when the line is not a header, or nil and a reason for an unknown
--- format. The client escapes a pasted pipe as '||', so the header is unescaped first.
-function parseHeader(line)
-	if not line:find('|', 1, true) then
-		return nil
+-- Calls api[name](...) and returns its first result and whether the call threw; a missing
+-- function is no result, not a failure.
+function callApi(api, name, ...)
+	local fn = readApiField(api, name)
+	if type(fn) ~= 'function' then
+		return nil, false
 	end
-	local unescaped = line:gsub('||', '|')
-	local format, market, updated, declared = unescaped:match(HEADER_PATTERN)
-	if format ~= PriceData.FORMAT then
-		return nil, 'unknown format'
+	local ok, result = pcall(fn, ...)
+	if not ok then
+		return nil, true
 	end
-	return { market = market, updated = tonumber(updated), declared = tonumber(declared) }
+	return result, false
 end
 
--- Splits on ':' keeping empty fields ('1::3' is three fields).
-function splitFields(text)
-	local fields = {}
-	local start = 1
-	while true do
-		local colon = text:find(':', start, true)
-		if not colon then
-			fields[#fields + 1] = text:sub(start)
-			return fields
-		end
-		fields[#fields + 1] = text:sub(start, colon - 1)
-		start = colon + 1
-	end
+-- A field read that cannot throw, even through a broken metatable.
+function readApiField(value, key)
+	local ok, field = pcall(function()
+		return value[key]
+	end)
+	return ok and field or nil
 end
 
--- A copper field: nil when empty, zero or out of range.
-function copperField(text)
-	local copper = tonumber(text)
-	if not copper or copper <= 0 or copper > PriceData.MAX_COPPER then
+-- AHledger answers for its own market when it cannot read the key asked for; such a table is
+-- not this market's.
+function isTableFor(info, marketKey)
+	if type(info) ~= 'table' then
+		return false
+	end
+	local market = readApiField(info, 'market')
+	return market == nil or market == marketKey
+end
+
+function toPriceRow(price)
+	local row = {}
+	for apiField, rowField in pairs(COPPER_FIELDS) do
+		row[rowField] = copperField(readApiField(price, apiField))
+	end
+	row.qty = countField(readApiField(price, 'quantity'), PriceData.MAX_COPPER)
+	row.sold = countField(readApiField(price, 'soldPerDay'), PriceData.MAX_SOLD_PER_DAY)
+	row.isSnapshot = readApiField(price, 'snapshot') == true
+	return row
+end
+
+-- Copper: nil when unknown or zero (AHledger has no price); junk passes on as it is, and an
+-- out-of-range number becomes infinity so it reads as junk downstream.
+function copperField(value)
+	if type(value) ~= 'number' or value ~= value then
+		return value
+	end
+	if value == 0 then
 		return nil
 	end
-	return copper
+	if value < 0 or value > PriceData.MAX_COPPER then
+		return math.huge
+	end
+	return value
+end
+
+-- A count (units listed, sold a day): zero is a real figure; junk as copperField.
+function countField(value, max)
+	if type(value) ~= 'number' or value ~= value then
+		return value
+	end
+	if value < 0 or value > max then
+		return math.huge
+	end
+	return value
+end
+
+function timeOrNil(value)
+	if type(value) == 'number' and value > 0 and value < math.huge then
+		return value
+	end
+	return nil
+end
+
+function creditOf(api)
+	local credit = readApiField(api, 'CREDIT')
+	if type(credit) == 'string' and credit:find('%S') and #credit <= MAX_CREDIT_LENGTH then
+		return credit
+	end
+	return PriceData.DEFAULT_CREDIT
+end
+
+function stringOrNil(value)
+	return type(value) == 'string' and value ~= '' and value or nil
 end
 
 return PriceData

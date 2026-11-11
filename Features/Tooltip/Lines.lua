@@ -12,7 +12,8 @@
 	explicit marker on its line, naming its top reason while the detail block is off; this
 	cannot be switched off. The detail block adds how the default rule got its price, every
 	confidence reason, sales a day, listings, vendor price and an estimated sell time with its
-	note.
+	note. The last line is the price source's credit (quote.credit, "Prices from AHledger"),
+	whenever the source has prices: AHledger's terms ask for it where its prices appear.
 
 	Sell time = (units listed at or under the price + this stack) / units sold a day. It is an
 	estimate from sales per day, not in-game time, and low confidence under one sale a day.
@@ -36,6 +37,7 @@ local LEVEL_MARKERS = { low = '(!)', medium = '(?)', high = '(i)' }
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, lowMarkerOf, topLowReason
+local withCredit
 
 --- Builds the lines for one item; an item Haggler knows nothing about gets none.
 --- @param input table see the file header
@@ -57,7 +59,7 @@ function TooltipLines.build(input)
 		lines[#lines + 1] = priceLine(entry, view)
 	end
 	if not input.isDetail then
-		return lines
+		return withCredit(lines, quote.credit, view)
 	end
 	local options = input.options or {}
 	local main = defaultEntry(quote.prices)
@@ -81,7 +83,7 @@ function TooltipLines.build(input)
 	for _, line in ipairs(detail) do
 		lines[#lines + 1] = line
 	end
-	return lines
+	return withCredit(lines, quote.credit, view)
 end
 
 --- Copper as '1g 20s 5c'; parts that are zero are left out ('0c' for nothing).
@@ -136,6 +138,13 @@ function TooltipLines.sellTimeDays(facts, unitPrice, stack)
 end
 
 -- Helpers ---------------------------------------------------------------------------------
+
+function withCredit(lines, credit, view)
+	if type(credit) == 'string' and credit ~= '' then
+		lines[#lines + 1] = { left = credit, color = color(view, 'color.text.muted') }
+	end
+	return lines
+end
 
 function headerLine(ages, view)
 	local scanText = ages.scanAge and ('scan ' .. TooltipLines.age(ages.scanAge)) or 'no scan'

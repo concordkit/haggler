@@ -1,18 +1,22 @@
 --[[
-	Pricing: the always-on module that owns prices. It owns the confidence settings, loads the
-	AHledger tables the desktop app saved, and provides prices to the rest of the add-on and to
-	other add-ons:
+	Pricing: the always-on module that owns prices. It owns the confidence settings, reads market
+	prices from AHledger (PriceData's AHledgerAPI source), and provides prices to the rest of the
+	add-on and to other add-ons:
 
 	  price v1          get(itemId) -> { copper, ageSeconds, source } under the default rule
 	  haggler.price v1  get(itemId, ruleId?) -> Price · rules() · defaultRule()
 
 	ns.prices is the PriceService the add-on's own modules use. Sends PRICE_TABLE_LOADED
-	(marketKeys) once the saved tables are added.
+	(marketKeys) once AHledger's table for the player's market is known: at enable, or at
+	PLAYER_LOGIN when the market is not known before. Without AHledger, says once in chat that
+	Haggler needs it; prices then come from the own scans, with low confidence. When AHledger
+	is set to another market than the one the player is on, Haggler keeps its own (its scans
+	are of this auction house), asks AHledger for that one and says so once in chat.
 ]]
 local _, ns = ...
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local newMarketKeyResolver, provideCapabilities, loadSavedTables
+local newMarketKeyResolver, provideCapabilities, announcePriceSource, sendTableLoaded, noteMarketMismatch
 
 -- The confidence settings, then the own sales count's.
 local PRICING_SETTINGS = ns.Rules.confidenceSettings()
@@ -28,13 +32,15 @@ local pricing = ns.host.AddModule({
 	settings = PRICING_SETTINGS,
 	onEnable = function(module)
 		local wow = ns.wow
-		local library = ns.PriceData.newLibrary()
+		local priceSource = ns.PriceData.newAHledgerSource(function()
+			return wow:AHledgerAPI()
+		end)
 		ns.prices = ns.PriceService.new({
 			now = function()
 				return wow:Now()
 			end,
 			store = ns.store,
-			library = library,
+			priceSource = priceSource,
 			marketKey = newMarketKeyResolver(wow),
 			itemInfo = function(itemId)
 				return wow:ItemInfo(itemId)
@@ -61,9 +67,10 @@ local pricing = ns.host.AddModule({
 			end,
 		})
 		provideCapabilities(module, ns.prices)
-		loadSavedTables(module, library, wow:SavedPriceTables())
+		announcePriceSource(module, wow, ns.prices)
 	end,
 	onDisable = function()
+		ns.wow:OffEvent('PLAYER_LOGIN', 'pricing')
 		ns.prices = nil
 	end,
 })
@@ -106,17 +113,50 @@ function provideCapabilities(module, prices)
 	})
 end
 
-function loadSavedTables(module, library, savedTables)
-	if not savedTables or library:AddSavedTables(savedTables) == 0 then
+function announcePriceSource(module, wow, prices)
+	local status = prices:SourceStatus()
+	if status.code == 'noPriceSource' then
+		wow:Print(
+			string.format(
+				'needs AHledger for market prices (%s). Until then prices come from your own scans, with low confidence.',
+				status.reason or 'unknown reason'
+			)
+		)
 		return
 	end
-	local marketKeys = {}
-	-- The tables stay unparsed until a price is asked for; only their keys are announced.
-	for marketKey, saved in pairs(savedTables) do
-		if type(marketKey) == 'string' and type(saved) == 'table' then
-			marketKeys[#marketKeys + 1] = marketKey
-		end
+	if sendTableLoaded(module, prices) then
+		noteMarketMismatch(wow, prices)
+		return
 	end
-	table.sort(marketKeys)
-	module:Send('PRICE_TABLE_LOADED', marketKeys)
+	wow:OnEvent('PLAYER_LOGIN', function()
+		wow:OffEvent('PLAYER_LOGIN', 'pricing')
+		sendTableLoaded(module, prices)
+		noteMarketMismatch(wow, prices)
+	end, 'pricing')
+end
+
+-- Called once, when the player's market is known: AHledger set to another market is said.
+function noteMarketMismatch(wow, prices)
+	local marketKey = prices:MarketKey()
+	local sourceMarket = prices:SourceStatus().market
+	if not marketKey or not sourceMarket or sourceMarket == marketKey then
+		return
+	end
+	wow:Print(
+		string.format(
+			'AHledger is set to %s; Haggler prices %s, the auction house you are on. Its prices note the difference.',
+			sourceMarket,
+			marketKey
+		)
+	)
+end
+
+-- Sends PRICE_TABLE_LOADED when the player's market has a table; returns whether it did.
+function sendTableLoaded(module, prices)
+	local priceTable = prices:PriceTable()
+	if not priceTable then
+		return false
+	end
+	module:Send('PRICE_TABLE_LOADED', { priceTable.market })
+	return true
 end

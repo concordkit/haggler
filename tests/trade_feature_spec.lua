@@ -4,11 +4,8 @@ local FakeGame = require('tests.fake_game')
 local LINEN, SILK, GREY = 2589, 4306, 3300
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
-local TABLE_TEXT = 'AHL1|'
-	.. MARKET
-	.. '|'
-	.. (NOW - 7200)
-	.. '|2\n2589:120:95:500:118:125:90:160:450\n4306:10:9:500:10:11:8:12:450'
+-- AHledger rows: median, min buyout, quantity, 7- and 30-day median, 30-day low and high, sold a day.
+local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 }, [4306] = { 10, 9, 500, 10, 11, 8, 12, 45 } }
 local PARTNER_GUID = 'Player-1-0000AAAA'
 local GOLD = 10000
 -- The default fee: 50 silver plus 5% of what the player gives.
@@ -36,7 +33,7 @@ local function start(beforeStart)
 			[GREY] = { name = 'Rabbit Foot', maxStack = 20, vendorPrice = 500 },
 		},
 	})
-	game.env.HagglerPriceTable = { [MARKET] = { updated = NOW - 7200, count = 2, text = TABLE_TEXT } }
+	game.env.AHledgerAPI = FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 7200, rows = AHLEDGER_ROWS })
 	game.env.GetRealmName = function()
 		return 'Realm'
 	end
@@ -273,6 +270,26 @@ t.test('both sides accepted: the trade is frozen, so slots the client clears are
 	end
 	table.sort(kinds)
 	t.same(kinds, { 'tradeIn:nil', 'tradeOut:2589', 'tradeOut:nil' })
+end)
+
+t.test('both sides accepted reported as true (not 1) also freezes the trade', function()
+	local game, addon = start()
+	open(
+		game,
+		{ money = 0, slots = { [1] = { name = 'Linen Cloth', count = 20, link = 'item:2589' } } },
+		{ money = GOLD, slots = {} }
+	)
+	game:Fire('TRADE_ACCEPT_UPDATE', true, true)
+	game.trade.player = { money = 0, slots = {} }
+	game.trade.target = { money = 0, slots = {} }
+	game:Fire('TRADE_PLAYER_ITEM_CHANGED', 1)
+	game:Fire('UI_INFO_MESSAGE', 226, 'Trade complete.')
+	local kinds = {}
+	for _, event in ipairs(addon.Ledger.events(addon.store:Market(MARKET))) do
+		kinds[#kinds + 1] = event.kind .. ':' .. tostring(event.itemId)
+	end
+	table.sort(kinds)
+	t.same(kinds, { 'tradeIn:nil', 'tradeOut:2589' })
 end)
 
 t.test('confirm mode: no overlay when the trade is fine; warn mode never shows it', function()

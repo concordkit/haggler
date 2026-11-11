@@ -1,9 +1,11 @@
 --[[
 	PriceService: prices for the rest of the add-on and for other add-ons. It owns no data: each
-	call builds a fresh context (PriceContext) from the store, the AHledger library and the
-	latest scan of the player's market, so a new scan or table is seen at once.
+	call builds a fresh context (PriceContext) from the store, the price source (PriceData) and
+	the latest scan of the player's market, so a new scan or table is seen at once.
 
-	  new({ now, store, library, marketKey, itemInfo?, requestItemData?, nextFrame?, confidence?, sales? })
+	  new({ now, store, priceSource?, marketKey, itemInfo?, requestItemData?, nextFrame?, confidence?,
+	        sales? })
+	    priceSource          a PriceSource (PriceData); without one, prices come from scans only
 	    now()                unix seconds
 	    marketKey()          the player's market key, or nil while it is not known yet
 	    itemInfo(id)         { maxStack, vendorPrice } or nil
@@ -29,6 +31,7 @@ PriceService.ITEM_REQUESTS_PER_FRAME = 20
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local isItemId, ageOrNil, safeCall, rememberVendorPrice, scheduleItemRequests, sendQueuedItemRequests
+local usesPriceSource
 
 local ServiceMethods = {}
 ServiceMethods.__index = ServiceMethods
@@ -41,6 +44,9 @@ function PriceService.new(options)
 	end
 	if type(options.marketKey) ~= 'function' then
 		error('PriceService.new: needs marketKey', 2)
+	end
+	if options.priceSource ~= nil and not ns.PriceData.isSource(options.priceSource) then
+		error('PriceService.new: priceSource must be a PriceSource (PriceData)', 2)
 	end
 	return setmetatable({ options = options, requestedItems = {}, itemRequestQueue = {} }, ServiceMethods)
 end
@@ -126,7 +132,7 @@ function ServiceMethods:Context()
 	return ns.PriceContext.build({
 		now = options.now(),
 		marketKey = self:MarketKey(),
-		library = options.library,
+		priceSource = options.priceSource,
 		snapshot = self:Snapshot(),
 		itemInfo = function(itemId)
 			return self:ItemInfo(itemId)
@@ -187,7 +193,8 @@ end
 --- Everything a tooltip shows for one item, from one context.
 --- @param itemId number
 --- @param ruleIds string[] rules to price, in order
---- @return table { prices = { { ruleId, name, isDefault, price?, reason? }... }, facts, ages }
+--- @return table { prices = { { ruleId, name, isDefault, price?, reason? }... }, facts, ages,
+---   credit? } credit only when a price used the source's figures
 function ServiceMethods:Quote(itemId, ruleIds)
 	local ctx = self:Context()
 	local store = self.options.store
@@ -204,21 +211,44 @@ function ServiceMethods:Quote(itemId, ruleIds)
 			reason = reason,
 		}
 	end
-	return { prices = prices, facts = ns.PriceContext.facts(ctx, itemId), ages = self:Ages(ctx.now) }
+	return {
+		prices = prices,
+		facts = ns.PriceContext.facts(ctx, itemId),
+		ages = self:Ages(ctx.now),
+		credit = usesPriceSource(prices) and ctx.sourceStatus and ctx.sourceStatus.credit or nil,
+	}
 end
 
---- How old the market's data is: the latest scan and the AHledger table.
+--- Whether the price source has prices for the player's market, why not, the credit to show
+--- with them and the market the source is set to (PriceData.statusOf).
+--- @return table { isAvailable, code?, reason?, credit?, market? }
+function ServiceMethods:SourceStatus()
+	return ns.PriceData.statusOf(self.options.priceSource, self:MarketKey())
+end
+
+--- The price source's table for the player's market, or nil.
+--- @return table|nil { market, updated, count, isSnapshot }
+function ServiceMethods:PriceTable()
+	local key = self:MarketKey()
+	local priceSource = self.options.priceSource
+	if not key or not priceSource then
+		return nil
+	end
+	local ok, priceTable = pcall(priceSource.Table, priceSource, key)
+	return ok and type(priceTable) == 'table' and priceTable or nil
+end
+
+--- How old the market's data is: the latest scan and the price table.
 --- @param now number|nil
---- @return table { scanAge?, tableAge? } seconds
+--- @return table { scanAge?, tableAge?, isSnapshot } seconds
 function ServiceMethods:Ages(now)
 	now = now or self.options.now()
-	local key = self:MarketKey()
 	local snapshot = self:Snapshot()
-	local library = self.options.library
-	local priceTable = key and library and library:Table(key) or nil
+	local priceTable = self:PriceTable()
 	return {
 		scanAge = snapshot and ageOrNil(now, snapshot.at) or nil,
 		tableAge = priceTable and ageOrNil(now, priceTable.updated) or nil,
+		isSnapshot = priceTable ~= nil and priceTable.isSnapshot == true,
 	}
 end
 
@@ -233,6 +263,15 @@ function ageOrNil(now, at)
 		return nil
 	end
 	return math.max(0, now - at)
+end
+
+function usesPriceSource(prices)
+	for _, entry in ipairs(prices) do
+		if entry.price and entry.price.usesPriceSource then
+			return true
+		end
+	end
+	return false
 end
 
 function rememberVendorPrice(store, itemId, copper)

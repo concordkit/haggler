@@ -163,14 +163,15 @@ function saveSnapshot(module, snapshot, salesDiff)
 	if not market then
 		error('the market is not known yet (no faction)')
 	end
+	if not ns.ScanStore.save(market, snapshot) then
+		error('the scan had no usable listings; the saved scan is kept')
+	end
+	-- Sales only from a scan the store kept: a refused scan's vanished units are not sales.
 	if salesDiff then
 		if type(market.scanDays) ~= 'table' then
 			market.scanDays = {}
 		end
 		ns.Sales.record(market.scanDays, salesDiff)
-	end
-	if not ns.ScanStore.save(market, snapshot) then
-		error('the scan had no usable listings; the saved scan is kept')
 	end
 	tidySavedScans(module, market, snapshot.at)
 	module:Send('SCAN_READY', marketKey, { at = snapshot.at, source = snapshot.source, count = snapshot.count })

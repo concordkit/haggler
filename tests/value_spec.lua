@@ -1,15 +1,16 @@
 local t = ...
+local FakeGame = require('tests.fake_game')
 
 local LINEN, WOOL, SWORD, ROCK = 2589, 2592, 2488, 9999
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 local TABLE_UPDATED = NOW - 3 * 3600
--- id:median:min:qty:m7:m30:lo:hi:sold (sold a day times ten)
-local TABLE_TEXT = 'AHL1|'
-	.. MARKET
-	.. '|'
-	.. TABLE_UPDATED
-	.. '|3\n2589:120:95:500:118:125:90:160:450\n2592:300:280:80:290:310:250:400:5\n2488:12345:12000:3:12000:12500:11000:13000:30'
+-- AHledger rows: median, min buyout, quantity, 7- and 30-day median, 30-day low and high, sold a day.
+local AHLEDGER_ROWS = {
+	[2589] = { 120, 95, 500, 118, 125, 90, 160, 45 },
+	[2592] = { 300, 280, 80, 290, 310, 250, 400, 0.5 },
+	[2488] = { 12345, 12000, 3, 12000, 12500, 11000, 13000, 3 },
+}
 local ITEM_INFO = {
 	[LINEN] = { maxStack = 20, vendorPrice = 13 },
 	[WOOL] = { maxStack = 20, vendorPrice = 33 },
@@ -25,14 +26,16 @@ local function newValue(options)
 	if options.snapshot then
 		ns.ScanStore.save(store:Market(MARKET), options.snapshot)
 	end
-	local library = ns.PriceData.newLibrary()
-	library:AddRaw(MARKET, TABLE_TEXT)
+	local api = FakeGame.newAHledgerAPI({ market = MARKET, updated = TABLE_UPDATED, rows = AHLEDGER_ROWS })
+	local priceSource = ns.PriceData.newAHledgerSource(function()
+		return api
+	end)
 	local prices = ns.PriceService.new({
 		now = function()
 			return NOW
 		end,
 		store = store,
-		library = library,
+		priceSource = priceSource,
 		marketKey = function()
 			return MARKET
 		end,

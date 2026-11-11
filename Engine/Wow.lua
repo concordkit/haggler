@@ -98,11 +98,10 @@ function WowMethods:Print(text)
 	self.env.DEFAULT_CHAT_FRAME:AddMessage(CHAT_PREFIX .. tostring(text))
 end
 
---- The price tables the desktop app saved (Data/PriceTable.lua), or nil when none are loaded.
---- @return table|nil HagglerPriceTable
-function WowMethods:SavedPriceTables()
-	local saved = self.env.HagglerPriceTable
-	return type(saved) == 'table' and saved or nil
+--- AHledger's public price API (the AHledgerAPI global), as it is; PriceData checks its shape.
+--- @return any
+function WowMethods:AHledgerAPI()
+	return self.env.AHledgerAPI
 end
 
 --- Calls handler(event, ...) for a game event. Each owner has one handler per event, so the
