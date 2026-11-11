@@ -1,6 +1,127 @@
 -- A fake game environment for Engine/Wow.lua: a clock, timers that run when the test says so,
--- an event frame, the auction house replicate list, modifier keys and item tooltips.
+-- an event frame, the auction house replicate list, modifier keys and item tooltips; since
+-- step 3 also widgets (frames, textures, font strings), hooksecurefunc, bags, the trade window
+-- and its partner.
 local FakeGame = {}
+
+-- Widgets ---------------------------------------------------------------------------------
+
+--- A region that records what the add-on did to it: points, size, text, texture, colour,
+--- shown state, scripts and children. Only methods the client really has are defined, so a
+--- typo fails the test instead of passing silently.
+function FakeGame.newWidget(kind, parent, template)
+	local widget = {
+		kind = kind,
+		parent = parent,
+		template = template,
+		points = {},
+		children = {},
+		scripts = {},
+		isShown = true,
+		frameLevel = parent and parent.frameLevel and parent.frameLevel + 1 or 1,
+	}
+	-- A real region keeps its C object at [0]; adapters tell a region from a class table by it.
+	widget[0] = newproxy(false)
+	function widget:SetPoint(...)
+		self.points[#self.points + 1] = { ... }
+	end
+	function widget:SetAllPoints(target)
+		self.allPoints = target
+	end
+	function widget:ClearAllPoints()
+		self.points = {}
+	end
+	function widget:SetSize(width, height)
+		self.width, self.height = width, height
+	end
+	function widget:SetWidth(width)
+		self.width = width
+	end
+	function widget:SetHeight(height)
+		self.height = height
+	end
+	function widget:GetWidth()
+		return self.width or 0
+	end
+	function widget:Show()
+		self.isShown = true
+	end
+	function widget:Hide()
+		self.isShown = false
+	end
+	function widget:IsShown()
+		return self.isShown
+	end
+	function widget:GetParent()
+		return self.parent
+	end
+	if kind == 'FontString' then
+		function widget:SetText(text)
+			self.text = text
+		end
+		function widget:GetText()
+			return self.text
+		end
+		function widget:GetStringWidth()
+			return self.text and #tostring(self.text) * 6 or 0
+		end
+		return widget
+	end
+	if kind == 'Texture' then
+		function widget:SetTexture(path)
+			self.texture = path
+		end
+		function widget:SetTexCoord(left, right, top, bottom)
+			self.texcoords = { left, right, top, bottom }
+		end
+		function widget:SetVertexColor(r, g, b, a)
+			self.color = { r, g, b, a }
+		end
+		return widget
+	end
+	function widget:CreateTexture(_, layer)
+		local texture = FakeGame.newWidget('Texture', self)
+		texture.layer = layer
+		self.children[#self.children + 1] = texture
+		return texture
+	end
+	function widget:CreateFontString(_, layer, fontTemplate)
+		local text = FakeGame.newWidget('FontString', self)
+		text.layer, text.fontTemplate = layer, fontTemplate
+		self.children[#self.children + 1] = text
+		return text
+	end
+	function widget:SetScript(script, handler)
+		self.scripts[script] = handler
+	end
+	function widget:GetScript(script)
+		return self.scripts[script]
+	end
+	function widget:EnableMouse(isEnabled)
+		self.isMouseEnabled = isEnabled
+	end
+	function widget:SetFrameLevel(level)
+		self.frameLevel = level
+	end
+	function widget:GetFrameLevel()
+		return self.frameLevel
+	end
+	if kind == 'Button' then
+		function widget:SetText(text)
+			self.text = text
+		end
+		function widget:GetText()
+			return self.text
+		end
+		--- A hardware click, as the player makes it.
+		function widget:Click()
+			if self.scripts.OnClick then
+				self.scripts.OnClick(self, 'LeftButton')
+			end
+		end
+	end
+	return widget
+end
 
 local function newFrame()
 	local frame = { events = {} }
@@ -18,6 +139,16 @@ end
 
 local function newTooltip(game, name)
 	local tooltip = { name = name, lines = {}, shownCount = 0, isShown = true, scripts = {} }
+	function tooltip:SetOwner(owner, anchor)
+		self.owner, self.anchor = owner, anchor
+	end
+	function tooltip:ClearLines()
+		self.lines = {}
+	end
+	function tooltip:Hide()
+		self.isShown = false
+		self.hiddenCount = (self.hiddenCount or 0) + 1
+	end
 	function tooltip:AddLine(text, r, g, b, wrap)
 		self.lines[#self.lines + 1] = { left = text, r = r, g = g, b = b, wrap = wrap }
 	end
@@ -59,6 +190,13 @@ end
 --- any row with isLoaded = false, has no owner and hasAllInfo false.
 --- game.inCombat drives InCombatLockdown; game.secretValues[value] marks a secret value;
 --- RequestLoadItemDataByID calls are recorded in game.itemDataRequests.
+--- Bags: game.containerItems['bag:slot'] = { itemID?, stackCount, isBound, hyperlink } (itemID
+--- nil models an item the client has not loaded), game.bagSlots[bag] = slots.
+--- Trade: game.trade.player / .target = { money, slots = { [slot] = { name?, count, link? } } }
+--- (a slot with a name and no link is an item not loaded yet); game.partner = { name, guid,
+--- isGuild }; game.friendGuids[guid] marks a friend, game.bnetFriends lists Battle.net friends'
+--- character GUIDs (one game account each). AcceptTrade
+--- calls are counted in game.acceptCount. Frames the add-on creates go to game.createdFrames.
 function FakeGame.new(options)
 	options = options or {}
 	local game = {
@@ -76,7 +214,15 @@ function FakeGame.new(options)
 		itemDataRequests = {},
 		inCombat = false,
 		secretValues = {},
+		bagSlots = {},
+		createdFrames = {},
+		hooks = {},
+		trade = { player = { money = 0, slots = {} }, target = { money = 0, slots = {} } },
+		friendGuids = {},
+		bnetFriends = {},
+		acceptCount = 0,
 	}
+	local uiParent = FakeGame.newWidget('Frame')
 	local env = {
 		GetServerTime = function()
 			return game.now
@@ -84,9 +230,81 @@ function FakeGame.new(options)
 		time = function()
 			return game.now
 		end,
-		CreateFrame = function()
-			return game.frame
+		-- The engine's hidden event frame is the one created without a parent; every other frame
+		-- is a recorded widget.
+		CreateFrame = function(kind, _, parent, template)
+			if parent == nil then
+				return game.frame
+			end
+			local widget = FakeGame.newWidget(kind, parent, template)
+			game.createdFrames[#game.createdFrames + 1] = widget
+			return widget
 		end,
+		UIParent = uiParent,
+		hooksecurefunc = function(object, method, hook)
+			local original = object[method]
+			game.hooks[#game.hooks + 1] = { object = object, method = method }
+			object[method] = function(...)
+				local results = { original(...) }
+				hook(...)
+				return unpack(results)
+			end
+		end,
+		NUM_TOTAL_EQUIPPED_BAG_SLOTS = 5,
+		LE_GAME_ERR_TRADE_COMPLETE = 226,
+		ERR_TRADE_COMPLETE = 'Trade complete.',
+		GetTradePlayerItemInfo = function(slot)
+			local entry = game.trade.player.slots[slot]
+			if entry then
+				return entry.name, 'icon', entry.count, 1, true, nil
+			end
+		end,
+		GetTradeTargetItemInfo = function(slot)
+			local entry = game.trade.target.slots[slot]
+			if entry then
+				return entry.name, 'icon', entry.count, 1, true, nil
+			end
+		end,
+		GetTradePlayerItemLink = function(slot)
+			local entry = game.trade.player.slots[slot]
+			return entry and entry.link or nil
+		end,
+		GetTradeTargetItemLink = function(slot)
+			local entry = game.trade.target.slots[slot]
+			return entry and entry.link or nil
+		end,
+		GetPlayerTradeMoney = function()
+			return game.trade.player.money
+		end,
+		GetTargetTradeMoney = function()
+			return game.trade.target.money
+		end,
+		AcceptTrade = function()
+			game.acceptCount = game.acceptCount + 1
+		end,
+		UnitGUID = function(unit)
+			return unit == 'NPC' and game.partner and game.partner.guid or nil
+		end,
+		UnitIsInMyGuild = function(unit)
+			return unit == 'NPC' and game.partner ~= nil and game.partner.isGuild == true
+		end,
+		C_FriendList = {
+			IsFriend = function(guid)
+				return game.friendGuids[guid] == true
+			end,
+		},
+		BNGetNumFriends = function()
+			return #game.bnetFriends
+		end,
+		C_BattleNet = {
+			GetFriendNumGameAccounts = function(friend)
+				return game.bnetFriends[friend] and 1 or 0
+			end,
+			GetFriendGameAccountInfo = function(friend)
+				local guid = game.bnetFriends[friend]
+				return guid and { playerGuid = guid } or nil
+			end,
+		},
 		DEFAULT_CHAT_FRAME = {
 			AddMessage = function(_, text)
 				game.printed[#game.printed + 1] = text
@@ -96,7 +314,10 @@ function FakeGame.new(options)
 		GetRealmName = function()
 			return 'Nightslayer'
 		end,
-		UnitName = function()
+		UnitName = function(unit)
+			if unit == 'NPC' then
+				return game.partner and game.partner.name or nil
+			end
 			return 'Eilu'
 		end,
 		UnitFactionGroup = function()
@@ -187,6 +408,9 @@ function FakeGame.new(options)
 			GetContainerItemInfo = function(bag, slot)
 				return game.containerItems[bag .. ':' .. slot]
 			end,
+			GetContainerNumSlots = function(bag)
+				return game.bagSlots[bag] or 0
+			end,
 		},
 	}
 	if options.hasClock ~= false then
@@ -269,7 +493,14 @@ function FakeGame.new(options)
 end
 
 -- The files the TOC loads after the Engine (Init.lua aside), in its order.
-FakeGame.FEATURE_FILES = { 'Features/Pricing.lua', 'Features/Scan.lua', 'Features/Tooltip/Tooltip.lua' }
+FakeGame.FEATURE_FILES = {
+	'Features/Pricing.lua',
+	'Features/Value.lua',
+	'Features/Scan.lua',
+	'Features/Tooltip/Tooltip.lua',
+	'Features/Bags/Bags.lua',
+	'Features/Trade/Trade.lua',
+}
 
 --- Starts the add-on's features on a fake game, as Init.lua and Haggler.lua do in the client.
 --- @param t table the harness
@@ -299,7 +530,10 @@ function FakeGame.startAddon(t, game, beforeStart)
 	for _, path in ipairs(FakeGame.FEATURE_FILES) do
 		assert(loadfile(path))('Haggler', ns)
 	end
-	ns.store = assert(ns.Store.open({}, {}))
+	-- game.savedDb / game.savedCharDb carry saved variables across a simulated /reload.
+	game.savedDb = game.savedDb or {}
+	game.savedCharDb = game.savedCharDb or {}
+	ns.store = assert(ns.Store.open(game.savedDb, game.savedCharDb))
 	if beforeStart then
 		beforeStart(ns)
 	end

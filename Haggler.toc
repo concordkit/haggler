@@ -1,5 +1,5 @@
 ## Interface: 16001
-## Title: Haggler (powered by AHledger)
+## Title: Haggler
 ## Notes: Gold-making for WoW: Forever: crafting, selling, bags and flips. Prices from AHledger.
 ## Version: 0.2.0-dev
 ## IconTexture: Interface\AddOns\Haggler\media\icon.png
@@ -9,6 +9,7 @@
 ## SavedVariablesPerCharacter: HagglerCharDB
 ## X-Category: Auction & Economy
 ## X-Credit: Prices from AHledger (https://ahledger.com)
+## OptionalDeps: BagPad, Bagnon, Baganator
 
 # Host layer (Concord's API shape; dropped inside Concord)
 Host\Tokens.lua
@@ -17,6 +18,14 @@ Host\Settings.lua
 Host\Host.lua
 Host\Theme.lua
 Host\Tooltip.lua
+media\icons\Icons.lua
+Host\Icons.lua
+Host\Badges.lua
+Host\BagHosts\BagHosts.lua
+Host\BagHosts\Blizzard.lua
+Host\BagHosts\BagPad.lua
+Host\BagHosts\Bagnon.lua
+Host\BagHosts\Baganator.lua
 
 # Engine (UI-free)
 Engine\Wow.lua
@@ -29,13 +38,23 @@ Engine\Sales.lua
 Engine\Scan.lua
 Engine\PriceContext.lua
 Engine\PriceService.lua
+Engine\Guardrail.lua
+Engine\Value.lua
+Engine\Trade.lua
+Engine\Ledger.lua
 
 # Shared services, then features (each registers its module)
 Init.lua
 Features\Pricing.lua
+Features\Value.lua
 Features\Scan.lua
 Features\Tooltip\Lines.lua
 Features\Tooltip\Tooltip.lua
+Features\Bags\View.lua
+Features\Bags\Bags.lua
+Features\Trade\Model.lua
+Features\Trade\Frames.lua
+Features\Trade\Trade.lua
 
 # Bootstrap. Data\PriceTable.lua (HagglerPriceTable, written by the desktop app) is added
 # to this list when the desktop app ships; until then the global is read if anything set it.

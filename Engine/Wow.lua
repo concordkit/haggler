@@ -4,7 +4,8 @@
 
 	Step 1: time, item info, the player's market, printing, events and the slash command.
 	Step 2: the auction house replicate list (the full scan), timers, a frame clock, modifier
-	keys and item tooltips. Container and mail wrappers arrive with the steps that use them.
+	keys and item tooltips. Step 3: globals and hooks for bag hosts, containers, the trade
+	window and its partner. Mail wrappers arrive with the step that uses them.
 
 	Forever runs the Mainline UI, so these follow retail's C_AuctionHouse (AHledger 0.14, Auctionator
 	and TSM make the same calls there). Each wrapper checks the API exists and answers nil / false
@@ -20,6 +21,9 @@ local _, ns = ...
 local Wow = {}
 ns.Wow = Wow
 
+-- A hooked method can run every frame: each method's handler errors are reported this often.
+Wow.HOOK_ERROR_LIMIT = 3
+
 -- GetCurrentRegion() ids to AHledger's region slugs.
 local REGION_SLUGS = { [1] = 'us', [2] = 'kr', [3] = 'eu', [4] = 'tw', [5] = 'cn' }
 local CHAT_PREFIX = '|cffd4a017Haggler|r: '
@@ -29,7 +33,7 @@ local ITEM_TOOLTIP_NAMES = { 'GameTooltip', 'ItemRefTooltip', 'ShoppingTooltip1'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local dispatchEvent, itemIdFromLink, itemIdFromTooltip, stackCountFromOwner, timeLeftBand, isSecret
-local isInCombat
+local isInCombat, isBnetFriendGuid
 
 local WowMethods = {}
 WowMethods.__index = WowMethods
@@ -42,6 +46,7 @@ function Wow.create(env, options)
 	return setmetatable({
 		env = env or _G,
 		eventHandlers = {},
+		hookErrorCounts = {},
 		onError = options and options.onError,
 		tooltipHandlers = {},
 	}, WowMethods)
@@ -185,6 +190,17 @@ function WowMethods:RequestReplicate()
 	return true
 end
 
+--- Calls handler() after every C_AuctionHouse.ReplicateItems call, from any add-on (Haggler's
+--- own included). A post-hook (hooksecurefunc): the call itself is never replaced, so nothing
+--- is tainted. Call once a session; a hook cannot be removed.
+--- @return boolean hooked false when the client has no ReplicateItems
+function WowMethods:HookReplicateRequests(handler)
+	if not self:CanReplicate() then
+		return false
+	end
+	return self:HookMethod(self.env.C_AuctionHouse, 'ReplicateItems', handler)
+end
+
 --- Listings in the replicate list now (0 when none or no API).
 function WowMethods:NumReplicateItems()
 	local auctionHouse = self.env.C_AuctionHouse
@@ -322,6 +338,216 @@ function WowMethods:RefreshItemTooltip()
 	return ok
 end
 
+-- Frames, hooks and other add-ons (step 3) ------------------------------------------------
+
+--- A global the UI defines (a Blizzard frame, another add-on's table), or nil. Bag hosts and
+--- the trade window find their frames through this, so tests can serve fakes.
+--- @param name string
+--- @return any
+function WowMethods:Global(name)
+	return self.env[name]
+end
+
+--- True when another add-on is loaded (C_AddOns on Mainline, the old global elsewhere).
+function WowMethods:IsAddOnLoaded(name)
+	local env = self.env
+	local isLoaded = (env.C_AddOns and env.C_AddOns.IsAddOnLoaded) or env.IsAddOnLoaded
+	if not isLoaded then
+		return false
+	end
+	local ok, loaded = pcall(isLoaded, name)
+	return ok and loaded == true
+end
+
+--- Post-hooks object[method] with hooksecurefunc, which never taints the original. The client
+--- cannot unhook, so callers install a hook once and gate it with their own flag. The handler
+--- runs under pcall: an error is reported (at most Wow.HOOK_ERROR_LIMIT times per method), never
+--- raised into Blizzard's code.
+--- @return boolean hooked false when the client has no hooksecurefunc or no such method
+function WowMethods:HookMethod(object, method, handler)
+	local hook = self.env.hooksecurefunc
+	if not hook or type(object) ~= 'table' or type(object[method]) ~= 'function' then
+		return false
+	end
+	hook(object, method, function(...)
+		local ok, err = pcall(handler, ...)
+		if not ok then
+			self:ReportHookError(method, err)
+		end
+	end)
+	return true
+end
+
+--- Reports a hook handler's error unless that method used up its reports; the last report says
+--- the rest are muted.
+function WowMethods:ReportHookError(method, err)
+	local key = tostring(method)
+	local count = (self.hookErrorCounts[key] or 0) + 1
+	self.hookErrorCounts[key] = count
+	if not self.onError or count > Wow.HOOK_ERROR_LIMIT then
+		return
+	end
+	local suffix = count == Wow.HOOK_ERROR_LIMIT and ' (further errors from this hook are muted)' or ''
+	self.onError('hook ' .. key, tostring(err) .. suffix)
+end
+
+--- A frame of the add-on's own. A secure template is refused: Haggler never makes protected
+--- frames, so nothing it adds can be blocked or spread taint in combat.
+--- @param kind string 'Frame' | 'Button'
+--- @param parent table|nil default UIParent
+--- @param template string|nil a plain template such as 'UIPanelButtonTemplate'
+function WowMethods:CreateFrame(kind, parent, template)
+	if type(template) == 'string' and template:find('Secure', 1, true) then
+		error('Wow:CreateFrame: secure templates are not used', 2)
+	end
+	return self.env.CreateFrame(kind, nil, parent or self.env.UIParent, template)
+end
+
+function WowMethods:IsInCombat()
+	return isInCombat(self.env)
+end
+
+-- Containers ------------------------------------------------------------------------------
+
+--- One bag slot, or nil when it is empty. itemId is nil while the client has not loaded the
+--- item (or when the client hides it as a secret value).
+--- @return table|nil { itemId?, count, isBound, link?, quality?, hasNoValue }
+function WowMethods:ContainerItem(bag, slot)
+	local container = self.env.C_Container
+	if not (container and container.GetContainerItemInfo) then
+		return nil
+	end
+	local ok, info = pcall(container.GetContainerItemInfo, bag, slot)
+	if not ok or type(info) ~= 'table' then
+		return nil
+	end
+	local env = self.env
+	local itemId = not isSecret(env, info.itemID) and info.itemID or nil
+	local count = not isSecret(env, info.stackCount) and info.stackCount or nil
+	return {
+		itemId = type(itemId) == 'number' and itemId or nil,
+		count = type(count) == 'number' and count >= 1 and count or 1,
+		isBound = info.isBound == true,
+		link = not isSecret(env, info.hyperlink) and info.hyperlink or nil,
+		quality = info.quality,
+		hasNoValue = info.hasNoValue == true,
+	}
+end
+
+--- Slots in a bag (0 when the bag is empty or unknown).
+function WowMethods:ContainerSlots(bag)
+	local container = self.env.C_Container
+	local getSlots = container and container.GetContainerNumSlots
+	local ok, slots = pcall(getSlots or function()
+		return 0
+	end, bag)
+	return ok and type(slots) == 'number' and slots or 0
+end
+
+--- The bags the player carries: backpack, the bag slots and the reagent bag when the client has
+--- one. Bank bags are not included.
+--- @return table bag ids
+function WowMethods:CarriedBags()
+	local env = self.env
+	local last = tonumber(env.NUM_TOTAL_EQUIPPED_BAG_SLOTS) or tonumber(env.NUM_BAG_SLOTS) or 4
+	local bags = {}
+	for bag = 0, last do
+		bags[#bags + 1] = bag
+	end
+	return bags
+end
+
+--- Every loaded stack in the carried bags, as Value:Total takes them.
+--- @return table { { itemId, count, isBound }... }
+function WowMethods:CarriedItems()
+	local entries = {}
+	for _, bag in ipairs(self:CarriedBags()) do
+		for slot = 1, self:ContainerSlots(bag) do
+			local item = self:ContainerItem(bag, slot)
+			if item and item.itemId then
+				entries[#entries + 1] = { itemId = item.itemId, count = item.count, isBound = item.isBound }
+			end
+		end
+	end
+	return entries
+end
+
+-- Trade window ----------------------------------------------------------------------------
+
+--- One trade slot of a side, or nil when it is empty. itemId is nil while the client has not
+--- loaded the item's link yet.
+--- @param side string 'player' | 'target'
+--- @param slot number 1..7
+--- @return table|nil { itemId?, qty, name? }
+function WowMethods:TradeSlot(side, slot)
+	local env = self.env
+	local getInfo = side == 'player' and env.GetTradePlayerItemInfo or env.GetTradeTargetItemInfo
+	local getLink = side == 'player' and env.GetTradePlayerItemLink or env.GetTradeTargetItemLink
+	if not getInfo then
+		return nil
+	end
+	local ok, name, _, count = pcall(getInfo, slot)
+	local link = getLink and select(2, pcall(getLink, slot)) or nil
+	local itemId = not isSecret(env, link) and itemIdFromLink(link) or nil
+	if not ok or (name == nil and itemId == nil) then
+		return nil
+	end
+	return { itemId = itemId, qty = type(count) == 'number' and count >= 1 and count or 1, name = name }
+end
+
+--- Copper a side has put in, or nil when the client cannot say.
+function WowMethods:TradeMoney(side)
+	local env = self.env
+	local getMoney = side == 'player' and env.GetPlayerTradeMoney or env.GetTargetTradeMoney
+	if not getMoney then
+		return nil
+	end
+	local ok, copper = pcall(getMoney)
+	return ok and tonumber(copper) or nil
+end
+
+--- Accepts the trade (the same call Blizzard's Trade button makes). Only from a hardware click.
+function WowMethods:AcceptTrade()
+	local accept = self.env.AcceptTrade
+	if accept then
+		accept()
+		return true
+	end
+	return false
+end
+
+--- Who the trade is with: the trade partner is the 'NPC' unit while the window is open.
+--- @return table { name?, guid?, isFriend, isBnetFriend, isGuild }
+function WowMethods:TradePartner()
+	local env = self.env
+	local name = env.UnitName and env.UnitName('NPC') or nil
+	local guid = env.UnitGUID and env.UnitGUID('NPC') or nil
+	if isSecret(env, name) then
+		name = nil
+	end
+	if isSecret(env, guid) then
+		guid = nil
+	end
+	local friendList = env.C_FriendList
+	local isFriend = false
+	if friendList and guid and friendList.IsFriend then
+		local ok, result = pcall(friendList.IsFriend, guid)
+		isFriend = ok and result == true
+	end
+	local isGuild = false
+	if env.UnitIsInMyGuild then
+		local ok, result = pcall(env.UnitIsInMyGuild, 'NPC')
+		isGuild = ok and result == true
+	end
+	return {
+		name = name,
+		guid = guid,
+		isFriend = isFriend,
+		isBnetFriend = isBnetFriendGuid(env, guid),
+		isGuild = isGuild,
+	}
+end
+
 -- Helpers ---------------------------------------------------------------------------------
 
 function dispatchEvent(wow, event, ...)
@@ -415,6 +641,30 @@ end
 function isInCombat(env)
 	local check = env.InCombatLockdown
 	return check ~= nil and check() == true
+end
+
+-- True when a character GUID is one of a Battle.net friend's game accounts. Walks the friend
+-- list through C_BattleNet (Mainline); any missing API or junk answer reads as not a friend.
+function isBnetFriendGuid(env, guid)
+	local battleNet = env.C_BattleNet
+	if not (guid and env.BNGetNumFriends and battleNet and battleNet.GetFriendNumGameAccounts) then
+		return false
+	end
+	local getAccount = battleNet.GetFriendGameAccountInfo
+	local ok, friends = pcall(env.BNGetNumFriends)
+	if not ok or type(friends) ~= 'number' or not getAccount then
+		return false
+	end
+	for friend = 1, friends do
+		local hasAccounts, accounts = pcall(battleNet.GetFriendNumGameAccounts, friend)
+		for account = 1, (hasAccounts and tonumber(accounts) or 0) do
+			local hasInfo, info = pcall(getAccount, friend, account)
+			if hasInfo and type(info) == 'table' and info.playerGuid == guid then
+				return true
+			end
+		end
+	end
+	return false
 end
 
 return Wow

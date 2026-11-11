@@ -17,9 +17,13 @@ local function newScanner(options)
 		lastSavedAt = function()
 			return options.lastSavedAt
 		end,
+		lastRequestedAt = function()
+			return options.lastRequestedAt
+		end,
 		onSnapshot = options.onSnapshot or function(snapshot)
 			saved[#saved + 1] = snapshot
 		end,
+		newFollowUp = options.newFollowUp,
 		settings = function()
 			return options.settings or { autoScan = true, graceSeconds = 8, frameBudgetMs = 6 }
 		end,
@@ -160,8 +164,11 @@ end)
 t.test('saved snapshots are read back only with a usable shape', function()
 	local market = {}
 	t.eq(ScanStore.latest(market), nil)
-	ScanStore.save(market, { at = 10, source = 'own', count = 0, items = {} })
+	t.eq(ScanStore.save(market, { at = 10, source = 'own', count = 1, items = { [LINEN] = 'x' } }), true)
 	t.eq(ScanStore.latest(market).at, 10)
+	t.eq(ScanStore.save(market, { at = 20, source = 'own', count = 0, items = {} }), false, 'empty: refused')
+	t.eq(ScanStore.save(market, { at = 20, source = 'own', count = 3, items = {} }), false, 'only junk rows')
+	t.eq(ScanStore.latest(market).at, 10, 'the real snapshot is kept')
 	t.eq(ScanStore.latest({ scan = { at = 'yesterday', items = {} } }), nil)
 	t.eq(ScanStore.latest({ scan = { at = 10, items = 'lots' } }), nil)
 	t.eq(ScanStore.latest({ scan = 5 }), nil)
@@ -291,6 +298,30 @@ t.test('a saved scan time in the future counts as now', function()
 	local game = FakeGame.new()
 	local _, scanner = newScanner({ lastSavedAt = game.now + 3 * 86400 })
 	t.eq(scanner:Status().lastFullScanAt, game.now)
+	t.eq(scanner:NextAllowedIn(), 15 * 60)
+end)
+
+t.test("another add-on's request blocks ours for 15 minutes, across a reload", function()
+	local game = FakeGame.new()
+	local game2, scanner = newScanner({ lastRequestedAt = game.now - 5 * 60 })
+	game2:Fire('AUCTION_HOUSE_SHOW')
+	game2:Advance(30)
+	t.eq(game2.replicateRequests, 0)
+	t.eq(scanner:NextAllowedIn(), 10 * 60 - 30)
+end)
+
+t.test('a recorded request older than 15 minutes does not block', function()
+	local game = FakeGame.new()
+	local game2, scanner = newScanner({ lastRequestedAt = game.now - 15 * 60 - 1 })
+	t.eq(scanner:NextAllowedIn(), 0)
+	game2:Fire('AUCTION_HOUSE_SHOW')
+	game2:Advance(8)
+	t.eq(game2.replicateRequests, 1)
+end)
+
+t.test('a recorded request time a little in the future counts as now', function()
+	local game = FakeGame.new()
+	local _, scanner = newScanner({ lastRequestedAt = game.now + 30 })
 	t.eq(scanner:NextAllowedIn(), 15 * 60)
 end)
 
@@ -491,6 +522,120 @@ t.test('a listing that keeps changing is given up', function()
 	game:RunFrames()
 	t.eq(#saved, 0)
 	t.truthy(scanner:Status().lastError:find('kept changing'), scanner:Status().lastError)
+end)
+
+-- A follow-up that needs a few slices, so the job stays in its comparing phase across frames.
+local function slowFollowUp(slices)
+	return function()
+		local stepped = 0
+		return {
+			Step = function()
+				stepped = stepped + 1
+				return stepped >= slices
+			end,
+			Result = function()
+				return { stepped = stepped }
+			end,
+		}
+	end
+end
+
+t.test('repeat listing events while reading, packing and comparing complete as one saved scan', function()
+	local listings = {}
+	for index = 1, 20000 do
+		listings[index] = { 1000 + index % 3000, 1, 100 }
+	end
+	local game, scanner, saved = newScanner({ listings = listings, newFollowUp = slowFollowUp(3) })
+	game.msPerRow = 0.001
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	local seen = {}
+	for _ = 1, 200 do
+		local state = scanner:Status().state
+		seen[state] = true
+		if state == 'open' then
+			break
+		end
+		-- AHledger's request answered again, or the client repeating the same event.
+		game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+		game:NextFrame()
+	end
+	t.truthy(seen.reading and seen.packing and seen.comparing, 'went through every phase')
+	t.eq(#saved, 1)
+	t.eq(saved[1].count, 20000)
+	t.eq(scanner:Status().lastError, nil)
+end)
+
+t.test('a listing replaced with an event mid-read still starts over on the new one', function()
+	local game, _, saved = newScanner({ listings = manyListings(20000) })
+	game.msPerRow = 0.001
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:NextFrame()
+	game.listings = { { WOOL, 2, 300 }, { WOOL, 1, 150 } }
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	t.eq(#saved, 1)
+	t.eq(saved[1].count, 2)
+	t.eq(saved[1].items[LINEN], nil, 'nothing of the old listing is mixed in')
+end)
+
+t.test('a listing cleared with an event mid-read drops the read; nothing is saved', function()
+	local game, scanner, saved = newScanner({ listings = manyListings(20000) })
+	game.msPerRow = 0.001
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:NextFrame()
+	game.listings = {}
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	t.eq(#saved, 0)
+	t.truthy(scanner:Status().lastError:find('cleared'), scanner:Status().lastError)
+end)
+
+t.test('the last full scan is the last saved one; an unsaved listing still blocks requests', function()
+	local game, scanner, saved = newScanner({ listings = manyListings(20000) })
+	game.msPerRow = 0.001
+	game:Fire('AUCTION_HOUSE_SHOW')
+	local arrivedAt = game.now
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:NextFrame()
+	t.eq(scanner:Status().lastFullScanAt, nil, 'nothing saved yet')
+	t.eq(scanner:NextAllowedIn(), 15 * 60, 'the arrival starts the 15 minutes')
+	game.listings = {}
+	game:RunFrames()
+	t.eq(#saved, 0)
+	t.eq(scanner:Status().lastFullScanAt, nil, 'a dropped read is not a full scan')
+	t.eq(scanner:NextAllowedIn(), 15 * 60)
+	game.listings = manyListings(10)
+	game:Advance(16 * 60)
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	t.eq(#saved, 1)
+	t.eq(scanner:Status().lastFullScanAt, arrivedAt + 16 * 60)
+end)
+
+t.test('an empty listing is dropped with a reason, never saved', function()
+	local game, scanner, saved = newScanner({ listings = {} })
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+	t.eq(#saved, 0)
+	t.truthy(scanner:Status().lastError:find('empty'), scanner:Status().lastError)
+	t.eq(scanner:Status().lastFullScanAt, nil)
+end)
+
+t.test('a read that starts over is dated from the new listing', function()
+	local game, _, saved = newScanner({ listings = manyListings(20000) })
+	game.msPerRow = 0.001
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:NextFrame()
+	game.now = game.now + 40
+	game.listings = { { WOOL, 2, 300 } }
+	game:RunFrames()
+	t.eq(#saved, 1)
+	t.eq(saved[1].at, game.now)
 end)
 
 t.test('a client error while reading drops the read and is reported, never raised', function()

@@ -117,6 +117,12 @@ function TooltipLines.age(seconds)
 	return math.floor(seconds / SECONDS_PER_DAY) .. ' d'
 end
 
+--- How long ago, as 'just now', '12 min ago', '3 h ago' or '4 d ago'.
+function TooltipLines.ago(seconds)
+	local age = TooltipLines.age(seconds)
+	return age == 'just now' and age or (age .. ' ago')
+end
+
 --- Days until a stack sells at a unit price, or nil without sales data.
 --- @return number|nil days
 --- @return boolean isLowConfidence

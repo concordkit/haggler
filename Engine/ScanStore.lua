@@ -151,14 +151,22 @@ function BuilderMethods:Snapshot(at, source)
 	}
 end
 
---- Saves a snapshot as the market's latest.
+--- Saves a snapshot as the market's latest. An empty snapshot (no rows, or no item that
+--- survived the junk filter) is refused, so it can never replace a real one.
 --- @param market table Store:Market(key)
 --- @param snapshot table
+--- @return boolean saved
 function ScanStore.save(market, snapshot)
 	if type(market) ~= 'table' or type(snapshot) ~= 'table' then
 		error('ScanStore.save: market and snapshot must be tables', 2)
 	end
+	local hasItems = type(snapshot.items) == 'table' and next(snapshot.items) ~= nil
+	local isCountedEmpty = type(snapshot.count) == 'number' and snapshot.count <= 0
+	if not hasItems or isCountedEmpty then
+		return false
+	end
 	market.scan = snapshot
+	return true
 end
 
 --- Drops the scan and daily summaries of markets not scanned for keepDays; the rest of a

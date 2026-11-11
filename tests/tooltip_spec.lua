@@ -255,6 +255,12 @@ t.test('money and ages read short', function()
 	t.eq(TooltipLines.age(3 * 86400), '3 d')
 end)
 
+t.test('ago: just now has no "ago"; older ages do', function()
+	t.eq(TooltipLines.ago(5), 'just now')
+	t.eq(TooltipLines.ago(150), '2 min ago')
+	t.eq(TooltipLines.ago(3 * 86400), '3 d ago')
+end)
+
 t.test('lines use theme colours', function()
 	local lines = build({})
 	t.same(lines[1].color, theme:Color('color.text.accent'))

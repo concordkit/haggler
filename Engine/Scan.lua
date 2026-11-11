@@ -7,16 +7,26 @@
 	TSM) without asking. It asks itself only when:
 	  - the auction house is open and was opened at least graceSeconds ago, so an add-on that
 	    scans on open goes first;
-	  - no full listing arrived, and Haggler did not ask, in the last MIN_INTERVAL seconds (the
-	    last saved snapshot counts, so a /reload does not reset it);
+	  - no full listing arrived, and no add-on asked (Haggler or another), in the last
+	    MIN_INTERVAL seconds. The window is shared by every add-on on the client, so any
+	    ReplicateItems call counts, even one whose listing Haggler never read (another add-on
+	    scanned, then a /reload). The last saved snapshot and the last recorded request are both
+	    saved, so a /reload or a relog does not reset the window;
 	  - the server has not refused a request in the last MIN_INTERVAL seconds;
 	  - auto scan is on.
 
 	Reading: the listing (often 50,000 to 150,000 rows) is read in slices, one per frame, each
 	within frameBudgetMs on the frame clock (or ROWS_PER_SLICE rows on a client without one), then
-	packed into items the same way, so the client never hitches. If the listing changes mid-read
-	(another request answered), the read starts over on the new one; if it is cleared, the read is
-	dropped. When the auction house closes mid-read, the rest of the rows are read at once while
+	packed into items the same way, so the client never hitches. A repeated
+	REPLICATE_ITEM_LIST_UPDATE while a read runs is ignored: the client and other add-ons fire it
+	again for the same listing, and restarting on each one never let a read finish. Each slice of
+	rows checks NumReplicateItems instead: if it fell to 0 the listing was cleared and the read is
+	dropped; if it changed, the read starts over on the new listing (from the first row, since a
+	replaced listing does not keep its indexes, so reading only the tail would mix two listings).
+	Once every row is read the snapshot is complete, so packing and comparing ignore the event.
+	A listing replaced by one of exactly the same size is not noticed and would mix two
+	listings; under the 15-minute throttle two answers inside one read are not expected.
+	An empty listing is dropped at once: it never replaces the saved snapshot. When the auction house closes mid-read, the rest of the rows are read at once while
 	the client still holds them (a short hitch, rather than losing the scan); if they are gone,
 	the read is dropped. A partial listing is never saved.
 
@@ -61,6 +71,7 @@ ScannerMethods.__index = ScannerMethods
 --- @param options table {
 ---   wow,
 ---   lastSavedAt = fun(): number|nil   the newest saved snapshot's time for this market,
+---   lastRequestedAt = fun(): number|nil  the newest ReplicateItems call by any add-on, saved,
 ---   onSnapshot = fun(snapshot, followUpResult)  a finished read,
 ---   newFollowUp = fun(snapshot): job|nil  work to run on the snapshot, a slice per frame,
 ---                                          before it is saved: job:Step(shouldContinue) ->
@@ -77,6 +88,7 @@ function Scan.new(options)
 	return setmetatable({
 		wow = options.wow,
 		lastSavedAt = options.lastSavedAt,
+		lastRequestedAt = options.lastRequestedAt,
 		onSnapshot = options.onSnapshot,
 		newFollowUp = options.newFollowUp,
 		settings = options.settings,
@@ -164,25 +176,42 @@ end
 --- Seconds until the 15-minute rule allows a request (0 when it does).
 function ScannerMethods:NextAllowedIn()
 	local now = self.wow:Now()
-	local blockedSince = newestOf(self:LastFullScanAt(), self.requestedAt, self.refusedAt)
+	local blockedSince =
+		newestOf(self:LastFullScanAt(), self:ArrivalAt(), self.requestedAt, self.refusedAt, self:LastRequestAt())
 	if not blockedSince then
 		return 0
 	end
 	return math.max(0, blockedSince + Scan.MIN_INTERVAL - now)
 end
 
---- The newest full listing known: one seen this session or the saved snapshot, never later
---- than now.
+--- The newest full scan: one read to the end this session, or the saved snapshot, never later
+--- than now. Nil until one exists; a listing that arrived but was dropped does not count.
 function ScannerMethods:LastFullScanAt()
 	local savedAt = nil
 	if self.lastSavedAt then
 		local ok, value = pcall(self.lastSavedAt)
 		savedAt = ok and type(value) == 'number' and value or nil
 	end
-	local newest = newestOf(self.lastListingAt, savedAt)
+	local newest = newestOf(self.lastSnapshotAt, savedAt)
 	-- A time in the future (a clock that ran ahead when it was saved) counts as now, so it
 	-- cannot block requests for days.
 	return newest and math.min(newest, self.wow:Now()) or nil
+end
+
+--- The newest scan request recorded by any add-on (saved across reloads), never later than now.
+function ScannerMethods:LastRequestAt()
+	if not self.lastRequestedAt then
+		return nil
+	end
+	local ok, value = pcall(self.lastRequestedAt)
+	local requestedAt = ok and type(value) == 'number' and value or nil
+	return requestedAt and math.min(requestedAt, self.wow:Now()) or nil
+end
+
+--- When the newest full listing arrived, read to the end or not, never later than now. It
+--- counts for the 15-minute rule only: a listing that was dropped is not a full scan.
+function ScannerMethods:ArrivalAt()
+	return self.lastListingAt and math.min(self.lastListingAt, self.wow:Now()) or nil
 end
 
 -- Events ----------------------------------------------------------------------------------
@@ -225,8 +254,7 @@ function ScannerMethods:OnListing()
 		return
 	end
 	if self.job then
-		-- A new listing replaced the one being read.
-		self:StartJob(self.job.source, now)
+		-- A repeat of the event; ReadRows notices a listing that really changed or was cleared.
 		return
 	end
 	if not wasRequested and isRecent(self.lastCompletedAt, now, Scan.DUPLICATE_SECONDS) then
@@ -290,13 +318,21 @@ function ScannerMethods:StartJob(source, arrivedAt)
 	end
 	self.lastListingAt = arrivedAt
 	self.jobGeneration = self.jobGeneration + 1
+	local count = self.wow:NumReplicateItems()
+	if type(count) ~= 'number' or count <= 0 then
+		-- An empty answer must never replace the saved snapshot; it still counts for the
+		-- 15-minute rule (the request was answered).
+		self.job = nil
+		self.lastError = 'the listing was empty; nothing saved'
+		return
+	end
 	self.job = {
 		generation = self.jobGeneration,
 		source = source,
 		arrivedAt = arrivedAt,
 		phase = 'rows',
 		index = 0,
-		count = self.wow:NumReplicateItems(),
+		count = count,
 		builder = ns.ScanStore.newBuilder(),
 		restarts = restarts,
 	}
@@ -337,7 +373,8 @@ function ScannerMethods:ReadRows(job, shouldContinue)
 		if live <= 0 then
 			self:DropJob('the listing was cleared before it was read')
 		else
-			self:StartJob(job.source, job.arrivedAt)
+			-- A new listing: the scan is dated from now, when the read starts on it.
+			self:StartJob(job.source, self.wow:Now())
 		end
 		return
 	end
@@ -396,6 +433,7 @@ end
 function ScannerMethods:CompleteJob(job, snapshot, followUpResult)
 	self.job = nil
 	self.lastCompletedAt = self.wow:Now()
+	self.lastSnapshotAt = job.arrivedAt
 	self.lastError = nil
 	if job.followUpError ~= nil then
 		self.lastError = 'scan follow-up failed: ' .. tostring(job.followUpError)

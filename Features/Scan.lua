@@ -8,6 +8,12 @@
 	the scans of markets not scanned for keepMarketDays.
 	Switching it off stops listening and drops a read in progress.
 
+	Every C_AuctionHouse.ReplicateItems call, by any add-on, is recorded through a post-hook and
+	saved per market (market.replicateRequestedAt), so the shared 15-minute window holds across
+	a /reload even when Haggler never read the listing. Haggler's own request passes through
+	the same hook; the window takes the newest time, so it is never counted twice. The hook is
+	installed once and keeps recording while the module is off.
+
 	  /hag scan          asks for a scan now (under the same 15-minute rule)
 	  /hag scan status   what the scanner is doing
 ]]
@@ -15,9 +21,15 @@ local _, ns = ...
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local newScanner, newSalesDiff, saveSnapshot, runScanCommand, statusLines, playerMarket, vendorPriceOf
-local tidySavedScans
+local tidySavedScans, installRequestHook, recordRequest, lastRequestedAt, savedRequestAt
+
+-- A saved request time this far ahead of the clock is a clock that ran ahead (or a hand edit),
+-- not a request: it is ignored, then replaced, instead of blocking requests until that time.
+local REQUEST_CLOCK_TOLERANCE = 60
 
 local scanner
+-- requestedAt: the newest request seen this session, kept while the market is not known yet.
+local requests = { isHooked = false, requestedAt = nil }
 
 ns.host.AddModule({
 	key = 'scan',
@@ -55,6 +67,7 @@ ns.host.AddModule({
 		},
 	},
 	onEnable = function(module)
+		installRequestHook()
 		scanner = newScanner(module)
 		scanner:Enable()
 		module:AddCommand('scan', {
@@ -82,6 +95,7 @@ function newScanner(module)
 			local snapshot = ns.prices and ns.prices:Snapshot()
 			return snapshot and snapshot.at
 		end,
+		lastRequestedAt = lastRequestedAt,
 		newFollowUp = newSalesDiff,
 		onSnapshot = function(snapshot, salesDiff)
 			saveSnapshot(module, snapshot, salesDiff)
@@ -97,6 +111,42 @@ function newScanner(module)
 			ns.wow:Print(string.format('scan failed in %s: %s', where, tostring(err)))
 		end,
 	})
+end
+
+function installRequestHook()
+	if requests.isHooked then
+		return
+	end
+	requests.isHooked = ns.wow:HookReplicateRequests(recordRequest)
+end
+
+-- Any ReplicateItems call counts, Haggler's or another add-on's, even one the server refuses:
+-- the client cannot tell, and the shared window is what the server enforces.
+function recordRequest()
+	local now = ns.wow:Now()
+	requests.requestedAt = math.max(requests.requestedAt or now, now)
+	local market = playerMarket()
+	if market then
+		local saved = savedRequestAt(market, now)
+		market.replicateRequestedAt = saved and math.max(saved, now) or now
+	end
+end
+
+function lastRequestedAt()
+	local market = playerMarket()
+	local saved = market and savedRequestAt(market, ns.wow:Now()) or nil
+	if saved and requests.requestedAt then
+		return math.max(saved, requests.requestedAt)
+	end
+	return saved or requests.requestedAt
+end
+
+function savedRequestAt(market, now)
+	local saved = tonumber(market.replicateRequestedAt)
+	if not saved or saved > now + REQUEST_CLOCK_TOLERANCE then
+		return nil
+	end
+	return saved
 end
 
 -- The comparison with the market's last scan, or nil when there is nothing to compare.
@@ -119,7 +169,9 @@ function saveSnapshot(module, snapshot, salesDiff)
 		end
 		ns.Sales.record(market.scanDays, salesDiff)
 	end
-	ns.ScanStore.save(market, snapshot)
+	if not ns.ScanStore.save(market, snapshot) then
+		error('the scan had no usable listings; the saved scan is kept')
+	end
 	tidySavedScans(module, market, snapshot.at)
 	module:Send('SCAN_READY', marketKey, { at = snapshot.at, source = snapshot.source, count = snapshot.count })
 end
@@ -157,9 +209,8 @@ end
 
 function statusLines(status)
 	local lines = { 'Scan: ' .. status.state }
-	if status.lastFullScanAt then
-		lines[#lines + 1] = 'Last full scan: ' .. ns.TooltipLines.age(ns.wow:Now() - status.lastFullScanAt) .. ' ago'
-	end
+	local lastFullScan = status.lastFullScanAt and ns.TooltipLines.ago(ns.wow:Now() - status.lastFullScanAt)
+	lines[#lines + 1] = 'Last full scan: ' .. (lastFullScan or 'no full scan saved yet')
 	if status.nextAllowedIn and status.nextAllowedIn > 0 then
 		lines[#lines + 1] = 'Next request allowed in ' .. ns.TooltipLines.age(status.nextAllowedIn)
 	end
