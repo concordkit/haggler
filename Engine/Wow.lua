@@ -5,7 +5,12 @@
 	Step 1: time, item info, the player's market, printing, events and the slash command.
 	Step 2: the auction house replicate list (the full scan), timers, a frame clock, modifier
 	keys and item tooltips. Step 3: globals and hooks for bag hosts, containers, the trade
-	window and its partner. Mail wrappers arrive with the step that uses them.
+	window and its partner. Step 4: posting, searching and buying on the auction house (the
+	Haggler frame's Sell and Buy tabs). Mail wrappers arrive with the step that uses them.
+
+	Posting and buying are protected: PostItem, PostCommodity, ConfirmPost*, PlaceBid and
+	ConfirmCommoditiesPurchase must run from a hardware event (a click). The wrappers never
+	defer them to a timer; callers call them straight from an OnClick handler.
 
 	Forever runs the Mainline UI, so these follow retail's C_AuctionHouse (AHledger 0.14, Auctionator
 	and TSM make the same calls there). Each wrapper checks the API exists and answers nil / false
@@ -37,6 +42,8 @@ local isInCombat, isBnetFriendGuid
 
 local WowMethods = {}
 WowMethods.__index = WowMethods
+-- Later files (Engine/WowTracking.lua) add their wrappers here.
+Wow.Methods = WowMethods
 
 --- Wraps a game environment.
 --- @param env table|nil the global table; _G in game, a fake in tests
@@ -80,6 +87,21 @@ function WowMethods:ItemInfo(itemId)
 	return { name = name, maxStack = tonumber(maxStack), vendorPrice = tonumber(vendorPrice) or 0 }
 end
 
+--- Like ItemInfo, but nil for an item the client has not cached, so the client does not ask the
+--- server for it. Without C_Item.IsItemDataCachedByID it is ItemInfo.
+--- @param itemId number
+--- @return table|nil { name, maxStack, vendorPrice }
+function WowMethods:CachedItemInfo(itemId)
+	if type(itemId) ~= 'number' then
+		error('Wow:CachedItemInfo: itemId must be a number', 2)
+	end
+	local isCached = self.env.C_Item and self.env.C_Item.IsItemDataCachedByID
+	if isCached and not isCached(itemId) then
+		return nil
+	end
+	return self:ItemInfo(itemId)
+end
+
 --- The player's realm, faction and region, as the market key needs them.
 --- @return table { name, realm, faction, region }
 function WowMethods:Player()
@@ -104,13 +126,85 @@ function WowMethods:AHledgerAPI()
 	return self.env.AHledgerAPI
 end
 
+--- AHledger's own settings table (AHledgerDB.settings) for reading only; nil when AHledger has
+--- none. Haggler never writes it.
+--- @return table|nil
+function WowMethods:AHledgerSettings()
+	local ok, settings = pcall(function()
+		return self.env.AHledgerDB.settings
+	end)
+	return ok and type(settings) == 'table' and settings or nil
+end
+
+--- Opens AHledger's options through its own slash command (/ahl options).
+--- @return boolean true when AHledger took the command
+function WowMethods:OpenAHledgerOptions()
+	local slashCommands = self.env.SlashCmdList
+	local handler = type(slashCommands) == 'table' and slashCommands.AHLEDGER
+	if type(handler) ~= 'function' then
+		return false
+	end
+	return (pcall(handler, 'options'))
+end
+
+--- The client's Settings API (Settings → AddOns) when it has the calls Haggler uses; else nil.
+--- @return table|nil
+function WowMethods:SettingsApi()
+	local api = self.env.Settings
+	if type(api) ~= 'table' then
+		return nil
+	end
+	local hasCheckbox = type(api.CreateCheckbox) == 'function' or type(api.CreateCheckBox) == 'function'
+	if
+		type(api.RegisterVerticalLayoutCategory) ~= 'function'
+		or type(api.RegisterProxySetting) ~= 'function'
+		or type(api.RegisterAddOnCategory) ~= 'function'
+		or not hasCheckbox
+	then
+		return nil
+	end
+	return api
+end
+
+--- Adds a panel to the old Interface Options (clients without the Settings API).
+--- @return boolean true when the client took it
+function WowMethods:AddLegacyOptionsPanel(panel)
+	local addCategory = self.env.InterfaceOptions_AddCategory
+	if type(addCategory) ~= 'function' then
+		return false
+	end
+	return (pcall(addCategory, panel))
+end
+
+--- Opens Settings at a category registered through SettingsApi, or the old Interface Options
+--- at a legacy panel.
+--- @return boolean true when something opened
+function WowMethods:OpenOptionsCategory(category)
+	local api = self.env.Settings
+	if type(api) == 'table' and type(api.OpenToCategory) == 'function' and type(category) == 'table' then
+		local getId = category.GetID
+		if type(getId) == 'function' then
+			return (pcall(api.OpenToCategory, getId(category)))
+		end
+	end
+	local openLegacy = self.env.InterfaceOptionsFrame_OpenToCategory
+	if type(openLegacy) == 'function' and category ~= nil then
+		return (pcall(openLegacy, category))
+	end
+	return false
+end
+
 --- Calls handler(event, ...) for a game event. Each owner has one handler per event, so the
 --- scan and the bootstrap can both listen to the same event. A handler that throws is reported
 --- through onError and does not stop the others. The hidden event frame is the one frame the
 --- engine owns; it draws nothing.
+--- An event this client does not have (RegisterEvent throws for it) is not an error: the
+--- handler is dropped and false comes back, so a module still enables on a client without it.
 --- @param event string
 --- @param handler function
 --- @param owner string|nil default 'main'
+--- @return boolean registered
+--- @return string|nil reason when not registered
 function WowMethods:OnEvent(event, handler, owner)
 	if type(handler) ~= 'function' then
 		error('Wow:OnEvent: handler must be a function', 2)
@@ -121,10 +215,14 @@ function WowMethods:OnEvent(event, handler, owner)
 			dispatchEvent(self, firedEvent, ...)
 		end)
 	end
+	local ok, err = pcall(self.eventFrame.RegisterEvent, self.eventFrame, event)
+	if not ok then
+		return false, tostring(err)
+	end
 	local handlers = self.eventHandlers[event] or {}
 	self.eventHandlers[event] = handlers
 	handlers[owner or DEFAULT_EVENT_OWNER] = handler
-	self.eventFrame:RegisterEvent(event)
+	return true
 end
 
 --- Drops an owner's handler; the frame stops listening once no owner is left.
@@ -377,6 +475,28 @@ function WowMethods:HookMethod(object, method, handler)
 	return true
 end
 
+--- Post-hooks a global function (hooksecurefunc on the globals table): never taints it.
+--- @return boolean hooked false when there is no such function
+function WowMethods:HookGlobalFunction(name, handler)
+	return self:HookMethod(self.env, name, handler)
+end
+
+--- Hooks a frame's script (HookScript runs after the frame's own); the handler runs under
+--- pcall like a method hook. Call once a frame; a script hook cannot be removed.
+--- @return boolean hooked false when the frame cannot be hooked
+function WowMethods:HookFrameScript(frame, script, handler)
+	if type(frame) ~= 'table' or type(frame.HookScript) ~= 'function' then
+		return false
+	end
+	local ok = pcall(frame.HookScript, frame, script, function(...)
+		local isDone, err = pcall(handler, ...)
+		if not isDone then
+			self:ReportHookError(script, err)
+		end
+	end)
+	return ok
+end
+
 --- Reports a hook handler's error unless that method used up its reports; the last report says
 --- the rest are muted.
 function WowMethods:ReportHookError(method, err)
@@ -395,11 +515,18 @@ end
 --- @param kind string 'Frame' | 'Button'
 --- @param parent table|nil default UIParent
 --- @param template string|nil a plain template such as 'UIPanelButtonTemplate'
-function WowMethods:CreateFrame(kind, parent, template)
+--- @param name string|nil a global name, only for frames the client must find by name (Escape
+---   closes frames listed by name in UISpecialFrames)
+function WowMethods:CreateFrame(kind, parent, template, name)
 	if type(template) == 'string' and template:find('Secure', 1, true) then
 		error('Wow:CreateFrame: secure templates are not used', 2)
 	end
-	return self.env.CreateFrame(kind, nil, parent or self.env.UIParent, template)
+	return self.env.CreateFrame(kind, name, parent or self.env.UIParent, template)
+end
+
+--- The item id in an item link (or any text holding one), or nil.
+function WowMethods:ItemIdFromLink(text)
+	return type(text) == 'string' and itemIdFromLink(text) or nil
 end
 
 function WowMethods:IsInCombat()
@@ -457,18 +584,251 @@ function WowMethods:CarriedBags()
 end
 
 --- Every loaded stack in the carried bags, as Value:Total takes them.
---- @return table { { itemId, count, isBound }... }
+--- @return table { { itemId, count, isBound, hasNoValue, bag, slot }... }
 function WowMethods:CarriedItems()
 	local entries = {}
 	for _, bag in ipairs(self:CarriedBags()) do
 		for slot = 1, self:ContainerSlots(bag) do
 			local item = self:ContainerItem(bag, slot)
 			if item and item.itemId then
-				entries[#entries + 1] = { itemId = item.itemId, count = item.count, isBound = item.isBound }
+				entries[#entries + 1] = {
+					itemId = item.itemId,
+					count = item.count,
+					isBound = item.isBound,
+					hasNoValue = item.hasNoValue,
+					bag = bag,
+					slot = slot,
+				}
 			end
 		end
 	end
 	return entries
+end
+
+-- Auction house actions (step 4) ---------------------------------------------------------
+
+Wow.DURATION_HOURS = { [1] = 12, [2] = 24, [3] = 48 }
+
+--- The retail auction house API when this client has posting (C_AuctionHouse.PostItem).
+--- @return table|nil
+function WowMethods:AuctionHouseApi()
+	local api = self.env.C_AuctionHouse
+	return type(api) == 'table' and type(api.PostItem) == 'function' and api or nil
+end
+
+--- Whether prices may carry copper (false: whole silver only).
+function WowMethods:SupportsCopperValues()
+	local api = self:AuctionHouseApi()
+	if not (api and api.SupportsCopperValues) then
+		return true
+	end
+	local ok, supports = pcall(api.SupportsCopperValues)
+	return not ok or supports ~= false
+end
+
+--- The item in a bag slot as the auction house takes it: a location, whether it is a
+--- commodity, and whether the auction house accepts it.
+--- @param bag number
+--- @param slot number
+--- @param itemId number the item expected there (a moved item reads as gone)
+--- @return table|nil { location, isCommodity, itemId, bag, slot }
+--- @return string|nil reason 'no auction house' | 'item moved' | 'cannot be auctioned'
+function WowMethods:SellableItem(bag, slot, itemId)
+	local env, api = self.env, self:AuctionHouseApi()
+	local itemLocation = env.ItemLocation
+	if not api or type(itemLocation) ~= 'table' or not itemLocation.CreateFromBagAndSlot then
+		return nil, 'no auction house'
+	end
+	local ok, location = pcall(itemLocation.CreateFromBagAndSlot, itemLocation, bag, slot)
+	if not ok or type(location) ~= 'table' then
+		return nil, 'item moved'
+	end
+	local item = self:ContainerItem(bag, slot)
+	if not item or item.itemId ~= itemId then
+		return nil, 'item moved'
+	end
+	local isValidOk, isValid = pcall(api.IsSellItemValid, location, false)
+	if not isValidOk or not isValid then
+		return nil, 'cannot be auctioned'
+	end
+	local statusOk, status = pcall(api.GetItemCommodityStatus, location)
+	local commodityStatus = env.Enum and env.Enum.ItemCommodityStatus
+	local commodity = commodityStatus and commodityStatus.Commodity or 2
+	return {
+		location = location,
+		isCommodity = statusOk and status == commodity,
+		itemId = itemId,
+		bag = bag,
+		slot = slot,
+	}
+end
+
+--- The deposit the client asks for a listing, or nil when it cannot say.
+--- @param sellable table from SellableItem
+--- @param duration number 1, 2 or 3 (12, 24, 48 hours)
+--- @param quantity number
+--- @return number|nil copper
+function WowMethods:AuctionDeposit(sellable, duration, quantity)
+	local api = self:AuctionHouseApi()
+	if not api or type(sellable) ~= 'table' then
+		return nil
+	end
+	local ok, deposit
+	if sellable.isCommodity then
+		ok, deposit = pcall(api.CalculateCommodityDeposit, sellable.itemId, duration, quantity)
+	else
+		ok, deposit = pcall(api.CalculateItemDeposit, sellable.location, duration, quantity)
+	end
+	return ok and type(deposit) == 'number' and deposit >= 0 and deposit or nil
+end
+
+--- Posts a listing. Protected: call it only from a click. When the client warns about the
+--- price it answers 'needsConfirm'; ConfirmAuction with the same arguments, from the next click,
+--- posts it anyway.
+--- @param sellable table from SellableItem (checked again: the item may have moved)
+--- @param duration number 1, 2 or 3
+--- @param quantity number
+--- @param unitPrice number copper per unit
+--- @return string|nil 'posted' | 'needsConfirm'
+--- @return string|nil reason
+function WowMethods:PostAuction(sellable, duration, quantity, unitPrice)
+	return self:CallPost(sellable, duration, quantity, unitPrice, false)
+end
+
+--- Posts a listing the client warned about. Protected: call it only from a click.
+function WowMethods:ConfirmAuction(sellable, duration, quantity, unitPrice)
+	return self:CallPost(sellable, duration, quantity, unitPrice, true)
+end
+
+function WowMethods:CallPost(sellable, duration, quantity, unitPrice, isConfirm)
+	if type(sellable) ~= 'table' or not Wow.DURATION_HOURS[duration] then
+		error('Wow:PostAuction: needs a sellable item and a duration of 1, 2 or 3', 3)
+	end
+	if self:IsInCombat() then
+		return nil, 'in combat'
+	end
+	local still, reason = self:SellableItem(sellable.bag, sellable.slot, sellable.itemId)
+	if not still then
+		return nil, reason
+	end
+	local api = self:AuctionHouseApi()
+	local name
+	if sellable.isCommodity then
+		name = isConfirm and 'ConfirmPostCommodity' or 'PostCommodity'
+	else
+		name = isConfirm and 'ConfirmPostItem' or 'PostItem'
+	end
+	local ok, needsConfirm
+	if sellable.isCommodity then
+		ok, needsConfirm = pcall(api[name], still.location, duration, quantity, unitPrice)
+	else
+		ok, needsConfirm = pcall(api[name], still.location, duration, quantity, nil, unitPrice)
+	end
+	if not ok then
+		return nil, 'the auction house refused: ' .. tostring(needsConfirm)
+	end
+	return (needsConfirm == true and not isConfirm) and 'needsConfirm' or 'posted'
+end
+
+--- Asks the server for one item's live listings (AUCTION_HOUSE_BROWSE / *_SEARCH_RESULTS_UPDATED
+--- follow).
+--- @return boolean sent
+function WowMethods:SearchItem(itemId)
+	local api = self:AuctionHouseApi()
+	if not (api and api.MakeItemKey and api.SendSearchQuery) then
+		return false
+	end
+	local ok, itemKey = pcall(api.MakeItemKey, itemId)
+	if not ok or itemKey == nil then
+		return false
+	end
+	local sortOrder = self.env.Enum and self.env.Enum.AuctionHouseSortOrder
+	local sorts = { { sortOrder = sortOrder and sortOrder.Price or 0, reverseSort = false } }
+	return (pcall(api.SendSearchQuery, itemKey, sorts, true))
+end
+
+--- One item's live listings from the last search, cheapest first.
+--- @return table { { auctionId, unitPrice, quantity, isOwn, isCommodity }... }
+function WowMethods:SearchResults(itemId)
+	local api = self:AuctionHouseApi()
+	local results = {}
+	if not api then
+		return results
+	end
+	local countOk, commodityCount = pcall(api.GetNumCommoditySearchResults or error, itemId)
+	if countOk and type(commodityCount) == 'number' and commodityCount > 0 then
+		for index = 1, commodityCount do
+			local ok, info = pcall(api.GetCommoditySearchResultInfo, itemId, index)
+			if ok and type(info) == 'table' and type(info.unitPrice) == 'number' then
+				results[#results + 1] = {
+					auctionId = info.auctionID,
+					unitPrice = info.unitPrice,
+					quantity = info.quantity or 1,
+					isOwn = (info.numOwnerItems or 0) > 0 or info.containsOwnerItem == true,
+					isCommodity = true,
+				}
+			end
+		end
+		return results
+	end
+	local keyOk, itemKey = pcall(api.MakeItemKey or error, itemId)
+	local itemCountOk, itemCount = pcall(api.GetNumItemSearchResults or error, keyOk and itemKey or nil)
+	for index = 1, (itemCountOk and type(itemCount) == 'number') and itemCount or 0 do
+		local ok, info = pcall(api.GetItemSearchResultInfo, itemKey, index)
+		local quantity = ok and type(info) == 'table' and (info.quantity or 1) or nil
+		if quantity and type(info.buyoutAmount) == 'number' and info.buyoutAmount > 0 then
+			results[#results + 1] = {
+				auctionId = info.auctionID,
+				unitPrice = math.floor(info.buyoutAmount / quantity),
+				buyout = info.buyoutAmount,
+				quantity = quantity,
+				isOwn = info.containsOwnerItem == true,
+				isCommodity = false,
+			}
+		end
+	end
+	table.sort(results, function(a, b)
+		return a.unitPrice < b.unitPrice
+	end)
+	return results
+end
+
+--- Starts a commodity purchase; COMMODITY_PRICE_UPDATED (unitPrice, total) answers with the
+--- price the server will charge, and ConfirmCommodityPurchase (from a click) buys.
+--- @return boolean sent
+function WowMethods:StartCommodityPurchase(itemId, quantity)
+	local api = self:AuctionHouseApi()
+	return api ~= nil
+		and api.StartCommoditiesPurchase ~= nil
+		and (pcall(api.StartCommoditiesPurchase, itemId, quantity))
+end
+
+--- Buys the commodity purchase started before. Protected: call it only from a click.
+function WowMethods:ConfirmCommodityPurchase(itemId, quantity)
+	local api = self:AuctionHouseApi()
+	if self:IsInCombat() or not (api and api.ConfirmCommoditiesPurchase) then
+		return false
+	end
+	return (pcall(api.ConfirmCommoditiesPurchase, itemId, quantity))
+end
+
+function WowMethods:CancelCommodityPurchase()
+	local api = self:AuctionHouseApi()
+	if api and api.CancelCommoditiesPurchase then
+		pcall(api.CancelCommoditiesPurchase)
+	end
+end
+
+--- Buys one item auction outright. Protected: call it only from a click.
+--- @param auctionId number
+--- @param buyout number copper for the whole auction
+--- @return boolean sent
+function WowMethods:BuyAuction(auctionId, buyout)
+	local api = self:AuctionHouseApi()
+	if self:IsInCombat() or not (api and api.PlaceBid) then
+		return false
+	end
+	return (pcall(api.PlaceBid, auctionId, buyout))
 end
 
 -- Trade window ----------------------------------------------------------------------------

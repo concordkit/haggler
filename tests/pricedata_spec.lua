@@ -347,6 +347,46 @@ t.test('a market AHledger has no table for is low, with its own reason and no cr
 	t.eq(newService(source):Quote(LINEN, { 'minimum' }).credit, nil)
 end)
 
+t.test('no synced table but AHledger answers from your own scan: no "no prices" next to its figure', function()
+	local source = newSource({ ownScanOverlay = true })
+	t.eq(source:Status(MARKET).code, 'noMarketTable')
+	local price = Rules.evaluate(MEDIAN_RULE, LINEN, contextWith(source))
+	t.eq(price.copper, 120)
+	t.eq(reasonOf(price, 'noMarketTable'), nil)
+	t.same(reasonOf(price, 'ownScanOverlay'), {
+		code = 'ownScanOverlay',
+		level = 'medium',
+		text = 'AHledger has no synced table for this market; its figures come from your own scan',
+	})
+	local vendor = Rules.evaluate(VENDOR_RULE, LINEN, contextWith(source))
+	t.same(vendor.confidence.reasons, {}, 'no AHledger figure, no overlay reason')
+end)
+
+t.test('statusOf passes the whitelisted problem codes and maps any other to noPriceSource', function()
+	t.same(PriceData.PROBLEM_CODES, { noPriceSource = true, priceSourceFailing = true, noMarketTable = true })
+	for code in pairs(PriceData.PROBLEM_CODES) do
+		local status = PriceData.statusOf({
+			Status = function()
+				return { isAvailable = false, code = code, reason = 'why' }
+			end,
+			Row = function() end,
+			Table = function() end,
+		})
+		t.eq(status.code, code)
+	end
+	for _, code in ipairs({ 'madeUp', 42, false }) do
+		local status = PriceData.statusOf({
+			Status = function()
+				return { isAvailable = false, code = code, reason = 'why' }
+			end,
+			Row = function() end,
+			Table = function() end,
+		})
+		t.eq(status.code, 'noPriceSource')
+		t.eq(status.reason, 'why')
+	end
+end)
+
 t.group('price source: market keys')
 
 t.test('AHledger set to another market: Haggler keeps its own and says so', function()
@@ -359,9 +399,10 @@ t.test('AHledger set to another market: Haggler keeps its own and says so', func
 	t.eq(price.copper, 120)
 	t.same(reasonOf(price, 'marketMismatch'), {
 		code = 'marketMismatch',
-		level = 'medium',
-		text = 'AHledger is set to forever/pvp/horde/us; Haggler prices forever/normal/alliance/us',
+		level = 'high',
+		text = 'AHledger uses forever/pvp/horde/us; Haggler prices forever/normal/alliance/us',
 	})
+	t.eq(price.confidence.level, 'high', 'an info reason does not lower confidence')
 	local vendor = Rules.evaluate(VENDOR_RULE, LINEN, contextWith(source))
 	t.same(vendor.confidence.reasons, {}, 'no AHledger figure, no mismatch reason')
 end)
@@ -533,7 +574,7 @@ t.test('AHledger set to another market: one chat note, prices keep Haggler marke
 	local game, addon, received = startWith(api)
 	t.same(received, { { MARKET } })
 	t.eq(#game.printed, 1)
-	t.truthy(game.printed[1]:find('AHledger is set to forever/pvp/horde/us', 1, true))
+	t.truthy(game.printed[1]:find('AHledger uses forever/pvp/horde/us', 1, true))
 	game:Fire('PLAYER_LOGIN')
 	t.eq(#game.printed, 1, 'said once')
 	t.truthy(reasonOf(addon.prices:Get(LINEN, 'median'), 'marketMismatch'))
@@ -546,7 +587,7 @@ t.test('AHledger on another market with nothing for Haggler: the note comes at P
 	t.same(game.printed, {}, 'AHledger is there, so no "needs AHledger" notice')
 	game:Fire('PLAYER_LOGIN')
 	t.eq(#game.printed, 1)
-	t.truthy(game.printed[1]:find('AHledger is set to forever/pvp/horde/us', 1, true))
+	t.truthy(game.printed[1]:find('AHledger uses forever/pvp/horde/us', 1, true))
 	scan(game)
 	t.truthy(reasonOf(addon.prices:Get(LINEN, 'minimum'), 'noMarketTable'))
 end)

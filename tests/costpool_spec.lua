@@ -1,0 +1,101 @@
+local t = ...
+
+local ns = t.loadAddon()
+local CostPool = ns.CostPool
+
+local function newMarket()
+	return { costPools = {} }
+end
+
+t.group('cost pools')
+
+t.test('adds keep a weighted average stored as a compact pair', function()
+	local market = newMarket()
+	CostPool.add(market, 2589, 10, 1000)
+	CostPool.add(market, 2589, 30, 6000)
+	t.same(market.costPools[2589], { 40, 7000 })
+	t.same(CostPool.get(market, 2589), { units = 40, copper = 7000 })
+	t.eq(CostPool.average(market, 2589), 175)
+	t.eq(CostPool.average(market, 1), nil)
+end)
+
+t.test('a free add (a leftover worth nothing) lowers the average', function()
+	local market = newMarket()
+	CostPool.add(market, 5, 2, 300)
+	CostPool.add(market, 5, 1, 0)
+	t.eq(CostPool.average(market, 5), 100)
+end)
+
+t.test('every unit known: taking units out keeps the average', function()
+	local market = newMarket()
+	CostPool.add(market, 7, 10, 1005)
+	local split = CostPool.remove(market, 7, 4, 10)
+	t.same(split, { units = 4, knownUnits = 4, knownCopper = 402, unknownUnits = 0 })
+	t.same(CostPool.get(market, 7), { units = 6, copper = 603 })
+end)
+
+t.test('the last known unit takes whatever copper is left', function()
+	local market = newMarket()
+	CostPool.add(market, 7, 3, 100)
+	CostPool.remove(market, 7, 1, 3)
+	CostPool.remove(market, 7, 1, 2)
+	local split = CostPool.remove(market, 7, 1, 1)
+	t.eq(split.knownCopper, 34)
+	t.eq(market.costPools[7], nil, 'an emptied pool is removed')
+end)
+
+t.test('unknown origin: held beyond the pool splits in proportion', function()
+	local market = newMarket()
+	CostPool.add(market, 9, 5, 500)
+	-- 20 held, 5 known: taking 8 takes 2 known and 6 of unknown origin.
+	local split = CostPool.split(market, 9, 8, 20)
+	t.same(split, { units = 8, knownUnits = 2, knownCopper = 200, unknownUnits = 6 })
+	t.same(CostPool.get(market, 9), { units = 5, copper = 500 }, 'split is read only')
+	CostPool.remove(market, 9, 8, 20)
+	t.same(CostPool.get(market, 9), { units = 3, copper = 300 })
+end)
+
+t.test('nothing known: everything is of unknown origin', function()
+	local market = newMarket()
+	t.same(CostPool.split(market, 9, 4, 4), { units = 4, knownUnits = 0, knownCopper = 0, unknownUnits = 4 })
+	t.same(CostPool.remove(market, 9, 4, 0), { units = 4, knownUnits = 0, knownCopper = 0, unknownUnits = 4 })
+	t.same(CostPool.split(nil, 9, 0, 0), { units = 0, knownUnits = 0, knownCopper = 0, unknownUnits = 0 })
+end)
+
+t.test('a pool larger than the units held shrinks to them at the same average', function()
+	local market = newMarket()
+	CostPool.add(market, 4, 10, 1000)
+	-- Six of them left unseen (mailed away): 4 held, all known.
+	local split = CostPool.remove(market, 4, 2, 4)
+	t.same(split, { units = 2, knownUnits = 2, knownCopper = 200, unknownUnits = 0 })
+	t.same(CostPool.get(market, 4), { units = 2, copper = 200 })
+	CostPool.remove(market, 4, 1, 0)
+	t.eq(CostPool.get(market, 4), nil, 'nothing held: the pool is gone')
+end)
+
+t.test('taking more than held takes the whole known pool', function()
+	local market = newMarket()
+	CostPool.add(market, 4, 2, 90)
+	t.same(CostPool.remove(market, 4, 5, 3), { units = 5, knownUnits = 2, knownCopper = 90, unknownUnits = 3 })
+end)
+
+t.test('junk pairs read as no pool; bad arguments are programmer errors', function()
+	local market = { costPools = { [1] = 'junk', [2] = { -1, 5 }, [3] = { 0, 0 } } }
+	t.eq(CostPool.get(market, 1), nil)
+	t.eq(CostPool.get(market, 2), nil)
+	t.eq(CostPool.get(market, 3), nil)
+	CostPool.add(market, 2, 1, 10)
+	t.same(market.costPools[2], { 1, 10 }, 'a junk pair is replaced')
+	t.raises(function()
+		CostPool.add(market, 2, 0, 10)
+	end, 'units above 0')
+	t.raises(function()
+		CostPool.add(market, 2, 1, 1.5)
+	end, 'whole copper')
+	t.raises(function()
+		CostPool.add({}, 2, 1, 1)
+	end, 'costPools')
+	t.raises(function()
+		CostPool.split(market, 2, -1, 1)
+	end, 'whole')
+end)

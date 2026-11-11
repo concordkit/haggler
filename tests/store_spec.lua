@@ -136,7 +136,7 @@ end)
 t.test('markets are grouped by market key and created on first use', function()
 	local store = Store.open({}, {})
 	local market = store:Market('forever/normal/alliance/us')
-	t.same(market, { scanDays = {}, ventures = {}, auctions = {}, ledger = {}, costPools = {} })
+	t.same(market, { scanDays = {}, ventures = {}, auctions = {}, ledger = {}, costPools = {}, ledgerDays = {} })
 	market.ledger[1] = 'event'
 	t.eq(store:Market('forever/normal/alliance/us').ledger[1], 'event')
 	t.raises(function()

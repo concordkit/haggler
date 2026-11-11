@@ -8,10 +8,12 @@
 	  defaultRuleId            the rule used across the add-on
 	  shownRules               surface -> { ruleId... } (tooltip, crafting, ah, bar)
 	  recipes                  recipeId -> Recipe
-	  markets[marketKey]       one auction house: scan, scanDays, ventures, auctions, ledger, costPools
+	  markets[marketKey]       one auction house: scan, scanDays, ventures, auctions, ledger, costPools,
+	                           ledgerDays
 	  vendorPrices             itemId -> copper a vendor pays, kept once the client has shown it
 	  characters[charKey]      inventory counts, gold, last seen, faction
-	  sessions                 session start points
+	  sessions[charKey]        session start points: { resetAt?, ahLeftAt? } (one per character;
+	                           login, the resets and local midnight come from the clock)
 	  legacy                   anything an older layout left that no migration claimed
 
 	HagglerCharDB (per character): version, ui (window position, last tab).
@@ -31,7 +33,7 @@ Store.SURFACES = { 'tooltip', 'crafting', 'ah', 'bar' }
 local MARKET_KEY_PATTERN = '^forever/[%l%d]+/[%l%d]+/[%l%d]+$'
 local TOP_LEVEL_TABLES =
 	{ 'settings', 'rules', 'shownRules', 'recipes', 'markets', 'characters', 'sessions', 'vendorPrices' }
-local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools' }
+local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools', 'ledgerDays' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
@@ -180,6 +182,20 @@ function StoreMethods:Character(charKey)
 		self.db.characters[charKey] = character
 	end
 	return character
+end
+
+--- One character's session start points, created on first use. charKey is 'Name-Realm'.
+--- @return table { loginAt?, resetAt?, ahLeftAt? }
+function StoreMethods:Session(charKey)
+	if type(charKey) ~= 'string' or not charKey:find('^[^%-]+%-.+$') then
+		error(string.format('Store:Session: bad character key %q', tostring(charKey)), 2)
+	end
+	local session = self.db.sessions[charKey]
+	if type(session) ~= 'table' then
+		session = {}
+		self.db.sessions[charKey] = session
+	end
+	return session
 end
 
 --- @return table|nil Rule

@@ -93,7 +93,7 @@ end
 local function bagHookCount(game)
 	local count = 0
 	for _, hook in ipairs(game.hooks) do
-		if hook.method ~= 'ReplicateItems' then
+		if hook.method ~= 'ReplicateItems' and not FakeGame.TRACKING_HOOKS[hook.method] then
 			count = count + 1
 		end
 	end

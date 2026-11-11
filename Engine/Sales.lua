@@ -380,6 +380,9 @@ function isTrollPrice(unitPrice, vendorPrice)
 	return vendorPrice > 0 and unitPrice * Sales.TROLL_PERCENT <= vendorPrice * 100
 end
 
+--- The troll-buy test (Haggler.md): a unit price that nets the seller no more than the vendor.
+Sales.isTrollPrice = isTrollPrice
+
 -- The vendor price when known (0 included); nil while the client has not cached the item.
 function vendorPriceOf(vendorPriceFor, itemId)
 	if type(vendorPriceFor) ~= 'function' then

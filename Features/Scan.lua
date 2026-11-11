@@ -31,6 +31,26 @@ local scanner
 -- requestedAt: the newest request seen this session, kept while the market is not known yet.
 local requests = { isHooked = false, requestedAt = nil }
 
+-- What the Haggler window's Scan tab reads and asks; works while the module is off too.
+ns.scanControl = {
+	StatusLines = function()
+		if not scanner then
+			return { 'The scan module is off (/hag set scan.enabled on).' }
+		end
+		return statusLines(scanner:Status())
+	end,
+	-- The scanner's Status() table; nil while the module is off.
+	Status = function()
+		return scanner and scanner:Status() or nil
+	end,
+	RequestNow = function()
+		if not scanner then
+			return false, 'the scan module is off'
+		end
+		return scanner:RequestNow()
+	end,
+}
+
 ns.host.AddModule({
 	key = 'scan',
 	label = 'Auction house scan',

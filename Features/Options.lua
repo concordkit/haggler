@@ -1,0 +1,179 @@
+--[[
+	Options: Haggler's entry under Settings → AddOns. It lists every on/off switch of every
+	module (each module's Enabled first) as a checkbox bound to the host's settings, so the
+	panel, /hag and the Haggler window always agree, and a button that opens the Haggler window.
+
+	Clients with the Settings API get a vertical-layout category; the registration runs in
+	pcall, and when it fails, or the client has no Settings API, an old Interface Options panel
+	takes its place, with the same switches as buttons.
+
+	  ns.Options.toggleEntries(settings, labelOf) -> { { moduleKey, key, label, variable }, ... }
+	  /hag options                                   opens the entry
+]]
+local _, ns = ...
+
+local Options = {}
+ns.Options = Options
+
+Options.CATEGORY_NAME = 'Haggler'
+local PANEL_NAME = 'HagglerOptionsPanel'
+local PADDING = 16
+local ROW_HEIGHT = 36
+
+-- Helpers live at the bottom of the file; declared here so they stay local.
+local registerCategory, registerWithSettingsApi, registerLegacyPanel, addOpenButton, moduleLabel, openWindow
+local refreshLegacyPanel
+
+--- The on/off switches of every module, in module order and each module's schema order.
+--- @param settings table the host's settings store (Modules, Schema)
+--- @param labelOf fun(moduleKey: string): string the module's label
+--- @return table list of { moduleKey, key, label, variable }
+function Options.toggleEntries(settings, labelOf)
+	if type(settings) ~= 'table' or type(labelOf) ~= 'function' then
+		error('Options.toggleEntries: settings and labelOf are required', 2)
+	end
+	local entries = {}
+	for _, moduleKey in ipairs(settings:Modules()) do
+		local moduleName = labelOf(moduleKey)
+		for _, entry in ipairs(settings:Schema(moduleKey)) do
+			if entry.type == 'toggle' then
+				entries[#entries + 1] = {
+					moduleKey = moduleKey,
+					key = entry.key,
+					label = entry.key == 'enabled' and moduleName or (moduleName .. ': ' .. entry.label),
+					variable = string.format('HAGGLER_%s_%s', moduleKey:upper(), entry.key:upper()),
+				}
+			end
+		end
+	end
+	return entries
+end
+
+local options = ns.host.AddModule({
+	key = 'options',
+	label = 'Settings entry',
+	category = 'core',
+	canDisable = false,
+	onEnable = function(module)
+		registerCategory()
+		module:AddCommand('options', {
+			usage = 'options',
+			help = 'Open Haggler under Settings → AddOns',
+			run = function()
+				if not ns.wow:OpenOptionsCategory(Options.category) then
+					return { 'The Settings window did not open; find Haggler under Settings → AddOns.' }
+				end
+				return {}
+			end,
+		})
+	end,
+})
+Options.module = options
+
+-- Helpers ---------------------------------------------------------------------------------
+
+-- Registers once per session; the client keeps a category for good.
+function registerCategory()
+	if Options.category then
+		return
+	end
+	local wow = ns.wow
+	local entries = Options.toggleEntries(ns.host.Settings, moduleLabel)
+	local api = wow:SettingsApi()
+	if api then
+		local ok, result = pcall(registerWithSettingsApi, api, entries)
+		if ok then
+			Options.category, Options.kind = result, 'settings'
+			return
+		end
+		wow:Print('the Settings entry failed (' .. tostring(result) .. '); using the old options panel.')
+	end
+	Options.category, Options.kind = registerLegacyPanel(entries), 'legacy'
+end
+
+function registerWithSettingsApi(api, entries)
+	local settings = ns.host.Settings
+	local category, layout = api.RegisterVerticalLayoutCategory(Options.CATEGORY_NAME)
+	local booleanType = type(api.VarType) == 'table' and api.VarType.Boolean or 'boolean'
+	local createCheckbox = api.CreateCheckbox or api.CreateCheckBox
+	for _, entry in ipairs(entries) do
+		local setting = api.RegisterProxySetting(
+			category,
+			entry.variable,
+			booleanType,
+			entry.label,
+			settings:Defaults(entry.moduleKey)[entry.key],
+			function()
+				return settings:Get(entry.moduleKey, entry.key) == true
+			end,
+			function(value)
+				settings:Set(entry.moduleKey, entry.key, value == true)
+			end
+		)
+		createCheckbox(category, setting, nil)
+	end
+	addOpenButton(layout)
+	api.RegisterAddOnCategory(category)
+	return category
+end
+
+-- The button is a nicety: a client without the initializer still gets the switches.
+function addOpenButton(layout)
+	local createButton = ns.wow:Global('CreateSettingsButtonInitializer')
+	if type(createButton) ~= 'function' or type(layout) ~= 'table' or type(layout.AddInitializer) ~= 'function' then
+		return
+	end
+	layout:AddInitializer(createButton('', 'Open Haggler', openWindow, 'Open the Haggler window', true))
+end
+
+function registerLegacyPanel(entries)
+	local wow = ns.wow
+	local ui = ns.Widgets.new(wow, ns.theme)
+	local panel = wow:CreateFrame('Frame', nil, nil, PANEL_NAME)
+	panel.name = Options.CATEGORY_NAME
+	local title = ui:Text(panel, 17, 'color.text.title')
+	title:SetPoint('TOPLEFT', panel, 'TOPLEFT', PADDING, -PADDING)
+	title:SetText(Options.CATEGORY_NAME)
+	local openButton = ui:Button(panel, 'Open Haggler', 'primary')
+	openButton:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -12)
+	openButton:OnClick(openWindow)
+	panel.openButton = openButton
+	panel.toggles = {}
+	for index, entry in ipairs(entries) do
+		local button = ui:Button(panel, entry.label, 'secondary')
+		button:SetPoint('TOPLEFT', openButton, 'BOTTOMLEFT', 0, -12 - (index - 1) * ROW_HEIGHT)
+		button:OnClick(function()
+			local settings = ns.host.Settings
+			settings:Set(entry.moduleKey, entry.key, settings:Get(entry.moduleKey, entry.key) ~= true)
+			refreshLegacyPanel(panel)
+		end)
+		panel.toggles[index] = { button = button, entry = entry }
+	end
+	panel:SetScript('OnShow', function()
+		refreshLegacyPanel(panel)
+	end)
+	refreshLegacyPanel(panel)
+	wow:AddLegacyOptionsPanel(panel)
+	return panel
+end
+
+function refreshLegacyPanel(panel)
+	local settings = ns.host.Settings
+	for _, toggle in ipairs(panel.toggles) do
+		local isOn = settings:Get(toggle.entry.moduleKey, toggle.entry.key) == true
+		toggle.button:SetLabel(string.format('%s: %s', toggle.entry.label, isOn and 'on' or 'off'))
+	end
+end
+
+function moduleLabel(moduleKey)
+	local module = ns.host.Module(moduleKey)
+	return module and module.definition.label or moduleKey
+end
+
+function openWindow()
+	if ns.window and ns.host.IsEnabled('window') then
+		ns.window:Open()
+		return
+	end
+	ns.wow:Print('the Haggler window is turned off; /hag set window.enabled on turns it on.')
+end

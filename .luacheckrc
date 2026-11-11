@@ -8,6 +8,7 @@ self = false
 exclude_files = {
 	'.claude/',
 	'.luarocks/',
+	'Libs/',
 }
 
 -- Globals the add-on writes: its SavedVariables and its slash command.

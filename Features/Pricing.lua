@@ -45,6 +45,9 @@ local pricing = ns.host.AddModule({
 			itemInfo = function(itemId)
 				return wow:ItemInfo(itemId)
 			end,
+			cachedItemInfo = function(itemId)
+				return wow:CachedItemInfo(itemId)
+			end,
 			requestItemData = function(itemId)
 				wow:RequestItemData(itemId)
 			end,
@@ -143,11 +146,7 @@ function noteMarketMismatch(wow, prices)
 		return
 	end
 	wow:Print(
-		string.format(
-			'AHledger is set to %s; Haggler prices %s, the auction house you are on. Its prices note the difference.',
-			sourceMarket,
-			marketKey
-		)
+		string.format('AHledger uses %s; Haggler prices %s, the auction house you are on.', sourceMarket, marketKey)
 	)
 end
 

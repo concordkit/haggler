@@ -102,6 +102,13 @@ function SettingsMethods:Get(moduleKey, key)
 	return checked
 end
 
+--- Whether a value is stored (a value equal to the default is not stored, so reads as unset).
+function SettingsMethods:IsSet(moduleKey, key)
+	self:Entry(moduleKey, key)
+	local moduleValues = self.stored[moduleKey]
+	return moduleValues ~= nil and moduleValues[key] ~= nil
+end
+
 --- Sets a value after checking it against the schema.
 --- @return boolean|nil true when stored
 --- @return string|nil reason when the value is refused

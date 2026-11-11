@@ -4,6 +4,9 @@
 -- and its partner.
 local FakeGame = {}
 
+-- Helpers live further down; declared here so they stay local.
+local addAuctionHouseActions, addTrackingApi
+
 -- Widgets ---------------------------------------------------------------------------------
 
 --- A region that records what the add-on did to it: points, size, text, texture, colour,
@@ -18,6 +21,8 @@ function FakeGame.newWidget(kind, parent, template)
 		children = {},
 		scripts = {},
 		isShown = true,
+		alpha = 1,
+		isEnabled = true,
 		frameLevel = parent and parent.frameLevel and parent.frameLevel + 1 or 1,
 	}
 	-- A real region keeps its C object at [0]; adapters tell a region from a class table by it.
@@ -31,6 +36,16 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:ClearAllPoints()
 		self.points = {}
 	end
+	function widget:GetPoint(index)
+		return unpack(self.points[index or 1] or {})
+	end
+	-- Screen edges are what a test sets in left / right; nil, as for a frame not laid out yet.
+	function widget:GetLeft()
+		return self.left
+	end
+	function widget:GetRight()
+		return self.right
+	end
 	function widget:SetSize(width, height)
 		self.width, self.height = width, height
 	end
@@ -43,11 +58,33 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:GetWidth()
 		return self.width or 0
 	end
+	-- Like the client, a change of shown state runs OnShow / OnHide.
 	function widget:Show()
+		local wasShown = self.isShown
 		self.isShown = true
+		if not wasShown and self.scripts and self.scripts.OnShow then
+			self.scripts.OnShow(self)
+		end
 	end
 	function widget:Hide()
+		local wasShown = self.isShown
 		self.isShown = false
+		if wasShown and self.scripts and self.scripts.OnHide then
+			self.scripts.OnHide(self)
+		end
+	end
+	function widget:SetShown(isShown)
+		if isShown then
+			self:Show()
+		else
+			self:Hide()
+		end
+	end
+	function widget:SetAlpha(alpha)
+		self.alpha = alpha
+	end
+	function widget:GetAlpha()
+		return self.alpha
 	end
 	function widget:IsShown()
 		return self.isShown
@@ -65,6 +102,16 @@ function FakeGame.newWidget(kind, parent, template)
 		function widget:GetStringWidth()
 			return self.text and #tostring(self.text) * 6 or 0
 		end
+		function widget:SetFont(path, size, flags)
+			self.font = { path, size, flags }
+			return true
+		end
+		function widget:SetJustifyH(justify)
+			self.justifyH = justify
+		end
+		function widget:SetTextColor(r, g, b, a)
+			self.textColor = { r, g, b, a }
+		end
 		return widget
 	end
 	if kind == 'Texture' then
@@ -76,6 +123,9 @@ function FakeGame.newWidget(kind, parent, template)
 		end
 		function widget:SetVertexColor(r, g, b, a)
 			self.color = { r, g, b, a }
+		end
+		function widget:SetColorTexture(r, g, b, a)
+			self.colorTexture = { r, g, b, a }
 		end
 		return widget
 	end
@@ -94,6 +144,19 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:SetScript(script, handler)
 		self.scripts[script] = handler
 	end
+	-- Runs after the script already set, as the client chains hooks.
+	function widget:HookScript(script, handler)
+		local previous = self.scripts[script]
+		self.scripts[script] = function(...)
+			if previous then
+				previous(...)
+			end
+			handler(...)
+		end
+	end
+	function widget:SetClampedToScreen(isClamped)
+		self.isClampedToScreen = isClamped
+	end
 	function widget:GetScript(script)
 		return self.scripts[script]
 	end
@@ -106,6 +169,51 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:GetFrameLevel()
 		return self.frameLevel
 	end
+	function widget:SetFrameStrata(strata)
+		self.strata = strata
+	end
+	function widget:GetFrameStrata()
+		return self.strata
+	end
+	function widget:SetMovable(isMovable)
+		self.isMovable = isMovable
+	end
+	function widget:RegisterForDrag(...)
+		self.dragButtons = { ... }
+	end
+	function widget:StartMoving()
+		self.isMoving = true
+	end
+	function widget:StopMovingOrSizing()
+		self.isMoving = false
+	end
+	if kind == 'EditBox' then
+		function widget:SetText(text)
+			self.text = text
+		end
+		function widget:GetText()
+			return self.text or ''
+		end
+		function widget:SetAutoFocus(isAutoFocus)
+			self.isAutoFocus = isAutoFocus
+		end
+		function widget:ClearFocus()
+			self.hasFocus = false
+		end
+		function widget:SetFocus()
+			self.hasFocus = true
+		end
+		function widget:HasFocus()
+			return self.hasFocus == true
+		end
+		--- The player types text and presses Enter.
+		function widget:Submit(text)
+			self.text = text
+			if self.scripts.OnEnterPressed then
+				self.scripts.OnEnterPressed(self)
+			end
+		end
+	end
 	if kind == 'Button' then
 		function widget:SetText(text)
 			self.text = text
@@ -113,9 +221,18 @@ function FakeGame.newWidget(kind, parent, template)
 		function widget:GetText()
 			return self.text
 		end
-		--- A hardware click, as the player makes it.
+		function widget:Enable()
+			self.isEnabled = true
+		end
+		function widget:Disable()
+			self.isEnabled = false
+		end
+		function widget:IsEnabled()
+			return self.isEnabled
+		end
+		--- A hardware click, as the player makes it; a disabled button takes none.
 		function widget:Click()
-			if self.scripts.OnClick then
+			if self.isEnabled and self.scripts.OnClick then
 				self.scripts.OnClick(self, 'LeftButton')
 			end
 		end
@@ -123,12 +240,16 @@ function FakeGame.newWidget(kind, parent, template)
 	return widget
 end
 
-local function newFrame()
+-- An event in unknownEvents is one this client does not have: RegisterEvent raises, as it does.
+local function newFrame(unknownEvents)
 	local frame = { events = {} }
 	function frame:SetScript(_, handler)
 		self.onEvent = handler
 	end
 	function frame:RegisterEvent(event)
+		if unknownEvents and unknownEvents[event] then
+			error('Attempt to register unknown event "' .. event .. '"')
+		end
 		self.events[event] = true
 	end
 	function frame:UnregisterEvent(event)
@@ -188,8 +309,10 @@ end
 --- client value, 1 (short) to 4 (very long) as AHledger's saved scans show; it defaults to 4.
 --- As in the client, some rows come back before their seller is loaded: every third row, and
 --- any row with isLoaded = false, has no owner and hasAllInfo false.
+--- game.unknownEvents[event] makes RegisterEvent raise for it, as for an event the client lacks.
 --- game.inCombat drives InCombatLockdown; game.secretValues[value] marks a secret value;
---- RequestLoadItemDataByID calls are recorded in game.itemDataRequests.
+--- RequestLoadItemDataByID calls are recorded in game.itemDataRequests; GetItemInfo of an item
+--- not in itemInfo (the client then asks the server for it) in game.itemInfoMisses.
 --- Bags: game.containerItems['bag:slot'] = { itemID?, stackCount, isBound, hyperlink } (itemID
 --- nil models an item the client has not loaded), game.bagSlots[bag] = slots.
 --- Trade: game.trade.player / .target = { money, slots = { [slot] = { name?, count, link? } } }
@@ -197,9 +320,267 @@ end
 --- isGuild }; game.friendGuids[guid] marks a friend, game.bnetFriends lists Battle.net friends'
 --- character GUIDs (one game account each). AcceptTrade
 --- calls are counted in game.acceptCount. Frames the add-on creates go to game.createdFrames.
+-- The auction house's post, search and buy calls (step 4): every call is recorded in
+-- game.auctionHouse.calls as { name, ... }; the answers come from game.auctionHouse.
+function addAuctionHouseActions(game, env)
+	local auctionHouse = game.auctionHouse
+	local api = env.C_AuctionHouse
+	local function record(name, ...)
+		auctionHouse.calls[#auctionHouse.calls + 1] = { name, ... }
+	end
+	function api.IsSellItemValid(location)
+		local item = game.containerItems[location.bag .. ':' .. location.slot]
+		return item ~= nil and not auctionHouse.unsellable[item.itemID]
+	end
+	function api.GetItemCommodityStatus(location)
+		local item = game.containerItems[location.bag .. ':' .. location.slot]
+		return item and auctionHouse.commodities[item.itemID] and 2 or 1
+	end
+	function api.CalculateCommodityDeposit()
+		return auctionHouse.deposit
+	end
+	function api.CalculateItemDeposit()
+		return auctionHouse.deposit
+	end
+	for _, name in ipairs({ 'PostCommodity', 'PostItem', 'ConfirmPostCommodity', 'ConfirmPostItem' }) do
+		api[name] = function(...)
+			record(name, ...)
+			return not name:find('^Confirm') and auctionHouse.needsConfirm or nil
+		end
+	end
+	function api.MakeItemKey(itemId)
+		return { itemID = itemId }
+	end
+	function api.SendSearchQuery(itemKey)
+		record('SendSearchQuery', itemKey.itemID)
+	end
+	function api.GetNumCommoditySearchResults()
+		return #auctionHouse.commodityResults
+	end
+	function api.GetCommoditySearchResultInfo(_, index)
+		return auctionHouse.commodityResults[index]
+	end
+	function api.GetNumItemSearchResults()
+		return #auctionHouse.itemResults
+	end
+	function api.GetItemSearchResultInfo(_, index)
+		return auctionHouse.itemResults[index]
+	end
+	for _, name in ipairs({
+		'StartCommoditiesPurchase',
+		'ConfirmCommoditiesPurchase',
+		'CancelCommoditiesPurchase',
+		'PlaceBid',
+	}) do
+		api[name] = function(...)
+			record(name, ...)
+		end
+	end
+	env.Enum = env.Enum or {}
+	env.Enum.ItemCommodityStatus = { Unknown = 0, Item = 1, Commodity = 2 }
+	env.Enum.AuctionHouseSortOrder = { Price = 0 }
+	-- Blizzard's auction house window: hidden until the test opens the auction house.
+	env.AuctionHouseFrame = FakeGame.newWidget('Frame', env.UIParent)
+	env.AuctionHouseFrame:Hide()
+end
+
+FakeGame.TRACKING_HOOKS = {}
+for _, method in ipairs({
+	'PostItem',
+	'ConfirmPostItem',
+	'PostCommodity',
+	'ConfirmPostCommodity',
+	'CancelAuction',
+	'ConfirmCommoditiesPurchase',
+	'PlaceBid',
+	'TakeInboxMoney',
+	'TakeInboxItem',
+	'AutoLootMailItem',
+	'BuyMerchantItem',
+	'UseContainerItem',
+	'PickupContainerItem',
+	'DeleteCursorItem',
+	'CraftRecipe',
+}) do
+	FakeGame.TRACKING_HOOKS[method] = true
+end
+
+--- Step 5's bookkeeping APIs: owned auctions, the mailbox, the merchant, destroying, crafting.
+--- game.owned = { { auctionID, itemKey, quantity, status } }; game.mail = { { subject, money,
+--- daysLeft, invoice = { type, itemName, bid, deposit, cut, count }, items = { { itemId, count } } } };
+--- game.merchant = { [index] = { itemId, price, stack, hasExtendedCost } }; game.itemCounts;
+--- game.schematics = { [recipeId] = schematic }; game.cursorItem; game.isMerchantOpen.
+function addTrackingApi(game, env)
+	--- Hooks other than the tracking module's (Features/Tracking.lua), which every start installs.
+	function game:HookCount()
+		local count = 0
+		for _, hook in ipairs(self.hooks) do
+			if not FakeGame.TRACKING_HOOKS[hook.method] then
+				count = count + 1
+			end
+		end
+		return count
+	end
+	game.owned, game.mail, game.merchant, game.itemCounts, game.schematics = {}, {}, {}, {}, {}
+	local api = env.C_AuctionHouse
+	local function record(name, ...)
+		game.auctionHouse.calls[#game.auctionHouse.calls + 1] = { name, ... }
+	end
+	function api.GetNumOwnedAuctions()
+		return #game.owned
+	end
+	function api.GetOwnedAuctionInfo(index)
+		return game.owned[index]
+	end
+	function api.GetAuctionInfoByID(auctionId)
+		return game.auctionHouse.byId and game.auctionHouse.byId[auctionId]
+	end
+	function api.CancelAuction(...)
+		record('CancelAuction', ...)
+	end
+	env.Enum.AuctionStatus = { Active = 0, Sold = 1 }
+	env.C_Item.GetItemID = function(location)
+		local item = game.containerItems[location.bag .. ':' .. location.slot]
+		return item and item.itemID
+	end
+	env.C_Item.GetItemCount = function(itemId)
+		return game.itemCounts[itemId] or 0
+	end
+	env.GetInboxNumItems = function()
+		return #game.mail, #game.mail
+	end
+	env.GetInboxHeaderInfo = function(index)
+		local mail = game.mail[index]
+		if mail then
+			return nil,
+				nil,
+				'Auction House',
+				mail.subject,
+				mail.money or 0,
+				0,
+				mail.daysLeft or 30,
+				mail.items and #mail.items or nil
+		end
+	end
+	env.GetInboxInvoiceInfo = function(index)
+		local invoice = game.mail[index] and game.mail[index].invoice
+		if invoice then
+			return invoice.type,
+				invoice.itemName,
+				'Buyer',
+				invoice.bid,
+				invoice.bid,
+				invoice.deposit or 0,
+				invoice.cut or 0,
+				0,
+				0,
+				0,
+				invoice.count
+		end
+	end
+	env.GetInboxItem = function(index, attachment)
+		local item = game.mail[index] and game.mail[index].items and game.mail[index].items[attachment]
+		if item then
+			return 'Item', item.itemId, 'icon', item.count
+		end
+	end
+	env.ATTACHMENTS_MAX_RECEIVE = 4
+	for _, name in ipairs({
+		'TakeInboxMoney',
+		'TakeInboxItem',
+		'AutoLootMailItem',
+		'BuyMerchantItem',
+		'DeleteCursorItem',
+	}) do
+		env[name] = function(...)
+			record(name, ...)
+		end
+	end
+	env.GetMerchantItemID = function(index)
+		return game.merchant[index] and game.merchant[index].itemId
+	end
+	env.C_MerchantFrame = {
+		GetItemInfo = function(index)
+			local item = game.merchant[index]
+			return item and { price = item.price, stackCount = item.stack or 1, hasExtendedCost = item.hasExtendedCost }
+		end,
+	}
+	env.MerchantFrame = FakeGame.newWidget('Frame', env.UIParent)
+	env.MerchantFrame:Hide()
+	env.C_Container.UseContainerItem = function(...)
+		record('UseContainerItem', ...)
+	end
+	env.C_Container.PickupContainerItem = function(...)
+		record('PickupContainerItem', ...)
+	end
+	env.GetCursorInfo = function()
+		if game.cursorItem then
+			return 'item', game.cursorItem
+		end
+	end
+	env.C_TradeSkillUI = {
+		GetRecipeSchematic = function(recipeId)
+			return game.schematics[recipeId]
+		end,
+		CraftRecipe = function(...)
+			record('CraftRecipe', ...)
+		end,
+	}
+end
+
+--- The client's Settings API (Settings → AddOns) as far as Haggler uses it; what was
+--- registered is kept in game.settingsApi.
+function FakeGame.addSettingsApi(game)
+	local registered = { settings = {}, checkboxes = {}, initializers = {}, addOnCategories = {} }
+	game.settingsApi = registered
+	local layout = {}
+	function layout.AddInitializer(_, initializer)
+		registered.initializers[#registered.initializers + 1] = initializer
+	end
+	game.env.Settings = {
+		VarType = { Boolean = 'boolean' },
+		RegisterVerticalLayoutCategory = function(name)
+			registered.category = {
+				name = name,
+				GetID = function()
+					return 42
+				end,
+			}
+			return registered.category, layout
+		end,
+		RegisterProxySetting = function(category, variable, varType, label, default, getValue, setValue)
+			local setting = {
+				category = category,
+				variable = variable,
+				varType = varType,
+				label = label,
+				default = default,
+				GetValue = getValue,
+				SetValue = setValue,
+			}
+			registered.settings[variable] = setting
+			return setting
+		end,
+		CreateCheckbox = function(_, setting)
+			registered.checkboxes[#registered.checkboxes + 1] = setting
+		end,
+		RegisterAddOnCategory = function(category)
+			registered.addOnCategories[#registered.addOnCategories + 1] = category
+		end,
+		OpenToCategory = function(id)
+			registered.openedId = id
+		end,
+	}
+	game.env.CreateSettingsButtonInitializer = function(name, buttonText, onClick, tooltip, addSearchTags)
+		return { name = name, buttonText = buttonText, onClick = onClick, tooltip = tooltip, tags = addSearchTags }
+	end
+end
+
 function FakeGame.new(options)
 	options = options or {}
+	local unknownEvents = {}
 	local game = {
+		unknownEvents = unknownEvents,
 		now = options.now or 1000000,
 		clockMs = 0,
 		timers = {},
@@ -207,20 +588,32 @@ function FakeGame.new(options)
 		modifiers = {},
 		printed = {},
 		replicateRequests = 0,
-		frame = newFrame(),
+		frame = newFrame(unknownEvents),
 		postCalls = {},
 		containerItems = {},
 		itemInfo = options.itemInfo or {},
 		itemDataRequests = {},
+		itemInfoMisses = {},
 		inCombat = false,
 		secretValues = {},
 		bagSlots = {},
 		createdFrames = {},
+		overrideBindings = {},
 		hooks = {},
 		trade = { player = { money = 0, slots = {} }, target = { money = 0, slots = {} } },
 		friendGuids = {},
 		bnetFriends = {},
 		acceptCount = 0,
+		loadedAddOns = {},
+		auctionHouse = {
+			calls = {},
+			unsellable = {},
+			commodities = {},
+			deposit = 100,
+			needsConfirm = false,
+			commodityResults = {},
+			itemResults = {},
+		},
 	}
 	local uiParent = FakeGame.newWidget('Frame')
 	local env = {
@@ -232,14 +625,32 @@ function FakeGame.new(options)
 		end,
 		-- The engine's hidden event frame is the one created without a parent; every other frame
 		-- is a recorded widget.
-		CreateFrame = function(kind, _, parent, template)
+		CreateFrame = function(kind, name, parent, template)
 			if parent == nil then
 				return game.frame
 			end
 			local widget = FakeGame.newWidget(kind, parent, template)
+			widget.name = name
 			game.createdFrames[#game.createdFrames + 1] = widget
+			if name then
+				game.env[name] = widget
+			end
 			return widget
 		end,
+		UISpecialFrames = {},
+		IsLoggedIn = function()
+			return game.isLoggedIn == true
+		end,
+		C_AddOns = {
+			IsAddOnLoaded = function(name)
+				return game.loadedAddOns[name] == true
+			end,
+		},
+		ItemLocation = {
+			CreateFromBagAndSlot = function(_, bag, slot)
+				return { bag = bag, slot = slot }
+			end,
+		},
 		UIParent = uiParent,
 		hooksecurefunc = function(object, method, hook)
 			local original = object[method]
@@ -327,11 +738,16 @@ function FakeGame.new(options)
 			return 1
 		end,
 		C_Item = {
+			-- Like the client, asking for an item it has not cached sends a request for it.
 			GetItemInfo = function(itemId)
 				local info = game.itemInfo[itemId]
 				if info then
 					return info.name or 'Item', 'link', 1, 1, 0, 'Type', 'Sub', info.maxStack, '', 0, info.vendorPrice
 				end
+				game.itemInfoMisses[#game.itemInfoMisses + 1] = itemId
+			end,
+			IsItemDataCachedByID = function(itemId)
+				return game.itemInfo[itemId] ~= nil
 			end,
 			RequestLoadItemDataByID = function(itemId)
 				game.itemDataRequests[#game.itemDataRequests + 1] = itemId
@@ -339,6 +755,17 @@ function FakeGame.new(options)
 		},
 		InCombatLockdown = function()
 			return game.inCombat == true
+		end,
+		GetMoney = function()
+			return game.money or 0
+		end,
+		-- game.overrideBindings[owner][key] = button name; game:PressKey(key) clicks it.
+		SetOverrideBindingClick = function(owner, _, key, buttonName)
+			game.overrideBindings[owner] = game.overrideBindings[owner] or {}
+			game.overrideBindings[owner][key] = buttonName
+		end,
+		ClearOverrideBindings = function(owner)
+			game.overrideBindings[owner] = nil
 		end,
 		issecretvalue = function(value)
 			return value ~= nil and game.secretValues[value] == true
@@ -429,6 +856,8 @@ function FakeGame.new(options)
 	env.GameTooltip = newTooltip(game, 'GameTooltip')
 	env.ItemRefTooltip = newTooltip(game, 'ItemRefTooltip')
 	game.env = env
+	addAuctionHouseActions(game, env)
+	addTrackingApi(game, env)
 
 	--- Fires a game event at the event frame.
 	function game:Fire(event, ...)
@@ -469,6 +898,18 @@ function FakeGame.new(options)
 		return frames
 	end
 
+	--- Presses a key as the client would: the newest override binding for it clicks its button.
+	function game:PressKey(key)
+		for _, keys in pairs(self.overrideBindings) do
+			local buttonName = keys[key]
+			local button = buttonName and env[buttonName]
+			if button and button.scripts.OnClick then
+				button.scripts.OnClick(button, 'LeftButton')
+				return true
+			end
+		end
+		return false
+	end
 	function game:Advance(seconds)
 		self.now = self.now + seconds
 		return self:RunTimers()
@@ -500,6 +941,23 @@ FakeGame.FEATURE_FILES = {
 	'Features/Tooltip/Tooltip.lua',
 	'Features/Bags/Bags.lua',
 	'Features/Trade/Trade.lua',
+	'Features/Tracking.lua',
+	'Features/Sessions.lua',
+	'Features/Crafting/View.lua',
+	'Features/Crafting/Crafting.lua',
+	'Features/TopBar/TopBar.lua',
+	'Features/Window/Window.lua',
+	'Features/Window/ScanTab.lua',
+	'Features/Window/LookupTab.lua',
+	'Features/Window/RulesTab.lua',
+	'Features/Window/SellTab.lua',
+	'Features/Window/AuctionsTab.lua',
+	'Features/Window/BuyTab.lua',
+	'Features/Window/FlipsTab.lua',
+	'Features/Window/LedgerTab.lua',
+	'Features/Window/VenturesTab.lua',
+	'Features/Compat.lua',
+	'Features/Options.lua',
 }
 
 -- AHledger --------------------------------------------------------------------------------
@@ -528,6 +986,8 @@ function FakeGame.newAHledgerAPI(options)
 		snapshot = options.snapshot == true,
 		rows = options.rows or {},
 		mode = options.mode,
+		-- AHledger with no synced table that still answers GetPrice from the player's own scan.
+		ownScanOverlay = options.ownScanOverlay == true,
 		calls = 0,
 	}
 	local function marketOf(market)
@@ -549,7 +1009,7 @@ function FakeGame.newAHledgerAPI(options)
 			error('AHledger broke')
 		end
 		local m = marketOf(market)
-		if m ~= state.market then
+		if m ~= state.market or state.ownScanOverlay then
 			return nil
 		end
 		local count = 0

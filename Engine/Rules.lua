@@ -33,8 +33,9 @@
 	fewSales, fewListings, fallbackBase, inferredStep, baitTrimmed, capOverridden, badInput,
 	snapshot (an AHledger figure from its bundled copy, not synced), the price source problems
 	(low, scans only): noPriceSource (AHledger missing), priceSourceFailing (its calls fail),
-	noMarketTable (no AHledger prices for this market), marketMismatch (medium: AHledger is set
-	to another market) and whatever ctx.sales adds (ownSalesThin, trollBuys).
+	noMarketTable (no AHledger prices for this market), ownScanOverlay (medium: no synced table,
+	but AHledger answered from the player's own scan), marketMismatch (info, level high: AHledger
+	uses another market) and whatever ctx.sales adds (ownSalesThin, trollBuys).
 
 	A Price also says whether any AHledger figure went into it (usesPriceSource), so the credit
 	shows only with prices that used AHledger.
@@ -493,7 +494,16 @@ function assessConfidence(facts, ageSeconds, market, ctx)
 	local reasons = {}
 	if facts.usesMarket then
 		local problem = sourceProblemOf(ctx, facts)
-		if problem then
+		if problem and problem.code == 'noMarketTable' and facts.usesSourceFigure then
+			-- AHledger has no synced table yet answered: its figures are its overlay of the
+			-- player's own scan, so "no prices" would contradict the figure shown.
+			addReason(
+				reasons,
+				'ownScanOverlay',
+				'medium',
+				'AHledger has no synced table for this market; its figures come from your own scan'
+			)
+		elseif problem then
 			addReason(reasons, problem.code, 'low', problem.text .. '; own scans only')
 		end
 		if facts.isSnapshot then
@@ -508,11 +518,11 @@ function assessConfidence(facts, ageSeconds, market, ctx)
 	local mismatch = tableOrNil(ctx.marketMismatch)
 	if facts.usesSourceFigure and mismatch then
 		local text = string.format(
-			'AHledger is set to %s; Haggler prices %s',
+			'AHledger uses %s; Haggler prices %s',
 			tostring(mismatch.sourceMarket),
 			tostring(mismatch.marketKey)
 		)
-		addReason(reasons, 'marketMismatch', 'medium', text)
+		addReason(reasons, 'marketMismatch', 'high', text)
 	end
 	local isFewListings = facts.listedUnits ~= nil and facts.listedUnits < thresholds.fewListingUnits
 	if isFewListings or facts.isListingThin then

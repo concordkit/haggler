@@ -469,10 +469,10 @@ t.test("Haggler's own request is recorded once, through the same hook", function
 	game:Advance(8)
 	t.eq(game.replicateRequests, 1)
 	t.eq(addon.store:Market(MARKET).replicateRequestedAt, NOW + 8)
-	t.eq(#game.hooks, 1, 'hooked once')
+	t.eq(game:HookCount(), 1, 'hooked once')
 	addon.host.Disable('scan')
 	addon.host.Enable('scan')
-	t.eq(#game.hooks, 1, 'not hooked again on re-enable')
+	t.eq(game:HookCount(), 1, 'not hooked again on re-enable')
 end)
 
 t.test('no C_AuctionHouse on the client: nothing is hooked and nothing fails', function()
@@ -481,7 +481,7 @@ t.test('no C_AuctionHouse on the client: nothing is hooked and nothing fails', f
 	local addon = FakeGame.startAddon(t, game)
 	game:Fire('AUCTION_HOUSE_SHOW')
 	game:Advance(8)
-	t.eq(#game.hooks, 0)
+	t.eq(game:HookCount(), 0)
 	t.same(addon.errors, {})
 	t.eq(addon.host.RunCommand('scan status')[1], 'Scan: open')
 end)
@@ -513,6 +513,10 @@ t.test('switching the scan module off stops listening and drops its command', fu
 	local game = newGame({ listings = { { LINEN, 1, 100 } } })
 	local addon = FakeGame.startAddon(t, game)
 	addon.host.Disable('scan')
+	-- The window and the top bar listen to the auction house opening too; with them off, nothing
+	-- else does.
+	addon.host.Disable('window')
+	addon.host.Disable('topbar')
 	t.eq(game.frame.events.AUCTION_HOUSE_SHOW, nil)
 	t.eq(game.frame.events.REPLICATE_ITEM_LIST_UPDATE, nil)
 	game:Fire('AUCTION_HOUSE_SHOW')
@@ -522,4 +526,43 @@ t.test('switching the scan module off stops listening and drops its command', fu
 	t.same(addon.host.RunCommand('scan'), { 'Unknown command "scan". Try /hag help.' })
 	addon.host.Enable('scan')
 	t.eq(game.frame.events.AUCTION_HOUSE_SHOW, true)
+end)
+
+t.group('cache-only price context')
+
+t.test('a cache-only context reads only cached item info and requests nothing', function()
+	local read, cachedRead, requested = {}, {}, {}
+	local service = ns.PriceService.new({
+		now = function()
+			return NOW
+		end,
+		store = assert(ns.Store.open({}, {})),
+		priceSource = sourceWithTable(),
+		marketKey = function()
+			return MARKET
+		end,
+		itemInfo = function(itemId)
+			read[#read + 1] = itemId
+			return { maxStack = 20, vendorPrice = 13 }
+		end,
+		cachedItemInfo = function(itemId)
+			cachedRead[#cachedRead + 1] = itemId
+			return nil
+		end,
+		requestItemData = function(itemId)
+			requested[#requested + 1] = itemId
+		end,
+		nextFrame = function(fn)
+			fn()
+			return true
+		end,
+	})
+	local ctx = service:Context({ isCacheOnly = true })
+	service:Get(LINEN, nil, ctx)
+	service:Get(SWORD, nil, ctx)
+	t.same(read, {}, 'the loading reader is never called')
+	t.truthy(#cachedRead > 0)
+	t.same(requested, {})
+	service:Get(LINEN, nil, service:Context())
+	t.truthy(#read > 0, 'a normal context still reads item info')
 end)

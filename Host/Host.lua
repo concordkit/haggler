@@ -410,6 +410,11 @@ function ModuleMethods:SetSetting(key, value)
 	return self.host.Settings:Set(self.key, key, value)
 end
 
+--- @return boolean whether the setting holds a stored (non-default) value
+function ModuleMethods:IsSettingSet(key)
+	return self.host.Settings:IsSet(self.key, key)
+end
+
 function ModuleMethods:AddCommand(name, command)
 	self.host.AddCommand(name, command, self.key)
 end

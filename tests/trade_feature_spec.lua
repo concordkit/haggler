@@ -212,7 +212,7 @@ t.test('confirm mode: the overlay button arms on the first click and accepts on 
 	for _, hook in ipairs(game.hooks) do
 		t.truthy(hook.object ~= game.env.TradeFrameTradeButton, "Blizzard's Trade button is never hooked")
 	end
-	t.eq(#game.hooks, 1, 'only the scan request hook')
+	t.eq(game:HookCount(), 1, 'only the scan request hook')
 end)
 
 t.test('confirm mode: an arm expires, and any change disarms it', function()
@@ -429,9 +429,10 @@ end)
 t.test('no TradeFrame yet: nothing is drawn and nothing fails', function()
 	local game, addon = start()
 	game.env.TradeFrame = nil
+	local framesBefore = #game.createdFrames
 	open(game, { money = GOLD, slots = {} })
 	t.same(addon.errors, {})
-	t.eq(#game.createdFrames, 0)
+	t.eq(#game.createdFrames, framesBefore)
 end)
 
 t.test('the silver fee goes up to at least 100g', function()

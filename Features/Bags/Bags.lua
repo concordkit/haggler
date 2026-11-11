@@ -48,6 +48,13 @@ local bags = ns.host.AddModule({
 		module:On('SCAN_READY', function()
 			scheduleRepaint(view)
 		end)
+		-- A saved or newly default rule changes the price every value comes from.
+		for _, message in ipairs({ 'RULES_CHANGED', 'DEFAULT_RULE_CHANGED' }) do
+			module:On(message, function()
+				view.ctx = nil
+				scheduleRepaint(view)
+			end)
+		end
 		attachHosts(view)
 		repaint(view)
 	end,

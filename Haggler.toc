@@ -12,6 +12,11 @@
 ## Dependencies: AHledger
 ## OptionalDeps: BagPad, Bagnon, Baganator
 
+# Bundled libraries (Libs/LICENSES.md)
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+
 # Host layer (Concord's API shape; dropped inside Concord)
 Host\Tokens.lua
 Host\Bus.lua
@@ -22,6 +27,8 @@ Host\Tooltip.lua
 media\icons\Icons.lua
 Host\Icons.lua
 Host\Badges.lua
+Host\Widgets.lua
+Host\Input.lua
 Host\BagHosts\BagHosts.lua
 Host\BagHosts\Blizzard.lua
 Host\BagHosts\BagPad.lua
@@ -30,6 +37,7 @@ Host\BagHosts\Baganator.lua
 
 # Engine (UI-free)
 Engine\Wow.lua
+Engine\WowTracking.lua
 Engine\ItemMarket.lua
 Engine\PriceData.lua
 Engine\Rules.lua
@@ -40,9 +48,20 @@ Engine\Scan.lua
 Engine\PriceContext.lua
 Engine\PriceService.lua
 Engine\Guardrail.lua
+Engine\RuleEditor.lua
+Engine\Sell.lua
+Engine\Buy.lua
 Engine\Value.lua
 Engine\Trade.lua
 Engine\Ledger.lua
+Engine\CostPool.lua
+Engine\AuctionTracker.lua
+Engine\MailMatcher.lua
+Engine\Ventures.lua
+Engine\CraftCost.lua
+Engine\Books.lua
+Engine\Flips.lua
+Engine\Advice.lua
 
 # Shared services, then features (each registers its module)
 Init.lua
@@ -56,6 +75,26 @@ Features\Bags\Bags.lua
 Features\Trade\Model.lua
 Features\Trade\Frames.lua
 Features\Trade\Trade.lua
+Features\Tracking.lua
+Features\Sessions.lua
+Features\Crafting\View.lua
+Features\Crafting\Crafting.lua
+Features\TopBar\Model.lua
+Features\TopBar\Feed.lua
+Features\TopBar\TopBar.lua
+Features\Window\Model.lua
+Features\Window\Window.lua
+Features\Window\ScanTab.lua
+Features\Window\LookupTab.lua
+Features\Window\RulesTab.lua
+Features\Window\SellTab.lua
+Features\Window\AuctionsTab.lua
+Features\Window\BuyTab.lua
+Features\Window\FlipsTab.lua
+Features\Window\LedgerTab.lua
+Features\Window\VenturesTab.lua
+Features\Compat.lua
+Features\Options.lua
 
 # Bootstrap
 
