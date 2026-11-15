@@ -1,0 +1,12 @@
+# BigWigs packager: the release zip holds only the add-on.
+# media/fonts (Roboto Condensed and its licence) and media/icons ship.
+package-as: Haggler
+enable-nolib-creation: no
+ignore:
+  - tests
+  - tools
+  - .claude
+  - .luacheckrc
+  - .stylua.toml
+  - .styluaignore
+  - media/screenshots

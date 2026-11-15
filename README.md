@@ -69,3 +69,9 @@ tools/sync-design.sh
 ## Credits
 
 Prices from [AHledger](https://ahledger.com). Their data is free for personal and community use with this linked credit.
+
+## Third-party
+
+Roboto Condensed 2.137, Copyright 2011 Google Inc., Apache License 2.0, media/fonts/LICENSE-RobotoCondensed.txt
+
+Bundled libraries and their licences are listed in Libs/LICENSES.md.
