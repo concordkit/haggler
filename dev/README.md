@@ -77,4 +77,4 @@ Items 10, 14, 16 and 17 are proven by specs and also judged in game. The in-game
 
 ## Engine hook points
 
-None needed. Every judge reads `HagglerDB`, `HagglerCharDB`, the named frames (`HagglerTopBar`, `HagglerFrame`, `HagglerOptionsPanel`, `HagglerInputButtonN`), the LDB objects, client events and post-hooks.
+None needed. Every judge reads `HagglerDB`, `HagglerCharDB`, the named frames (`HagglerTopBar`, `HagglerFrame`, `HagglerInputButtonN`), the client's `SettingsPanel` and its current category, the LDB objects, client events and post-hooks. `HagglerOptionsPanel` exists only on the legacy options fallback; `bar.shortcuts` accepts either it or the Settings window open on Haggler.
