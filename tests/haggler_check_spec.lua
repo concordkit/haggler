@@ -1021,3 +1021,89 @@ t.test('Concord v1: the items register with adapted judges; a refusal falls back
 	end
 	t.eq(ns.Check.registerWithConcord(client, checker), false, 'a host that raises is a refusal')
 end)
+
+t.test('Concord answers reach Haggler_CheckDB: by onAnswer, or from ConcordCheckDB on older hosts', function()
+	local client = fakeClient()
+	local registered
+	client.ConcordCheck = {
+		VERSION = 1,
+		FEATURES = { onAnswer = true },
+		RegisterProbes = function(probes)
+			registered = probes
+			return true
+		end,
+		Log = function() end,
+	}
+	local db = {}
+	local checker = ns.Check.create(client, db, { version = '0.2.0', build = '1.15.8.1', charKey = CHAR })
+	checker.api = fakeApi()
+	local function resultOf(id)
+		return Suite.resultOf(db, checker.run, itemById(id))
+	end
+	local function storeWith(records, current)
+		current = current or 'run2'
+		return { suites = { Haggler = { current = current, runs = { [current] = { items = records } } } } }
+	end
+	local function playerAnswer(id, state, at)
+		return { id = id, state = state, answeredBy = 'player', at = at }
+	end
+	local function hostJudges()
+		registered.items[1].judge({ lines = {}, trigger = { kind = 'line' } })
+	end
+	t.same({ ns.Check.registerWithConcord(client, checker) }, { true })
+	t.eq(type(registered.onAnswer), 'function')
+
+	client.ConcordCheckDB = storeWith({})
+	registered.onAnswer({ owner = 'Haggler', id = 'window.tabs', answer = 'pass', runKey = 'run2' })
+	t.eq(resultOf('window.tabs').state, 'pass', 'the answer reaches the DB')
+	t.eq(resultOf('window.tabs').isByPlayer, true, 'as a player verdict')
+	registered.onAnswer({ owner = 'Haggler', id = 'window.tabs', answer = 'fail', runKey = 'run2' })
+	t.eq(resultOf('window.tabs').state, 'fail', 'a changed answer')
+	registered.onAnswer({ owner = 'Haggler', id = 'window.tabs', answer = 'pass', runKey = 'run1' })
+	t.eq(resultOf('window.tabs').state, 'fail', 'an answer for another Concord run is dropped')
+	registered.onAnswer({ owner = 'Other', id = 'bar.look', answer = 'pass', runKey = 'run2' })
+	t.eq(resultOf('bar.look'), nil, 'another owner')
+	registered.onAnswer({ owner = 'Haggler', id = 'no.such-item', answer = 'pass', runKey = 'run2' })
+	registered.onAnswer({ owner = 'Haggler', id = 'load.clean', answer = 'pass', runKey = 'run2' })
+	t.eq(resultOf('load.clean'), nil, 'not open to a player verdict: Haggler judges it')
+	client.ConcordCheckDB = storeWith({ playerAnswer('bar.look', 'pass', 't1') })
+	hostJudges()
+	t.eq(resultOf('bar.look'), nil, 'a host with onAnswer is not read behind its back')
+
+	client.ConcordCheck.FEATURES = { onAnswer = false }
+	hostJudges()
+	t.eq(resultOf('bar.look').state, 'pass', 'an older host: read from ConcordCheckDB at judge time')
+	t.eq(resultOf('bar.look').isByPlayer, true)
+	checker:Model().setVerdict(itemById('bar.look'), 'na')
+	hostJudges()
+	t.eq(resultOf('bar.look').state, 'na', 'a later /hc verdict is not overwritten by the taken answer')
+	client.ConcordCheckDB.suites.Haggler.runs.run2.items[1] = playerAnswer('bar.look', 'fail', 't2')
+	hostJudges()
+	t.eq(resultOf('bar.look').state, 'fail', 'a newer answer in Concord wins again')
+
+	client.ConcordCheckDB = storeWith({
+		{ id = 'feed.display', state = 'pass', fromOnce = true },
+		{ id = 'focus.pad', state = 'pass', answeredBy = 'player', fromOnce = true },
+	})
+	hostJudges()
+	t.eq(resultOf('feed.display'), nil, 'a once answer carried from an earlier run records nothing')
+	t.eq(resultOf('focus.pad'), nil)
+
+	client.ConcordCheckDB = storeWith({ playerAnswer('window.tabs', 'pass', 't3') })
+	checker:Reset()
+	hostJudges()
+	t.eq(resultOf('window.tabs'), nil, 'an answer given before /hc reset is not taken into the new run')
+	client.ConcordCheckDB.suites.Haggler.runs.run2.items[2] = playerAnswer('bar.look', 'pass', 't4')
+	hostJudges()
+	t.eq(resultOf('bar.look').state, 'pass', 'an answer after the reset is')
+
+	client.ConcordCheckDB = storeWith({ { id = 'window.tabs', state = 'pending' } }, 'run3')
+	hostJudges()
+	t.eq(resultOf('window.tabs'), nil, 'a Concord reset (pending records) records nothing')
+	client.ConcordCheckDB = { suites = { Haggler = { runs = {} } } }
+	hostJudges()
+	client.ConcordCheckDB = nil
+	hostJudges()
+	registered.onAnswer({ owner = 'Haggler', id = 'window.tabs', answer = 'pass', runKey = 'run3' })
+	t.eq(resultOf('window.tabs'), nil, 'a missing store is no answer')
+end)
