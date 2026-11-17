@@ -8,8 +8,9 @@
 
 	With Concord_Check v1 (ConcordCheck.VERSION == 1) the items are registered with
 	ConcordCheck.RegisterProbes; each Concord judge reports what this checker recorded, so the
-	host shows the same verdicts. When the host refuses (a false return) the verdicts go to
-	ConcordCheck.Log(owner, verdict, text) instead. The /hc panel stays either way.
+	host shows the same verdicts. Each recorded result is also logged as an INFO evidence line,
+	which makes the host re-judge at once. When the host refuses (a false return) the results
+	are logged as PASS or FAIL instead. The /hc panel stays either way.
 
 	  Check.create(env, db, identity) -> checker   identity = { version, build, charKey }
 	  checker:Deliver(signal)                      judges and records
@@ -25,6 +26,8 @@ local concordOf, concordVerdictOf, concordItemOf, clientEventsOf
 
 local CONCORD_VERSION = 1
 local OWNER = 'Haggler'
+-- ConcordCheck.Log takes PASS, FAIL or INFO; a look or n/a is information.
+local LOG_VERDICTS = { pass = 'PASS', fail = 'FAIL' }
 
 local Check = {}
 ns.Check = Check
@@ -156,9 +159,7 @@ function Check.boot(env)
 		local panel = ns.Panel.create(env, checker:Model())
 		local isRegistered = registerWithConcord(env, checker)
 		checker:OnRecord(function(item, result)
-			if not isRegistered then
-				forwardToConcord(env, item, result)
-			end
+			forwardToConcord(env, item, result, isRegistered)
 			panel:Refresh()
 		end)
 		observer:Start(signalNamesOf(Items.list))
@@ -251,15 +252,17 @@ function registerWithConcord(env, checker)
 	return isRegistered == true, reason
 end
 
--- ConcordCheck.Log(owner, verdict, text): the text names the item, then its first evidence line.
-function forwardToConcord(env, item, result)
+-- ConcordCheck.Log(owner, verdict, text): the text names the item and its state, then its first
+-- evidence line. Registered, the host judges the item, so the line is INFO evidence only.
+function forwardToConcord(env, item, result, isRegistered)
 	local concord = concordOf(env)
-	if item == nil or concord == nil or type(concord.Log) ~= 'function' then
+	if item == nil or type(result) ~= 'table' or concord == nil or type(concord.Log) ~= 'function' then
 		return
 	end
-	local verdict, evidence = concordVerdictOf(result)
-	local text = item.id .. (evidence[1] and (': ' .. evidence[1]) or '')
-	safeCall(concord.Log, OWNER, verdict, text)
+	local logVerdict = not isRegistered and LOG_VERDICTS[result.state] or 'INFO'
+	local firstLine = type(result.evidence) == 'table' and result.evidence[1] or nil
+	local text = item.id .. ' ' .. tostring(result.state) .. (firstLine and (': ' .. firstLine) or '')
+	safeCall(concord.Log, OWNER, logVerdict, text)
 end
 
 -- The host's item: the same fields, events to re-judge on, and a judge that reports this

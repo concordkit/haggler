@@ -19,7 +19,7 @@ In game:
 
 A run is keyed by Haggler's version and the client build, so a new build starts a new run. A fail sticks for the rest of the run. Items marked `once` (client capabilities) are answered once and carried into later runs until a reset.
 
-With Concord_Check v1 (`ConcordCheck.VERSION == 1`), the items also register through `ConcordCheck.RegisterProbes`; each Concord judge reports the verdict this suite recorded (N/A shows as a pass marked `n/a`). When the host refuses the registration, each verdict goes to `ConcordCheck.Log` instead. Any other version is left alone. The panel stays either way.
+With Concord_Check v1 (`ConcordCheck.VERSION == 1`), the items also register through `ConcordCheck.RegisterProbes`; each Concord judge reports the verdict this suite recorded (N/A shows as a pass marked `n/a`). Each recorded result is also logged as an INFO line, so the host re-judges at once. When the host refuses the registration, each result goes to `ConcordCheck.Log` as PASS or FAIL instead. Any other version is left alone. The panel stays either way.
 
 Read the run after a `/reload` or logout. The reader exits 0 only when every item passed or was marked N/A:
 

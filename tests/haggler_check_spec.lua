@@ -317,19 +317,24 @@ end)
 
 t.test('venture.plan: planning twice grows one venture; a second venture fails', function()
 	local item = itemById('venture.plan')
-	local line = { recipeId = 9, plannedCrafts = 1 }
+	local line = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
 	local market = { ventures = { a = { createdAt = NOW, lines = { line } } } }
 	local facts = factsWith({ markets = { [MARKET] = market } })
 	local scratch = {}
 	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'planned once')
-	line.plannedCrafts = 2
+	line.plannedCrafts, line.planned = 2, 2
 	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
 	t.eq(
 		item.judge(
 			factsWith({
 				markets = {
 					[MARKET] = {
-						ventures = { a = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 4 } } } },
+						ventures = {
+							a = {
+								createdAt = NOW,
+								lines = { { recipeId = 9, plannedCrafts = 4, planned = 4, crafted = 0 } },
+							},
+						},
 					},
 				},
 			}),
@@ -339,10 +344,27 @@ t.test('venture.plan: planning twice grows one venture; a second venture fails',
 		nil,
 		'first seen with many crafts: not planned twice'
 	)
-	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1 } } }
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'fail', 'a duplicate venture fails before a pass')
+	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
+	t.eq(item.judge(facts, {}, signal('TICK')).state, 'fail', 'two ventures open for one recipe fail')
 	market.ventures.b.createdAt = NOW - 1000
 	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'older venture ignored')
+end)
+
+t.test('venture.plan: plan, craft out, plan again stays a pass', function()
+	local item = itemById('venture.plan')
+	local first = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
+	local market = { ventures = { a = { createdAt = NOW, lines = { first } } } }
+	local facts = factsWith({ markets = { [MARKET] = market } })
+	local scratch = {}
+	t.eq(item.judge(facts, scratch, signal('TICK')), nil)
+	first.plannedCrafts, first.planned = 2, 2
+	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
+	first.crafted = 2
+	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
+	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'no verdict after the pass')
+	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a crafted-out venture is not a duplicate')
+	first.crafted, market.ventures.a.closedAt = 0, NOW
+	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a closed venture is not a duplicate')
 end)
 
 t.test('craft.book: one craft row per cast, judged after the casts settle', function()
@@ -489,63 +511,45 @@ t.test('mail.fullbags: a won take that failed on full bags is not booked, the re
 	)
 end)
 
-t.test('mail.newmail: new mail during a sale take still books one sale', function()
+t.test('mail.newmail: only a mail absent at the take counts as new mail', function()
 	local item = itemById('mail.newmail')
-	local inbox = 1
+	local SALE = 'Auction House: Auction successful: Copper Bar'
+	local LETTER = 'Alt: Hi'
+	local headers = { SALE }
 	local facts = factsWith({}, {
-		inboxCount = function()
-			return inbox
+		inboxHeaders = function()
+			return headers
 		end,
 	})
 	local take = signal('HOOK:TakeInboxMoney', NOW, 1)
-	take.args.invoiceType, take.args.inboxCount = 'seller', 1
-	inbox = 2
-	t.eq(
-		judgeAll(item, facts, {
-			take,
-			signal('MAIL_INBOX_UPDATE'),
-			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
-			signal('TICK', NOW + 4),
-		}).state,
-		'pass'
-	)
-	t.eq(
-		judgeAll(item, facts, {
-			take,
-			signal('MAIL_INBOX_UPDATE'),
-			signal('LEDGER', NOW, { ledgerRow('sale', 5), ledgerRow('sale', 5) }),
-			signal('TICK', NOW + 4),
-		}).state,
-		'fail'
-	)
-	inbox = 1
-	t.eq(
-		judgeAll(item, facts, {
-			take,
-			signal('MAIL_INBOX_UPDATE'),
-			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
-			signal('TICK', NOW + 4),
-		}).state,
-		'pass',
-		'the taken mail left as the new one landed: the count nets zero'
-	)
-	inbox = 0
-	t.eq(
-		judgeAll(item, facts, {
-			take,
-			signal('UPDATE_PENDING_MAIL'),
-			signal('MAIL_INBOX_UPDATE'),
-			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
-			signal('TICK', NOW + 4),
-		}).state,
-		'pass',
-		'new mail announced'
-	)
-	t.eq(
-		judgeAll(item, facts, { take, signal('MAIL_INBOX_UPDATE'), signal('TICK', NOW + 4) }),
-		nil,
-		'no new mail: nothing raced'
-	)
+	take.args.invoiceType, take.args.inboxHeaders = 'seller', { SALE }
+	local function takeWithSales(saleRows)
+		local signals = { take, signal('MAIL_INBOX_UPDATE') }
+		if saleRows > 0 then
+			local rows = {}
+			for index = 1, saleRows do
+				rows[index] = ledgerRow('sale', 5)
+			end
+			signals[#signals + 1] = signal('LEDGER', NOW, rows)
+		end
+		signals[#signals + 1] = signal('TICK', NOW + 4)
+		return judgeAll(item, facts, signals)
+	end
+
+	t.eq(takeWithSales(1), nil, 'an ordinary take, the emptied sale mail kept: stays pending')
+	headers = {}
+	t.eq(takeWithSales(1), nil, 'the sale mail left and nothing came: stays pending')
+	headers = { LETTER }
+	t.eq(takeWithSales(1).state, 'pass', 'the sale mail left as a letter landed')
+	headers = { SALE, LETTER }
+	local result = takeWithSales(1)
+	t.eq(result.state, 'pass')
+	t.truthy(result.evidence[1]:find(LETTER, 1, true), 'evidence names the new mail')
+	headers = { SALE, SALE }
+	t.eq(takeWithSales(1).state, 'pass', 'a second mail with the same header is new')
+	headers = { SALE, LETTER }
+	t.eq(takeWithSales(2).state, 'fail', 'one take booked twice')
+	t.eq(takeWithSales(0).state, 'fail', 'new mail and the sale not booked')
 end)
 
 t.test('ah.post and ah.undercut: the tracked auction carries the price actually posted', function()
@@ -989,8 +993,21 @@ t.test('Concord v1: the items register with adapted judges; a refusal falls back
 	t.same({ ns.Check.registerWithConcord(client, checker) }, { false, 'run in progress' })
 	ns.Check.forwardToConcord(client, itemById('load.clean'), Suite.resultOf(db, checker.run, itemById('load.clean')))
 	t.eq(logged[1][1], 'Haggler')
-	t.eq(logged[1][2], 'pass')
-	t.truthy(logged[1][3]:find('^load%.clean: '), 'text names the item')
+	t.eq(logged[1][2], 'PASS', 'Log takes PASS, FAIL or INFO')
+	t.truthy(logged[1][3]:find('^load%.clean pass: '), 'text names the item and its state')
+	ns.Check.forwardToConcord(
+		client,
+		itemById('feed.display'),
+		Suite.resultOf(db, checker.run, itemById('feed.display'))
+	)
+	t.eq(logged[2][2], 'INFO', 'n/a has no Log verdict')
+	ns.Check.forwardToConcord(
+		client,
+		itemById('load.clean'),
+		Suite.resultOf(db, checker.run, itemById('load.clean')),
+		true
+	)
+	t.eq(logged[3][2], 'INFO', 'registered: evidence only, the host judges')
 
 	client.ConcordCheck.VERSION = 2
 	registered, logged = nil, {}

@@ -12,7 +12,7 @@
 	           events, the ledger rows booked since the last tick) and LUA_ERROR (args: message)
 	  api    = isHagglerLoaded() · hagglerVersion() · hasErrorHook() · frameShown(name) ->
 	           boolean|nil · framePoint(name) -> point, relativePoint, x, y · bindingAction(key)
-	           · hasLdb() · ldbText(name) -> exists, text · freeBagSlots() · inboxCount()
+	           · hasLdb() · ldbText(name) -> exists, text · freeBagSlots() · inboxCount() · inboxHeaders()
 	           · isInCombat()
 ]]
 local _, ns = ...
@@ -46,7 +46,7 @@ local POSITION_TOLERANCE = 0.5
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local pass, fail, look, setting, eachMarket, trackedAuction, sessionOf, copySession, sameSession
 local ledgerTails, newestScanAt, countKinds, focusOverrides, postUnitPrice, isSamePosition, add
-local snapshotLogout, isOnSameCharacter, hasStoredData
+local snapshotLogout, isOnSameCharacter, hasStoredData, newMailSince
 
 local Items = {}
 ns.Items = Items
@@ -503,6 +503,11 @@ Items.list = {
 		place = 'town',
 		on = { 'TICK' },
 		judge = function(facts, scratch)
+			-- Haggler starts a new venture once the open one is crafted out or closed, so after
+			-- a pass a later venture proves nothing.
+			if scratch.isPassed then
+				return nil
+			end
 			local startedAt = facts.run.startedAt or 0
 			scratch.firstPlanned = scratch.firstPlanned or {}
 			local venturesByRecipe, grown = {}, nil
@@ -512,8 +517,13 @@ Items.list = {
 						for _, line in ipairs(type(venture.lines) == 'table' and venture.lines or {}) do
 							local planned = tonumber(line.plannedCrafts) or 0
 							local lineKey = tostring(id) .. ':' .. tostring(line.recipeId)
-							venturesByRecipe[line.recipeId] = venturesByRecipe[line.recipeId] or {}
-							venturesByRecipe[line.recipeId][id] = true
+							-- Only ventures still open for crafts at once are duplicates.
+							local isOpenForCrafts = venture.closedAt == nil
+								and (tonumber(line.crafted) or 0) < (tonumber(line.planned) or 0)
+							if isOpenForCrafts then
+								venturesByRecipe[line.recipeId] = venturesByRecipe[line.recipeId] or {}
+								venturesByRecipe[line.recipeId][id] = true
+							end
 							if planned > 0 and scratch.firstPlanned[lineKey] == nil then
 								scratch.firstPlanned[lineKey] = planned
 							elseif planned > (scratch.firstPlanned[lineKey] or math.huge) then
@@ -539,6 +549,7 @@ Items.list = {
 				end
 			end
 			if grown then
+				scratch.isPassed = true
 				return pass({
 					'venture '
 						.. tostring(grown.id)
@@ -771,12 +782,11 @@ Items.list = {
 		prompt = "Have an alt send you a letter; take a sale's gold just as it lands.",
 		zone = 'safe',
 		place = 'mailbox',
-		on = { 'HOOK:TakeInboxMoney', 'MAIL_INBOX_UPDATE', 'UPDATE_PENDING_MAIL', 'LEDGER', 'TICK' },
+		on = { 'HOOK:TakeInboxMoney', 'MAIL_INBOX_UPDATE', 'LEDGER', 'TICK' },
 		judge = function(facts, scratch, signal)
 			if signal.name == 'HOOK:TakeInboxMoney' then
 				if signal.args.invoiceType == 'seller' then
-					scratch.take =
-						{ at = signal.at, inboxCount = signal.args.inboxCount or 0, sales = 0, isRaced = false }
+					scratch.take = { at = signal.at, headers = signal.args.inboxHeaders or {}, sales = 0 }
 				end
 				return nil
 			end
@@ -784,14 +794,9 @@ Items.list = {
 			if not take then
 				return nil
 			end
-			if signal.name == 'UPDATE_PENDING_MAIL' then
-				take.isRaced = true
-				return nil
-			end
 			if signal.name == 'MAIL_INBOX_UPDATE' then
-				-- The taken sale mail leaves the inbox, so new mail shows as a count that did not
-				-- drop: the two can net to zero.
-				take.isRaced = take.isRaced or facts.api.inboxCount() >= take.inboxCount
+				-- Proof of new mail is a mail the inbox did not hold at the take, not a count.
+				take.newMail = take.newMail or newMailSince(take.headers, facts.api.inboxHeaders())
 				return nil
 			end
 			if signal.name == 'LEDGER' then
@@ -802,11 +807,11 @@ Items.list = {
 				return nil
 			end
 			scratch.take = nil
-			local evidence = { take.sales .. ' sale row(s) for one take; new mail arrived: ' .. tostring(take.isRaced) }
+			local evidence = { take.sales .. ' sale row(s) for one take; new mail: ' .. (take.newMail or 'none') }
 			if take.sales > 1 then
 				return fail(evidence)
 			end
-			if take.isRaced then
+			if take.newMail then
 				return take.sales == 1 and pass(evidence) or fail(evidence)
 			end
 			return nil
@@ -1186,6 +1191,21 @@ Items.list = {
 }
 
 -- Helpers ---------------------------------------------------------------------------------
+
+-- The first mail in `after` that `before` did not hold (as many times), or nil.
+function newMailSince(before, after)
+	local remaining = {}
+	for _, header in ipairs(before) do
+		remaining[header] = (remaining[header] or 0) + 1
+	end
+	for _, header in ipairs(after) do
+		if (remaining[header] or 0) == 0 then
+			return header
+		end
+		remaining[header] = remaining[header] - 1
+	end
+	return nil
+end
 
 function pass(evidence)
 	return { state = 'pass', evidence = evidence }

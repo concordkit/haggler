@@ -45,7 +45,7 @@ local HOOK_OWNERS = {
 local MAIL_HOOKS = { TakeInboxMoney = true, TakeInboxItem = true, AutoLootMailItem = true }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local readLedgerCursors, newLedgerRows, packArgs, describeMailTake, countFreeBagSlots, safeCall
+local readLedgerCursors, newLedgerRows, packArgs, describeMailTake, countFreeBagSlots, readInboxHeaders, safeCall
 
 local Observer = {}
 ns.Observer = Observer
@@ -279,6 +279,9 @@ function Observer:Api()
 	function api.inboxCount()
 		return safeCall(env.GetInboxNumItems) or 0
 	end
+	function api.inboxHeaders()
+		return readInboxHeaders(env)
+	end
 	function api.isInCombat()
 		return safeCall(env.InCombatLockdown) == true
 	end
@@ -322,12 +325,23 @@ function packArgs(...)
 	return { n = select('#', ...), ... }
 end
 
--- Read at the take, while the mail is still there: its invoice type, bag room and inbox size.
+-- Read at the take, while the mail is still there: its invoice type, bag room and the inbox.
 function describeMailTake(env, args)
 	local mailIndex = args[1]
 	args.invoiceType = mailIndex and safeCall(env.GetInboxInvoiceInfo, mailIndex) or nil
 	args.freeSlots = countFreeBagSlots(env)
 	args.inboxCount = safeCall(env.GetInboxNumItems) or 0
+	args.inboxHeaders = readInboxHeaders(env)
+end
+
+-- One 'sender: subject' per mail. Money is left out: a taken sale mail can stay, emptied.
+function readInboxHeaders(env)
+	local headers = {}
+	for index = 1, safeCall(env.GetInboxNumItems) or 0 do
+		local _, _, sender, subject = safeCall(env.GetInboxHeaderInfo, index)
+		headers[#headers + 1] = tostring(sender) .. ': ' .. tostring(subject)
+	end
+	return headers
 end
 
 function countFreeBagSlots(env)
