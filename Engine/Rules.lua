@@ -38,7 +38,14 @@
 	uses another market) and whatever ctx.sales adds (ownSalesThin, trollBuys).
 
 	A Price also says whether any AHledger figure went into it (usesPriceSource), so the credit
-	shows only with prices that used AHledger.
+	shows only with prices that used AHledger, and which inputs it actually read (inputs, a set):
+	  ahledger (any AHledger figure: a row base, its lowest buyout, its sold a day) · scan (the
+	  player's own scan depth) · ownSales (the player's own sales a day) · vendor · craftCost ·
+	  realized
+	A rule that can read either its own data or AHledger reports the one it used for this quote,
+	so a stored value can later be limited to quotes without ahledger (own-only, ASK-M-005).
+	craftCost and realized are Haggler's own figures, but a craft cost can itself stand on
+	AHledger reagent prices; it is reported as craftCost, not looked through.
 
 	ctx (every source optional):
 	  now                       unix seconds
@@ -99,7 +106,7 @@ local resolveOtherBase, applyStep, readListing, depthUnits, buildItemMarket, sor
 local describeBase, isPositiveInteger, isPercent, isFinitePositive, olderOf, ageSince, lookup, sumUnits
 local recordSales, recordListing, assessConfidence, addStaleReason, addSalesReason, addReason
 local confidenceThresholds, readCopper, noteBadInput, tableOrNil, isFiniteNumber, recordSalesView
-local salesReasonsOf, noteSourceFigure, noteRowProblem, sourceProblemOf
+local salesReasonsOf, noteSourceFigure, noteRowProblem, sourceProblemOf, noteInput
 
 --- The built-in rules, as fresh copies (the store keeps its own, tunable and resettable).
 --- @return table { [ruleId] = Rule }
@@ -318,6 +325,7 @@ function Rules.evaluate(rule, itemId, ctx)
 		confidence = confidence,
 		trace = trace,
 		usesPriceSource = facts.usesSourceFigure == true,
+		inputs = copyTable(facts.inputs or {}),
 	}
 end
 
@@ -377,6 +385,7 @@ function resolveListingBase(base, rule, itemId, ctx, trace, facts)
 		local note = isThin and ' (listing too thin; dearest level)' or ''
 		trace[#trace + 1] = { kind = 'base', label = 'scan ' .. describeBase(base) .. note, copper = copper }
 		recordListing(facts, sumUnits(listed), skipped, isAllBait, isThin)
+		noteInput(facts, 'scan')
 		return copper, ageSince(ctx, scannedAt), 'scan'
 	end
 	local lowest, isJunk = readCopper(row and row.min)
@@ -405,6 +414,7 @@ function resolveOtherBase(base, itemId, ctx, trace, facts)
 			return nil, 'no vendor price'
 		end
 		trace[#trace + 1] = { kind = 'base', label = 'vendor price', copper = vendorPrice }
+		noteInput(facts, 'vendor')
 		return vendorPrice, 0, 'vendor'
 	end
 	local source = base.kind == 'craftCost' and 'craft' or 'realized'
@@ -418,6 +428,7 @@ function resolveOtherBase(base, itemId, ctx, trace, facts)
 		return nil, 'no ' .. describeBase(base)
 	end
 	trace[#trace + 1] = { kind = 'base', label = describeBase(base), copper = copper }
+	noteInput(facts, base.kind)
 	return copper, ageSince(ctx, at) or 0, source
 end
 
@@ -627,6 +638,9 @@ function recordSalesView(facts, view)
 	end
 	if isFiniteNumber(view.perDay) and view.perDay >= 0 then
 		facts.salesPerDay = view.perDay
+		if isOwn then
+			noteInput(facts, 'ownSales')
+		end
 	else
 		noteBadInput(facts, isOwn and 'own sales a day' or 'AHledger sold a day')
 	end
@@ -677,9 +691,16 @@ function noteSourceFigure(facts, row)
 		return
 	end
 	facts.usesSourceFigure = true
+	noteInput(facts, 'ahledger')
 	if row.isSnapshot == true then
 		facts.isSnapshot = true
 	end
+end
+
+-- An input the quote read.
+function noteInput(facts, input)
+	facts.inputs = facts.inputs or {}
+	facts.inputs[input] = true
 end
 
 -- A row call that failed (the source said so) rather than an item without a price.

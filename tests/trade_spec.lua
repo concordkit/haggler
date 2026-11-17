@@ -184,7 +184,8 @@ t.test('a completed trade logs what was given as tradeOut and what was got as tr
 	local events = Ledger.tradeEvents({ player = player, target = target }, 100, 'Me-Realm')
 	t.eq(#events, 3)
 	t.same(events[1], { t = 100, kind = 'tradeOut', copper = 2500, char = 'Me-Realm' })
-	t.same(events[2], { t = 100, kind = 'tradeOut', itemId = 2589, qty = 20, copper = 2000, char = 'Me-Realm' })
+	-- The stack's value (2000) is a rule quote: never stored (own-only).
+	t.same(events[2], { t = 100, kind = 'tradeOut', itemId = 2589, qty = 20, copper = 0, char = 'Me-Realm' })
 	t.same(events[3], { t = 100, kind = 'tradeIn', itemId = 777, qty = 1, copper = 0, char = 'Me-Realm' })
 	local market = newMarket()
 	for _, event in ipairs(events) do

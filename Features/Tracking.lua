@@ -71,10 +71,6 @@ ns.host.AddModule({
 			vendorPrice = function(itemId)
 				return ns.prices and ns.prices:VendorPrice(itemId)
 			end,
-			valueOf = function(itemId, qty)
-				local value = ns.values and ns.values:Stack(itemId, qty)
-				return value and value.isPriced and value.copper or nil
-			end,
 			send = function(message, ...)
 				module:Send(message, ...)
 			end,

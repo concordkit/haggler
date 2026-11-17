@@ -10,16 +10,21 @@
 	                · OnWonMail (buy, pool in)
 	  buying        OnPurchase (the purchase call: which venture it was for)
 	  merchant      OnVendorBuy (pool in) · OnVendorSell · OnDestroy (pool out)
-	  crafting      OnCraft (reagents out of the pool, priced for the venture)
+	  crafting      OnCraft (reagents out of the pool, their cash share to the venture)
 	  ventures      CreateVenture · PlanCrafts · CloseVenture · CheckVentures
 
 	Units leave the cost pool when they leave the bags (posted, crafted, vendored, destroyed) and
 	an auction keeps the known share it took; units back from an expired or cancelled auction
-	bring that share back. Crafted output and traded items do not enter the pools.
+	bring that share back. Traded items do not enter the pools; crafted output enters only as a
+	venture leftover moved to stock, at what the player paid for it.
+
+	Own-only (ASK-M-005): Books stores no value read from a price source. Craft, writeOff and
+	toStock events carry their cash part only (the cost-pool share, or what was paid for the
+	materials); estimates are read live from the venture (Ventures.profit).
 
 	  Books.new(options) options = { market = fun() -> market|nil, char = fun() -> string|nil,
 	    now = fun() -> seconds, held = fun(itemId) -> units, vendorPrice = fun(itemId) -> copper|nil,
-	    valueOf = fun(itemId, qty) -> copper|nil, send = fun(message, ...)? }
+	    send = fun(message, ...)? }
 
 	Messages (sent through options.send): AUCTION_SOLD (auctionId|nil, itemId, qty, isProvisional),
 	AUCTION_RETURNED (auctionId|nil, itemId, qty, kind), VENTURE_UPDATED (ventureId),
@@ -345,26 +350,24 @@ function BooksMethods:BookOut(kind, out)
 end
 
 --- A craft finished: the reagents leave the pool (held already counts them out), the venture
---- that planned the recipe gets the output and the reagents' cost at its valuation.
+--- that planned the recipe gets the output and the reagents' cash share. The rest of the
+--- reagents' cost is valued on read, at the venture's valuation (Ventures.profit).
 --- @param craft table { recipeId, outputItemId?, made, reagents = { { itemId, qty } } }
---- @return table|nil costs { [itemId] = { qty, knownCopper, estimatedCopper } }
+--- @return table|nil costs { [itemId] = { qty, knownUnits, knownCopper } }
 function BooksMethods:OnCraft(craft)
 	local market, char, now = self.options.market(), self.options.char(), self.options.now()
 	if not market or not char or type(craft) ~= 'table' or not isWholePositive(craft.recipeId) then
 		return nil
 	end
 	local venture = ns.Ventures.openFor(market, 'craft', craft.recipeId)
-	local isPaid = venture and venture.valuation == 'paid'
 	local costs, total = {}, 0
 	for _, reagent in ipairs(type(craft.reagents) == 'table' and craft.reagents or {}) do
 		if isWholePositive(reagent.itemId) and isWholePositive(reagent.qty) then
 			local held = heldOf(self, reagent.itemId) + reagent.qty
 			local split = ns.CostPool.remove(market, reagent.itemId, reagent.qty, held)
-			local knownUnits = isPaid and split.knownUnits or 0
-			local known = isPaid and split.knownCopper or 0
-			local estimated = self:ValueOf(reagent.itemId, reagent.qty - knownUnits)
-			costs[reagent.itemId] = { qty = reagent.qty, knownCopper = known, estimatedCopper = estimated }
-			total = total + known + estimated
+			costs[reagent.itemId] =
+				{ qty = reagent.qty, knownUnits = split.knownUnits, knownCopper = split.knownCopper }
+			total = total + split.knownCopper
 		end
 	end
 	local made = isWholePositive(craft.made) and craft.made or 0
@@ -380,15 +383,6 @@ function BooksMethods:OnCraft(craft)
 	end
 	send(self, Books.MESSAGES.ledgerChanged)
 	return costs
-end
-
---- The opportunity value of units, 0 when unpriced.
-function BooksMethods:ValueOf(itemId, qty)
-	if qty <= 0 or type(self.options.valueOf) ~= 'function' then
-		return 0
-	end
-	local ok, copper = pcall(self.options.valueOf, itemId, qty)
-	return ok and isWhole(copper) and copper or 0
 end
 
 --- Starts a venture.
@@ -422,8 +416,8 @@ function BooksMethods:PlanCrafts(ventureId, recipe, crafts, spec)
 end
 
 --- Closes a venture by hand. Leftover crafted units are written off or moved to stock (into the
---- cost pool at their current value, credited to the venture); unused materials are in the
---- pool already, so only the venture's books change.
+--- cost pool at what the player paid for them; the venture is credited their value on read);
+--- unused materials are in the pool already, so only the venture's books change.
 --- @return table|nil leftovers
 --- @return string|nil reason
 function BooksMethods:CloseVenture(ventureId, action)
@@ -458,12 +452,10 @@ function BooksMethods:BookClose(market, venture, action, reason)
 		return nil, problem
 	end
 	for _, leftover in ipairs(leftovers) do
-		local copper = self:ValueOf(leftover.itemId, leftover.qty)
-		if action == 'toStock' then
-			venture.totals.leftoverCopper = venture.totals.leftoverCopper + copper
-			if leftover.kind == 'crafted' then
-				ns.CostPool.add(market, leftover.itemId, leftover.qty, copper)
-			end
+		local copper = ns.Ventures.cashCost(venture, leftover)
+		-- Units with nothing paid known stay of unknown origin rather than enter the pool free.
+		if action == 'toStock' and leftover.kind == 'crafted' and copper > 0 then
+			ns.CostPool.add(market, leftover.itemId, leftover.qty, copper)
 		end
 		append(market, { t = now, char = char, ventureId = venture.id }, {
 			kind = action,
