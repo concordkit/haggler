@@ -12,6 +12,10 @@
 	which makes the host re-judge at once. When the host refuses (a false return) the results
 	are logged as PASS or FAIL instead. The /hc panel stays either way.
 
+	A look answered in Concord_Check's panel is recorded here as a player verdict: through the
+	probe set's onAnswer when the host has it (ConcordCheck.FEATURES.onAnswer), else read from
+	ConcordCheckDB whenever the host judges. A once answer carried from an earlier run is not one.
+
 	  Check.create(env, db, identity) -> checker   identity = { version, build, charKey }
 	  checker:Deliver(signal)                      judges and records
 	  Check.boot(env)                              the game entry point
@@ -22,7 +26,7 @@ local Suite, Items = ns.Suite, ns.Items
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local indexItemsBySignal, signalNamesOf, manifestOf, readIdentity, registerWithConcord, forwardToConcord, safeCall
-local concordOf, concordVerdictOf, concordItemOf, clientEventsOf
+local concordOf, concordVerdictOf, concordItemOf, clientEventsOf, hasOnAnswer, adoptStoredAnswers, itemOfId
 
 local CONCORD_VERSION = 1
 local OWNER = 'Haggler'
@@ -80,6 +84,32 @@ function Check:Record(item, verdict, isByPlayer)
 			listener(item, Suite.resultOf(self.db, self.run, item))
 		end
 	end
+end
+
+--- Records a player's answer given outside /hc, in Concord_Check's panel.
+--- @param itemId string
+--- @param answer string 'pass' | 'fail'
+--- @param source string where it was answered, for the evidence
+--- @return boolean isRecorded false for an unknown item, one not open to a player verdict, or
+--- an answer already recorded
+function Check:RecordPlayerAnswer(itemId, answer, source)
+	if answer ~= 'pass' and answer ~= 'fail' then
+		return false
+	end
+	local item = itemOfId(itemId)
+	if item == nil then
+		return false
+	end
+	local result = Suite.resultOf(self.db, self.run, item)
+	-- Recording again would log again, and every log line makes the host judge again.
+	if type(result) == 'table' and result.isByPlayer and result.state == answer then
+		return false
+	end
+	if not Suite.canPlayerJudge(self.db, self.run, item) then
+		return false
+	end
+	self:Record(item, { state = answer, evidence = { 'answered ' .. answer .. ' in ' .. source } }, true)
+	return true
 end
 
 --- Starts a fresh run (the old one is kept aside) and tells the listeners.
@@ -245,6 +275,11 @@ function registerWithConcord(env, checker)
 		addon = 'Haggler',
 		label = 'Haggler',
 		items = items,
+		onAnswer = function(answer)
+			if type(answer) == 'table' and answer.owner == OWNER then
+				checker:RecordPlayerAnswer(answer.id, answer.answer, 'Concord_Check')
+			end
+		end,
 	})
 	if not isCalled then
 		return false, 'host error: ' .. tostring(isRegistered)
@@ -277,6 +312,10 @@ function concordItemOf(checker, item)
 		once = item.once == true,
 		events = clientEventsOf(item),
 		judge = function()
+			local concord = concordOf(checker.env)
+			if concord ~= nil and not hasOnAnswer(concord) then
+				adoptStoredAnswers(checker)
+			end
 			return concordVerdictOf(Suite.resultOf(checker.db, checker.run, item))
 		end,
 	}
@@ -315,6 +354,37 @@ function concordOf(env)
 	local concord = env.ConcordCheck
 	if type(concord) == 'table' and concord.VERSION == CONCORD_VERSION then
 		return concord
+	end
+	return nil
+end
+
+function hasOnAnswer(concord)
+	return type(concord.FEATURES) == 'table' and concord.FEATURES.onAnswer == true
+end
+
+-- A host without onAnswer keeps the player's answers in ConcordCheckDB.suites[owner], in the
+-- current run's item list. The host never judges an answered item again, so every judge reads all.
+function adoptStoredAnswers(checker)
+	local store = checker.env.ConcordCheckDB
+	local suites = type(store) == 'table' and store.suites or nil
+	local suite = type(suites) == 'table' and suites[OWNER] or nil
+	local runs = type(suite) == 'table' and suite.runs or nil
+	local run = type(runs) == 'table' and suite.current ~= nil and runs[suite.current] or nil
+	if type(run) ~= 'table' or type(run.items) ~= 'table' then
+		return
+	end
+	for _, record in ipairs(run.items) do
+		if type(record) == 'table' and record.answeredBy == 'player' and not record.fromOnce then
+			checker:RecordPlayerAnswer(record.id, record.state, 'Concord_Check')
+		end
+	end
+end
+
+function itemOfId(itemId)
+	for _, item in ipairs(Items.list) do
+		if item.id == itemId then
+			return item
+		end
 	end
 	return nil
 end
