@@ -1,0 +1,30 @@
+{
+	"permissions": {
+		"allow": [
+			"Bash(git push origin *)",
+			"Bash(git push -u origin *)",
+			"Bash(git branch -d *)",
+			"Bash(git worktree remove *)",
+			"Bash(git worktree prune)",
+			"Bash(gh pr create *)",
+			"Bash(gh pr view *)",
+			"Bash(gh pr checks *)"
+		],
+		"deny": [
+			"Bash(git push --force*)",
+			"Bash(git push -f*)",
+			"Bash(git push * --force*)",
+			"Bash(git push * -f *)",
+			"Bash(git push * --delete *)",
+			"Bash(git push * :*)",
+			"Bash(git branch -D *)",
+			"Bash(git worktree remove --force *)",
+			"Bash(git worktree remove -f *)",
+			"Bash(gh repo create *)",
+			"Bash(gh repo edit *)",
+			"Bash(gh repo delete *)",
+			"Bash(gh release create *)",
+			"Bash(git config *)"
+		]
+	}
+}
