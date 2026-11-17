@@ -9,9 +9,9 @@
 	  1. Tainted items: crafted outputs of ventures closed to stock. Their pools could hold a
 	     value, so the shares taken from them are reset to unknown: auction records, venture
 	     materials and destroy events of those items.
-	  2. Events: craft, writeOff and toStock keep their cash part where the venture gives it
+	  2. Events: craft, writeOff and toStock carry their cash part where the venture gives it
 	     (Ventures.cashCost, or the venture's known copper for its only craft); otherwise copper
-	     is cleared. Traded item stacks lose their value. Every event that loses copper is
+	     is cleared. Traded item stacks lose their value. Every event whose copper changes is
 	     flagged valueDropped. Money kinds are not touched.
 	  3. Ventures: estimatedCopper and totals.leftoverCopper are dropped (estimates are read
 	     live from knownCopper and the venture's rule); knownUnits is restored where the old
@@ -135,7 +135,8 @@ function rewriteEvents(market, ventures, tainted)
 	local crafts = craftEventsByVenture(market)
 	ns.Ledger.rewrite(market, function(event)
 		local cash = cashPartOf(event, ventures, tainted, crafts)
-		if cash == nil or cash >= event.copper then
+		-- Replaced whenever it differs: a quote below the cash part is as derived as one above it.
+		if cash == nil or cash == event.copper then
 			return nil
 		end
 		return dropped(event, cash)
@@ -228,10 +229,13 @@ function migrateVenture(venture)
 				local estimated = isWhole(material.estimatedCopper) and material.estimatedCopper or 0
 				local known = isWhole(material.knownCopper) and material.knownCopper or 0
 				local used = isWhole(material.used) and material.used or 0
-				-- Certain only when one side is empty: all known, or nothing known.
+				local bought = isWhole(material.bought) and material.bought or 0
+				-- Certain only when nothing is known, or when nothing was estimated and the venture
+				-- bought every unit it used: version 2 estimated an unpriced unit at 0, so an empty
+				-- estimate alone does not prove every unit was known.
 				if known == 0 then
 					material.knownUnits = 0
-				elseif estimated == 0 then
+				elseif estimated == 0 and bought >= used then
 					material.knownUnits = used
 				end
 			end

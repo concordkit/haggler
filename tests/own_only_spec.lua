@@ -85,6 +85,46 @@ local function legacyMarket()
 		},
 		totals = totals(0),
 	}
+	-- Quotes below the cash part are as derived as quotes above it.
+	market.ventures[5] = {
+		id = 5,
+		name = 'Opportunity, quote below cash',
+		valuation = 'opportunity',
+		status = 'closed',
+		leftoverAction = 'writeOff',
+		createdAt = 5,
+		lines = { line(904, 104, 0, 1) },
+		materials = {
+			[18] = { need = 4, bought = 10, boughtCopper = 1000, used = 4, knownCopper = 0, estimatedCopper = 320 },
+		},
+		totals = totals(0),
+	}
+	market.ventures[6] = {
+		id = 6,
+		name = 'Paid, to stock below cash',
+		valuation = 'paid',
+		status = 'closed',
+		leftoverAction = 'toStock',
+		createdAt = 6,
+		lines = { line(905, 105, 3, 3) },
+		materials = {
+			[19] = { need = 3, bought = 3, boughtCopper = 900, used = 3, knownCopper = 900, estimatedCopper = 0 },
+		},
+		totals = totals(300),
+	}
+	-- Version 2 estimated an unpriced unit at 0: no estimate does not mean every unit was known.
+	market.ventures[7] = {
+		id = 7,
+		name = 'Paid, unpriced units',
+		valuation = 'paid',
+		status = 'crafting',
+		createdAt = 7,
+		lines = { line(906, 106, 0, 1) },
+		materials = {
+			[17] = { need = 10, bought = 0, boughtCopper = 0, used = 10, knownCopper = 500, estimatedCopper = 0 },
+		},
+		totals = totals(0),
+	}
 	local function event(fields)
 		fields.char = fields.char or CHAR
 		fields.t = fields.t or NOW - DAY
@@ -106,6 +146,8 @@ local function legacyMarket()
 	event({ kind = 'buy', itemId = 14, qty = 5, copper = 75, t = NOW - 5 * DAY })
 	event({ kind = 'destroy', itemId = 900, qty = 1, copper = 500 })
 	event({ kind = 'destroy', itemId = 10, qty = 1, copper = 100 })
+	event({ kind = 'writeOff', itemId = 18, qty = 6, copper = 480, ventureId = 5 })
+	event({ kind = 'toStock', itemId = 905, qty = 3, copper = 300, ventureId = 6 })
 	market.costPools = { [10] = { 2, 200 }, [14] = { 12, 150 }, [900] = { 2, 1000 }, [15] = { 3, 30 } }
 	market.ledgerDays[100] = {
 		craft = { 2, 3, 999 },
@@ -215,6 +257,11 @@ t.test('step 2: writeOff and toStock events keep their cash cost', function()
 	t.eq(writeOffs[1].valueDropped, true)
 	t.eq(writeOffs[2].copper, 20, 'unused materials: what was paid for them')
 	t.eq(writeOffs[2].valueDropped, true)
+	t.eq(writeOffs[3].copper, 600, 'a quote below cash: raised to what was paid')
+	t.eq(writeOffs[3].valueDropped, true)
+	local below = eventsOf(market, 'toStock')[2]
+	t.eq(below.copper, 900, 'crafted units moved to stock under their cost: their known copper')
+	t.eq(below.valueDropped, true)
 end)
 
 t.test('step 2: traded stacks lose their value; money kinds stay', function()
@@ -244,6 +291,8 @@ t.test('step 3: ventures drop their estimates; known units are restored where ce
 	t.eq(market.ventures[3].materials[13].knownUnits, 2)
 	t.eq(market.ventures[4].materials[16].knownUnits, nil, 'a mixed split is lost')
 	t.eq(market.ventures[4].materials[16].knownCopper, 50, 'the known copper stays')
+	t.eq(market.ventures[7].materials[17].knownUnits, nil, 'no estimate, fewer units bought than used: lost')
+	t.eq(market.ventures[6].materials[19].knownUnits, 3, 'no estimate, every unit bought: all known')
 end)
 
 t.test('step 3: estimates are read live; a lost split reads as incomplete', function()
@@ -260,6 +309,14 @@ t.test('step 3: estimates are read live; a lost split reads as incomplete', func
 	t.eq(mixed.knownCopper, 50)
 	t.eq(mixed.estimatedCopper, 0)
 	t.eq(mixed.isEstimateComplete, false)
+	t.eq(mixed.isSplitLost, true)
+	t.eq(mixed.hasUnpricedUnits, false, 'a lost split is not a missing price')
+	local unpriced = Ventures.profit(market.ventures[3], function() end)
+	t.eq(unpriced.isSplitLost, false)
+	t.eq(unpriced.hasUnpricedUnits, false, 'every unit known: nothing to price')
+	local stockedUnpriced = Ventures.profit(market.ventures[1], function() end)
+	t.eq(stockedUnpriced.hasUnpricedUnits, true)
+	t.eq(stockedUnpriced.isSplitLost, false)
 end)
 
 t.test('step 4: day summaries lose copper for the value kinds, keep count and qty', function()
@@ -404,6 +461,38 @@ t.test('a migrated version-2 market keeps nothing derived', function()
 			t.truthy(event.copper == 0 or event.valueDropped or event.kind == 'craft', 'value kind kept a value')
 		end
 	end
+end)
+
+-- The cash part each value-kind event must carry after the migration, worked out by hand from
+-- the fixture: what the venture paid, or 0 where that cannot be known.
+local EXPECTED_CASH = {
+	craft = { 400, 0, 0, 70, 0 },
+	writeOff = { 0, 20, 600 },
+	toStock = { 400, 900 },
+	tradeIn = { 0 },
+}
+
+t.test('every value-kind event carries exactly its cash part, flagged when it changed', function()
+	local before = legacyMarket()
+	local after = migrated()
+	for kind, expected in pairs(EXPECTED_CASH) do
+		local old, new = eventsOf(before, kind), eventsOf(after, kind)
+		t.eq(#new, #expected, kind .. ' events')
+		for index, cash in ipairs(expected) do
+			local what = string.format('%s %d', kind, index)
+			t.eq(new[index].copper, cash, what)
+			t.eq(new[index].valueDropped == true, old[index].copper ~= cash, what .. ' flagged')
+		end
+	end
+end)
+
+t.test('cashCost reads a junk material as nothing paid', function()
+	local venture = {
+		lines = {},
+		materials = { [1] = { need = 1, used = 1 }, [2] = { need = 1, bought = 2, used = 1 } },
+	}
+	t.eq(Ventures.cashCost(venture, { kind = 'material', itemId = 1, qty = 1 }), 0)
+	t.eq(Ventures.cashCost(venture, { kind = 'material', itemId = 2, qty = 1 }), 0)
 end)
 
 t.group('own-only boundary: quotes carry their inputs')

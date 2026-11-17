@@ -327,7 +327,12 @@ end
 function Ventures.cashCost(venture, leftover)
 	if leftover.kind == 'material' then
 		local material = venture.materials[leftover.itemId]
-		if not material or material.bought <= 0 then
+		if
+			not material
+			or not isWhole(material.bought)
+			or material.bought <= 0
+			or not isWhole(material.boughtCopper)
+		then
 			return 0
 		end
 		return math.floor(material.boughtCopper * math.min(leftover.qty, material.bought) / material.bought)
@@ -343,8 +348,10 @@ end
 --- an item it cannot price) they count as nothing and isEstimateComplete says so.
 --- @param valueOf fun(itemId, qty): number|nil the value of units now (the venture's rule)
 --- @return table { net, cash, overMaterials, spent, materialsCost, knownCopper, estimatedCopper,
----   knownShare, leftoverEstimate, isEstimateComplete } knownShare is 0..1 of the materials
----   cost that was paid, not estimated
+---   knownShare, leftoverEstimate, isEstimateComplete, isSplitLost, hasUnpricedUnits } knownShare
+---   is 0..1 of the materials cost that was paid, not estimated; isSplitLost: a legacy material's
+---   known/estimated split was lost in the version-3 update; hasUnpricedUnits: some units have
+---   no price now
 function Ventures.profit(venture, valueOf)
 	local totals = venture.totals
 	local materials = sumMaterials(venture, valueOf)
@@ -364,6 +371,8 @@ function Ventures.profit(venture, valueOf)
 		knownShare = materialsCost > 0 and materials.knownCopper / materialsCost or nil,
 		leftoverEstimate = leftover,
 		isEstimateComplete = materials.isComplete and isLeftoverComplete,
+		isSplitLost = materials.isSplitLost,
+		hasUnpricedUnits = materials.hasUnpricedUnits or not isLeftoverComplete,
 	}
 end
 
@@ -506,7 +515,14 @@ end
 -- Paid valuation: the known copper plus today's value of the units of unknown origin.
 -- Opportunity valuation: today's value of every unit used, known or not.
 function sumMaterials(venture, valueOf)
-	local sum = { boughtCopper = 0, knownCopper = 0, estimatedCopper = 0, isComplete = true }
+	local sum = {
+		boughtCopper = 0,
+		knownCopper = 0,
+		estimatedCopper = 0,
+		isComplete = true,
+		isSplitLost = false,
+		hasUnpricedUnits = false,
+	}
 	local isPaid = venture.valuation == 'paid'
 	for itemId, material in pairs(venture.materials) do
 		sum.boughtCopper = sum.boughtCopper + material.boughtCopper
@@ -520,6 +536,8 @@ function sumMaterials(venture, valueOf)
 		local estimate, isComplete = estimateOf(valueOf, itemId, unknownUnits)
 		sum.estimatedCopper = sum.estimatedCopper + estimate
 		sum.isComplete = sum.isComplete and isComplete
+		sum.isSplitLost = sum.isSplitLost or unknownUnits == nil
+		sum.hasUnpricedUnits = sum.hasUnpricedUnits or (unknownUnits ~= nil and not isComplete)
 	end
 	return sum
 end
