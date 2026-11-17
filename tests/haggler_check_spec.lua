@@ -260,8 +260,7 @@ t.test('bar.shortcuts: the settings shortcut passes through the Settings window 
 	local function run(settingsOverrides)
 		local scratch = {}
 		t.eq(item.judge(tickWith('sell', { frameShown = isWindowShown }), scratch, signal('TICK')), nil)
-		t.eq(item.judge(tickWith('flips', { frameShown = isWindowShown }), scratch, signal('TICK')), nil)
-		return item.judge(tickWith('flips', settingsOverrides), scratch, signal('TICK'))
+		return item.judge(tickWith('sell', settingsOverrides), scratch, signal('TICK'))
 	end
 
 	local viaSettings = run({
@@ -671,17 +670,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 		'pass',
 		"Haggler's 5 s wait and an AH close or show end the wait"
 	)
-end)
-
-t.test('flips.buy: a live search from Flips that lands on Buy passes', function()
-	local item = itemById('flips.buy')
-	local db = { settings = { window = { lastTab = 'flips' } } }
-	local facts = factsWith(db)
-	local scratch = {}
-	item.judge(facts, scratch, signal('TICK'))
-	item.judge(facts, scratch, signal('HOOK:SendSearchQuery', NOW))
-	db.settings.window.lastTab = 'buy'
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
 end)
 
 t.test('session.ahvisit: closing the AH sets the AH-visit start', function()

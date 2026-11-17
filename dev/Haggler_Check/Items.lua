@@ -275,7 +275,7 @@ Items.list = {
 		id = 'bar.shortcuts',
 		title = 'Shortcuts open their places',
 		kind = 'action',
-		prompt = 'Click the Sell, Flips and settings shortcuts on the top bar (with the bar hidden: /hag set topbar.visibility always).',
+		prompt = 'Click the Sell and settings shortcuts on the top bar (with the bar hidden: /hag set topbar.visibility always).',
 		zone = 'safe',
 		place = 'town',
 		on = { 'TICK' },
@@ -290,8 +290,8 @@ Items.list = {
 			elseif facts.api.frameShown('HagglerOptionsPanel') then
 				scratch.settingsSeenIn = 'the Haggler options panel'
 			end
-			if scratch.tabs.sell and scratch.tabs.flips and scratch.settingsSeenIn then
-				return pass({ 'window seen on Sell and Flips; ' .. scratch.settingsSeenIn .. ' shown' })
+			if scratch.tabs.sell and scratch.settingsSeenIn then
+				return pass({ 'window seen on Sell; ' .. scratch.settingsSeenIn .. ' shown' })
 			end
 			return nil
 		end,
@@ -859,39 +859,6 @@ Items.list = {
 		prompt = 'Lookup, Sell and Buy work as before; the bar scan status updated after the scan.',
 		zone = 'safe',
 		place = 'auction house',
-	},
-	{
-		id = 'flips.look',
-		title = 'Flips tab',
-		kind = 'look',
-		prompt = 'Flips: Find lists vendor and relist flips; the AHledger credit shows on relist rows priced from AHledger.',
-		zone = 'safe',
-		place = 'auction house',
-	},
-	{
-		id = 'flips.buy',
-		title = 'Flips Buy hands over to Buy',
-		kind = 'action',
-		prompt = 'Flips: press Buy on a row.',
-		zone = 'safe',
-		place = 'auction house',
-		on = { 'HOOK:SendSearchQuery', 'TICK' },
-		judge = function(facts, scratch, signal)
-			local tab = setting(facts.db, 'window', 'lastTab', '?')
-			if signal.name == 'HOOK:SendSearchQuery' then
-				if scratch.lastTab == 'flips' or tab == 'flips' or tab == 'buy' then
-					scratch.searchAt = signal.at
-				end
-				return nil
-			end
-			local previous = scratch.lastTab
-			scratch.lastTab = tab
-			if scratch.searchAt and tab == 'buy' and (previous == 'flips' or scratch.wasOnFlips) then
-				return pass({ 'Flips -> Buy with a live search at ' .. scratch.searchAt })
-			end
-			scratch.wasOnFlips = tab == 'flips' or (scratch.wasOnFlips and tab == 'buy')
-			return nil
-		end,
 	},
 	{
 		id = 'auctions.look',
