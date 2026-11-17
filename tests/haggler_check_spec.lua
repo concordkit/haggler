@@ -44,6 +44,9 @@ local function fakeApi(overrides)
 		framePoint = function()
 			return nil
 		end,
+		settingsCategoryShown = function()
+			return nil
+		end,
 		bindingAction = function()
 			return nil
 		end,
@@ -238,6 +241,54 @@ t.test('bar.rule: passes after two changes of the default rule', function()
 	t.eq(item.judge(facts, scratch, signal('TICK')), nil)
 	db.defaultRuleId = 'r1'
 	t.same(item.judge(facts, scratch, signal('TICK')), { state = 'pass', evidence = { 'r1 -> r2', 'r2 -> r1' } })
+end)
+
+t.test('bar.shortcuts: the settings shortcut passes through the Settings window or the legacy panel', function()
+	local item = itemById('bar.shortcuts')
+	local function windowOn(tab)
+		return { window = { lastTab = tab } }
+	end
+	local function tickWith(tab, overrides)
+		local db = { settings = windowOn(tab) }
+		local facts = factsWith(db, overrides)
+		facts.db = db
+		return facts
+	end
+	local isWindowShown = function(name)
+		return name == 'HagglerFrame'
+	end
+	local function run(settingsOverrides)
+		local scratch = {}
+		t.eq(item.judge(tickWith('sell', { frameShown = isWindowShown }), scratch, signal('TICK')), nil)
+		t.eq(item.judge(tickWith('flips', { frameShown = isWindowShown }), scratch, signal('TICK')), nil)
+		return item.judge(tickWith('flips', settingsOverrides), scratch, signal('TICK'))
+	end
+
+	local viaSettings = run({
+		settingsCategoryShown = function()
+			return 'Haggler'
+		end,
+	})
+	t.eq(
+		viaSettings and viaSettings.state,
+		'pass',
+		'Settings API: no HagglerOptionsPanel, the Settings window on Haggler'
+	)
+	t.eq(
+		run({
+			settingsCategoryShown = function()
+				return 'Controls'
+			end,
+		}),
+		nil,
+		'the Settings window on another category'
+	)
+	local viaLegacy = run({
+		frameShown = function(name)
+			return name == 'HagglerOptionsPanel'
+		end,
+	})
+	t.eq(viaLegacy and viaLegacy.state, 'pass', 'legacy fallback: the named panel')
 end)
 
 t.test('bar.position: the bar is placed after a reload where it was dragged', function()
@@ -804,6 +855,36 @@ t.test('the observer delivers events and hooks late and in order, ledger rows be
 	heard = {}
 	client.fire('PLAYER_LOGOUT')
 	t.eq(heard[1].name, 'LOGOUT', 'logout is delivered at once')
+end)
+
+t.test('the observer reads the Settings window nil-safely', function()
+	local client = fakeClient()
+	local api = ns.Observer.create(client, function() end):Api()
+	t.eq(api.settingsCategoryShown(), nil, 'no SettingsPanel')
+	local isShown = false
+	client.SettingsPanel = {
+		IsShown = function()
+			return isShown
+		end,
+		GetCurrentCategory = function()
+			return {
+				GetName = function()
+					return 'Haggler'
+				end,
+			}
+		end,
+	}
+	t.eq(api.settingsCategoryShown(), nil, 'closed')
+	isShown = true
+	t.eq(api.settingsCategoryShown(), 'Haggler')
+	client.SettingsPanel.GetCurrentCategory = function()
+		return nil
+	end
+	t.eq(api.settingsCategoryShown(), nil, 'no current category')
+	client.SettingsPanel.GetCurrentCategory = function()
+		error('boom')
+	end
+	t.eq(api.settingsCategoryShown(), nil, 'a raising client read')
 end)
 
 -- Drives one item through a real observer over the fake client; returns every verdict it gave.

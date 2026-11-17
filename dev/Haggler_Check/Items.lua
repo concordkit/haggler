@@ -11,7 +11,8 @@
 	           LOAD (args: isInitialLogin, isReload), LOGOUT, TICK (every second), LEDGER (args:
 	           events, the ledger rows booked since the last tick) and LUA_ERROR (args: message)
 	  api    = isHagglerLoaded() · hagglerVersion() · hasErrorHook() · frameShown(name) ->
-	           boolean|nil · framePoint(name) -> point, relativePoint, x, y · bindingAction(key)
+	           boolean|nil · settingsCategoryShown() -> name|nil · framePoint(name) -> point, relativePoint,
+	           x, y · bindingAction(key)
 	           · hasLdb() · ldbText(name) -> exists, text · freeBagSlots() · inboxCount() · inboxHeaders()
 	           · isInCombat()
 ]]
@@ -20,6 +21,8 @@ local _, ns = ...
 local LEDGER_FIELDS = { 't', 'kind', 'itemId', 'qty', 'copper', 'char', 'ventureId', 'auctionId', 'flags' }
 local FEED_NAMES = { 'Haggler', 'Haggler: Gold', 'Haggler: Rule', 'Haggler: Scan' }
 local FOCUS_BUTTON_PATTERN = '^CLICK HagglerInputButton'
+-- Options.CATEGORY_NAME in Features/Options.lua.
+local SETTINGS_CATEGORY_NAME = 'Haggler'
 -- Keys the focus takes while the bar has it: the d-pad, the arrows, Enter and Escape.
 local FOCUS_KEYS = {
 	'UP',
@@ -281,11 +284,14 @@ Items.list = {
 			if facts.api.frameShown('HagglerFrame') then
 				scratch.tabs[tostring(setting(facts.db, 'window', 'lastTab', '?'))] = true
 			end
-			if facts.api.frameShown('HagglerOptionsPanel') then
-				scratch.isSettingsSeen = true
+			-- The Settings API makes no named frame; only the legacy fallback builds HagglerOptionsPanel.
+			if facts.api.settingsCategoryShown() == SETTINGS_CATEGORY_NAME then
+				scratch.settingsSeenIn = 'the Settings window on Haggler'
+			elseif facts.api.frameShown('HagglerOptionsPanel') then
+				scratch.settingsSeenIn = 'the Haggler options panel'
 			end
-			if scratch.tabs.sell and scratch.tabs.flips and scratch.isSettingsSeen then
-				return pass({ 'window seen on Sell and Flips; the Haggler options panel shown' })
+			if scratch.tabs.sell and scratch.tabs.flips and scratch.settingsSeenIn then
+				return pass({ 'window seen on Sell and Flips; ' .. scratch.settingsSeenIn .. ' shown' })
 			end
 			return nil
 		end,
