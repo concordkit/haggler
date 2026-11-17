@@ -30,6 +30,7 @@ local ADDON_FILES = {
 	'Engine/Ventures.lua',
 	'Engine/CraftCost.lua',
 	'Engine/Books.lua',
+	'Engine/OwnOnly.lua',
 	'Engine/Flips.lua',
 	'Engine/Advice.lua',
 	'Host/Theme.lua',

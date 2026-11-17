@@ -21,7 +21,7 @@ end)
 function onAddonLoaded()
 	HagglerDB = HagglerDB or {}
 	HagglerCharDB = HagglerCharDB or {}
-	local store, reason = ns.Store.open(HagglerDB, HagglerCharDB)
+	local store, reason = ns.Store.open(HagglerDB, HagglerCharDB, { now = ns.wow:Now() })
 	if not store then
 		ns.wow:Print('Saved data is from a newer Haggler (' .. reason .. '); update the add-on. Nothing was changed.')
 		return

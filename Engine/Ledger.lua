@@ -6,7 +6,12 @@
 	The log grows forever, so each event is stored as a compact tuple, not a keyed table:
 	  { t, kind, itemId, qty, copper, char, ventureId, auctionId, flags }
 	itemId and qty are 0 for gold; the last three are left off when 0. Read back as
-	Event = { t, kind, itemId?, qty?, copper, char, ventureId?, auctionId?, isTroll? }.
+	Event = { t, kind, itemId?, qty?, copper, char, ventureId?, auctionId?, isTroll?,
+	valueDropped? }. flags is a bit set: 1 troll, 2 valueDropped (the store migration to version 3
+	cleared a price-source value it could not split from the cash part; see Engine/OwnOnly.lua).
+
+	Own-only (ASK-M-005): nothing derived from AHledger is stored. Craft, writeOff and toStock
+	events carry only their cash part (OWN_VALUE_KINDS); a traded item stack carries no value.
 	Events older than KEEP_DAYS are folded into per-day summaries (markets[key].ledgerDays):
 	  ledgerDays[day] = { [kind] = { count, qty, copper } }   day = floor(t / 86400)
 
@@ -20,6 +25,8 @@
 	  Ledger.events(market, filter?) -> Event[] filter = { kind?, since? }
 	  Ledger.tradeEvents(snapshot, t, char) -> Event[]   the events of one completed trade
 	  Ledger.compact(market, now, keepDays?) -> count  folds old events into ledgerDays
+	  Ledger.rewrite(market, change) -> count   change(event) -> event|nil per decoded event;
+	                                           a returned event replaces it (migrations only)
 	  Ledger.profit(market, since?, untilT?) -> Profit { income, spent, net, byKind }
 	  Ledger.netSince(market, since, char?)  -> copper   one character's (or every) net gold since
 	                                           a time, read from the raw tuples without decoding
@@ -79,6 +86,8 @@ Ledger.CASH = {
 	cut = -1,
 	tradeOut = -1,
 }
+-- Kinds whose copper is a cost the player holds, not gold moved: only its cash part is stored.
+Ledger.OWN_VALUE_KINDS = { craft = true, writeOff = true, toStock = true }
 Ledger.KEEP_DAYS = 90
 Ledger.SECONDS_PER_DAY = 86400
 Ledger.SESSION_MODES = {
@@ -94,11 +103,11 @@ local MAX_CLOCK_SHIFT_SECONDS = 3600
 
 -- Tuple positions.
 local T, KIND, ITEM, QTY, COPPER, CHAR, VENTURE, AUCTION, FLAGS = 1, 2, 3, 4, 5, 6, 7, 8, 9
-local FLAG_TROLL = 1
+local FLAG_TROLL, FLAG_VALUE_DROPPED = 1, 2
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local isWholeNonNegative, validateEvent, decode, appendSide, appendItem, encode, cashOf, addSummary
-local summaryCash, dayOf, clockFields
+local summaryCash, dayOf, clockFields, hasFlag
 
 --- Appends one event to a market's ledger.
 --- @param market table Store:Market(key)
@@ -162,8 +171,8 @@ function Ledger.events(market, filter)
 end
 
 --- The events of a completed trade: tradeOut for what the player gave, tradeIn for what they
---- got. Gold is one event with itemId 0; each item stack is one event whose copper is its value
---- at the time (0 when unpriced), so cost pools can take them in later. A stack the client had
+--- got. Gold is one event with itemId 0; each item stack is one event with copper 0: its value
+--- is a rule quote, never stored (own-only), and is read live when needed. A stack the client had
 --- not loaded (no itemId) is skipped: stored as itemId 0 it would read back as gold.
 --- @param snapshot table { player = TradeSide, target = TradeSide } (Trade.side results)
 --- @param t number unix seconds
@@ -204,6 +213,32 @@ function Ledger.compact(market, now, keepDays)
 	end
 	market.ledger = kept
 	return folded
+end
+
+--- Rewrites events in place: change gets each decoded event and returns a replacement, or nil
+--- to keep it. Junk tuples are kept as they are. For store migrations; the log is otherwise
+--- append-only.
+--- @param market table Store:Market(key)
+--- @param change fun(event: table): table|nil
+--- @return number count of events replaced
+function Ledger.rewrite(market, change)
+	if type(market) ~= 'table' or type(market.ledger) ~= 'table' or type(change) ~= 'function' then
+		error('Ledger.rewrite: needs a market with a ledger and a change function', 2)
+	end
+	local replaced = 0
+	for index, tuple in ipairs(market.ledger) do
+		local event = decode(tuple)
+		local replacement = event and change(event)
+		if replacement then
+			local problem = validateEvent(replacement)
+			if problem then
+				error('Ledger.rewrite: ' .. problem, 2)
+			end
+			market.ledger[index] = encode(replacement)
+			replaced = replaced + 1
+		end
+	end
+	return replaced
 end
 
 --- Gold in and out over a period, from raw events and the day summaries.
@@ -488,7 +523,8 @@ function decode(tuple)
 		char = tuple[CHAR],
 		ventureId = tuple[VENTURE] ~= 0 and tuple[VENTURE] or nil,
 		auctionId = tuple[AUCTION] ~= 0 and tuple[AUCTION] or nil,
-		isTroll = type(tuple[FLAGS]) == 'number' and tuple[FLAGS] % 2 == FLAG_TROLL or nil,
+		isTroll = hasFlag(tuple[FLAGS], FLAG_TROLL) or nil,
+		valueDropped = hasFlag(tuple[FLAGS], FLAG_VALUE_DROPPED) or nil,
 	}
 	if validateEvent(event) then
 		return nil
@@ -510,22 +546,17 @@ function appendSide(events, side, kind, t, char)
 	end
 end
 
+-- A traded stack is stored without its value: the value is a rule quote, which may stand on
+-- AHledger (own-only); the reader values it at read time.
 function appendItem(events, item, kind, t, char)
-	local copper = item.value and item.value.copper or 0
-	events[#events + 1] = {
-		t = t,
-		kind = kind,
-		itemId = item.itemId,
-		qty = item.qty,
-		copper = isWholeNonNegative(copper) and copper or 0,
-		char = char,
-	}
+	events[#events + 1] = { t = t, kind = kind, itemId = item.itemId, qty = item.qty, copper = 0, char = char }
 end
 
 -- The tuple, its optional tail left off while it is all zeros.
 function encode(event)
 	local tuple = { event.t, event.kind, event.itemId or 0, event.qty or 0, event.copper, event.char }
-	local tail = { event.ventureId or 0, event.auctionId or 0, event.isTroll and FLAG_TROLL or 0 }
+	local flags = (event.isTroll and FLAG_TROLL or 0) + (event.valueDropped and FLAG_VALUE_DROPPED or 0)
+	local tail = { event.ventureId or 0, event.auctionId or 0, flags }
 	local last = 0
 	for index, value in ipairs(tail) do
 		if value ~= 0 then
@@ -573,6 +604,10 @@ function summaryCash(kinds)
 		end
 	end
 	return cash
+end
+
+function hasFlag(flags, flag)
+	return type(flags) == 'number' and flags >= 0 and flags % 1 == 0 and math.floor(flags / flag) % 2 == 1
 end
 
 function dayOf(t)

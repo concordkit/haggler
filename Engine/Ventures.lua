@@ -6,8 +6,13 @@
 	              leftoverAction?, lines, materials, totals }
 	  VentureLine = { recipeId, itemId, perCraft, plannedCrafts, planned, crafted, posted, sold,
 	                  returned }
-	  materials[itemId] = { need, bought, boughtCopper, used, knownCopper, estimatedCopper }
-	  totals = { gross, cut, depositPaid, depositRefunded, trollUnits, leftoverCopper }
+	  materials[itemId] = { need, bought, boughtCopper, used, knownUnits?, knownCopper }
+	  totals = { gross, cut, depositPaid, depositRefunded, trollUnits }
+
+	Own-only (ASK-M-005): a venture stores only what the player paid. knownUnits / knownCopper
+	are the cost-pool share (cash) the crafts used; the rest of the materials and the leftovers
+	moved to stock are valued on read with valueOf (a rule quote, at the venture's ruleId), never
+	stored. knownUnits is nil only on a venture from before version 3 whose split was lost.
 
 	Status follows progress and can move back (planning more crafts reopens crafting):
 	  planning  nothing bought or crafted yet
@@ -31,7 +36,8 @@
 	  Ventures.isSoldOut(venture)                   -> boolean
 	  Ventures.close(venture, now, action, reason)  -> leftovers | nil, reason
 	  Ventures.refresh(venture)                     -> boolean status changed
-	  Ventures.profit(venture)                      -> VentureProfit
+	  Ventures.cashCost(venture, leftover)          -> copper   what the player paid for a leftover
+	  Ventures.profit(venture, valueOf?)            -> VentureProfit
 	  Ventures.forecast(venture, sources)           -> Forecast
 ]]
 local _, ns = ...
@@ -45,7 +51,7 @@ Ventures.DEFAULT_MARKET_SHARE = 20
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local isWhole, venturesOf, readVenture, lineFor, lineForItem, materialFor, deriveStatus, live, unposted
-local sumMaterials, openVentures
+local sumMaterials, openVentures, estimateOf, leftoverEstimate, craftedUnits, knownCopperOf
 
 --- Starts a venture in planning.
 --- @param market table Store:Market(key)
@@ -76,7 +82,7 @@ function Ventures.create(market, spec, now)
 		createdAt = now,
 		lines = {},
 		materials = {},
-		totals = { gross = 0, cut = 0, depositPaid = 0, depositRefunded = 0, trollUnits = 0, leftoverCopper = 0 },
+		totals = { gross = 0, cut = 0, depositPaid = 0, depositRefunded = 0, trollUnits = 0 },
 	}
 	ventures[id] = venture
 	return venture
@@ -189,8 +195,8 @@ function Ventures.noteBuy(venture, itemId, qty, copper)
 	Ventures.refresh(venture)
 end
 
---- A craft: made output units, and what each reagent cost.
---- @param costs table { [itemId] = { qty, knownCopper, estimatedCopper } }
+--- A craft: made output units, and the cash share of each reagent (its cost-pool share).
+--- @param costs table { [itemId] = { qty, knownUnits, knownCopper } }
 function Ventures.noteCraft(venture, recipeId, made, costs)
 	local line = lineFor(venture, recipeId)
 	if line then
@@ -199,8 +205,9 @@ function Ventures.noteCraft(venture, recipeId, made, costs)
 	for itemId, cost in pairs(type(costs) == 'table' and costs or {}) do
 		local material = materialFor(venture, itemId)
 		material.used = material.used + (cost.qty or 0)
+		-- A legacy material with its split lost keeps it lost.
+		material.knownUnits = material.knownUnits and material.knownUnits + (cost.knownUnits or 0)
 		material.knownCopper = material.knownCopper + (cost.knownCopper or 0)
-		material.estimatedCopper = material.estimatedCopper + (cost.estimatedCopper or 0)
 	end
 	Ventures.refresh(venture)
 end
@@ -313,25 +320,59 @@ function Ventures.refresh(venture)
 	return isChanged
 end
 
---- The venture's profit both ways.
+--- What the player paid for a leftover: a material's share of what was paid for it, a crafted
+--- unit's share of the cash the crafts used (every line's output alike).
+--- @param leftover table { itemId, qty, kind = 'crafted' | 'material' }
+--- @return number copper, 0 when nothing paid is known
+function Ventures.cashCost(venture, leftover)
+	if leftover.kind == 'material' then
+		local material = venture.materials[leftover.itemId]
+		if
+			not material
+			or not isWhole(material.bought)
+			or material.bought <= 0
+			or not isWhole(material.boughtCopper)
+		then
+			return 0
+		end
+		return math.floor(material.boughtCopper * math.min(leftover.qty, material.bought) / material.bought)
+	end
+	local crafted = craftedUnits(venture)
+	if crafted <= 0 then
+		return 0
+	end
+	return math.floor(knownCopperOf(venture) * math.min(leftover.qty, crafted) / crafted)
+end
+
+--- The venture's profit both ways. Estimates are read now, through valueOf; without it (or for
+--- an item it cannot price) they count as nothing and isEstimateComplete says so.
+--- @param valueOf fun(itemId, qty): number|nil the value of units now (the venture's rule)
 --- @return table { net, cash, overMaterials, spent, materialsCost, knownCopper, estimatedCopper,
----   knownShare } knownShare is 0..1 of the materials cost that was paid, not estimated
-function Ventures.profit(venture)
+---   knownShare, leftoverEstimate, isEstimateComplete, isSplitLost, hasUnpricedUnits } knownShare
+---   is 0..1 of the materials cost that was paid, not estimated; isSplitLost: a legacy material's
+---   known/estimated split was lost in the version-3 update; hasUnpricedUnits: some units have
+---   no price now
+function Ventures.profit(venture, valueOf)
 	local totals = venture.totals
-	local materials = sumMaterials(venture)
-	-- Leftovers moved to stock count at their value then; written-off ones count as nothing.
-	local net = totals.gross - totals.cut + totals.depositRefunded - totals.depositPaid + totals.leftoverCopper
+	local materials = sumMaterials(venture, valueOf)
+	-- Leftovers moved to stock count at their value now; written-off ones count as nothing.
+	local leftover, isLeftoverComplete = leftoverEstimate(venture, valueOf)
+	local net = totals.gross - totals.cut + totals.depositRefunded - totals.depositPaid + leftover
 	local materialsCost = materials.knownCopper + materials.estimatedCopper
 	return {
 		net = net,
 		-- Cash is gold logged out and in: leftovers moved to stock are value, not gold.
-		cash = net - materials.boughtCopper - totals.leftoverCopper,
+		cash = net - materials.boughtCopper - leftover,
 		overMaterials = net - materialsCost,
 		spent = materials.boughtCopper + totals.depositPaid,
 		materialsCost = materialsCost,
 		knownCopper = materials.knownCopper,
 		estimatedCopper = materials.estimatedCopper,
 		knownShare = materialsCost > 0 and materials.knownCopper / materialsCost or nil,
+		leftoverEstimate = leftover,
+		isEstimateComplete = materials.isComplete and isLeftoverComplete,
+		isSplitLost = materials.isSplitLost,
+		hasUnpricedUnits = materials.hasUnpricedUnits or not isLeftoverComplete,
 	}
 end
 
@@ -345,7 +386,7 @@ end
 ---   usesPriceSource, note }
 function Ventures.forecast(venture, sources)
 	local share = (sources.sharePercent or Ventures.DEFAULT_MARKET_SHARE) / 100
-	local profit = Ventures.profit(venture)
+	local profit = Ventures.profit(venture, sources.valueOf)
 	local income, cost, days, isComplete = profit.net, profit.materialsCost, 0, true
 	local confidences, usesPriceSource = {}, false
 	for _, line in ipairs(venture.lines) do
@@ -437,7 +478,7 @@ end
 function materialFor(venture, itemId)
 	local material = venture.materials[itemId]
 	if not material then
-		material = { need = 0, bought = 0, boughtCopper = 0, used = 0, knownCopper = 0, estimatedCopper = 0 }
+		material = { need = 0, bought = 0, boughtCopper = 0, used = 0, knownUnits = 0, knownCopper = 0 }
 		venture.materials[itemId] = material
 	end
 	return material
@@ -471,14 +512,81 @@ function unposted(line)
 	return math.max(0, line.crafted - line.sold - live(line))
 end
 
-function sumMaterials(venture)
-	local sum = { boughtCopper = 0, knownCopper = 0, estimatedCopper = 0 }
-	for _, material in pairs(venture.materials) do
+-- Paid valuation: the known copper plus today's value of the units of unknown origin.
+-- Opportunity valuation: today's value of every unit used, known or not.
+function sumMaterials(venture, valueOf)
+	local sum = {
+		boughtCopper = 0,
+		knownCopper = 0,
+		estimatedCopper = 0,
+		isComplete = true,
+		isSplitLost = false,
+		hasUnpricedUnits = false,
+	}
+	local isPaid = venture.valuation == 'paid'
+	for itemId, material in pairs(venture.materials) do
 		sum.boughtCopper = sum.boughtCopper + material.boughtCopper
-		sum.knownCopper = sum.knownCopper + material.knownCopper
-		sum.estimatedCopper = sum.estimatedCopper + material.estimatedCopper
+		local known = isPaid and material.knownCopper or 0
+		local unknownUnits = material.used
+		if isPaid then
+			-- A legacy split that was lost: the known copper stands, the rest cannot be valued.
+			unknownUnits = material.knownUnits and material.used - material.knownUnits or nil
+		end
+		sum.knownCopper = sum.knownCopper + known
+		local estimate, isComplete = estimateOf(valueOf, itemId, unknownUnits)
+		sum.estimatedCopper = sum.estimatedCopper + estimate
+		sum.isComplete = sum.isComplete and isComplete
+		sum.isSplitLost = sum.isSplitLost or unknownUnits == nil
+		sum.hasUnpricedUnits = sum.hasUnpricedUnits or (unknownUnits ~= nil and not isComplete)
 	end
 	return sum
+end
+
+-- Today's value of units: 0 with nothing to value; incomplete when it cannot be read.
+function estimateOf(valueOf, itemId, units)
+	if units == nil then
+		return 0, false
+	end
+	if units <= 0 then
+		return 0, true
+	end
+	if type(valueOf) ~= 'function' then
+		return 0, false
+	end
+	local ok, copper = pcall(valueOf, itemId, units)
+	if ok and isWhole(copper) then
+		return copper, true
+	end
+	return 0, false
+end
+
+function leftoverEstimate(venture, valueOf)
+	if venture.status ~= 'closed' or venture.leftoverAction ~= 'toStock' then
+		return 0, true
+	end
+	local total, isComplete = 0, true
+	for _, leftover in ipairs(Ventures.leftovers(venture)) do
+		local estimate, isKnown = estimateOf(valueOf, leftover.itemId, leftover.qty)
+		total, isComplete = total + estimate, isComplete and isKnown
+	end
+	return total, isComplete
+end
+
+function craftedUnits(venture)
+	local crafted = 0
+	for _, line in ipairs(venture.lines) do
+		-- A junk line counts as nothing crafted: the migration reads it on every load.
+		crafted = crafted + (type(line) == 'table' and isWhole(line.crafted) and line.crafted or 0)
+	end
+	return crafted
+end
+
+function knownCopperOf(venture)
+	local known = 0
+	for _, material in pairs(venture.materials) do
+		known = known + (isWhole(material.knownCopper) and material.knownCopper or 0)
+	end
+	return known
 end
 
 function openVentures(market)
