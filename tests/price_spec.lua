@@ -325,6 +325,8 @@ t.test('a quote prices every rule from one context, with facts and ages', functi
 	t.eq(#quote.prices, 3)
 	t.eq(quote.prices[1].isDefault, true)
 	t.eq(quote.prices[2].price.copper, 120)
+	t.same(quote.prices[2].price.inputs, { ahledger = true }, 'every quote carries its input set')
+	t.eq(type(quote.prices[1].price.inputs), 'table')
 	t.eq(quote.prices[3].price, nil)
 	t.eq(quote.prices[3].reason, 'unknown rule gone')
 	t.eq(quote.facts.salesPerDay, 45)

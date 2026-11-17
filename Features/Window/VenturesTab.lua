@@ -6,7 +6,8 @@
 	of a line, and close by hand: leftovers are written off or moved to stock. A venture that
 	has sold everything closes by itself. Ventures are never deleted.
 
-	  VenturesTab.detailLines(venture, forecast, nameOf) -> { { text, level? } }
+	  VenturesTab.detailLines(venture, forecast, nameOf, valueOf?) -> { { text, level? } }
+	  valueOf(itemId, qty) -> copper|nil values the estimates live (nothing estimated is stored)
 ]]
 local _, ns = ...
 
@@ -27,7 +28,7 @@ local CLOSE_LABELS = { sold = 'sold out', manual = 'closed by hand' }
 local LEFTOVER_LABELS = { toStock = 'leftovers moved to stock', writeOff = 'leftovers written off' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local refresh, selected, selectedLine, forecastOf, marketNow, closeSelected, stepCrafts, signed, percent, itemName
+local refresh, selected, selectedLine, forecastOf, liveValueOf, marketNow, closeSelected, stepCrafts, signed, percent, itemName
 
 ns.window:AddTab({
 	key = 'ventures',
@@ -72,7 +73,7 @@ ns.window:AddTab({
 --- What the tab shows for one venture.
 --- @param forecast table|nil Ventures.forecast (open ventures only)
 --- @param nameOf function fun(itemId) -> string
-function VenturesTab.detailLines(venture, forecast, nameOf)
+function VenturesTab.detailLines(venture, forecast, nameOf, valueOf)
 	local money = ns.TooltipLines.money
 	local lines = {}
 	local function add(text, level)
@@ -121,7 +122,7 @@ function VenturesTab.detailLines(venture, forecast, nameOf)
 			)
 		)
 	end
-	local profit = ns.Ventures.profit(venture)
+	local profit = ns.Ventures.profit(venture, valueOf)
 	add(
 		string.format(
 			'Net %s · cash %s · over materials %s',
@@ -140,6 +141,15 @@ function VenturesTab.detailLines(venture, forecast, nameOf)
 		),
 		profit.knownShare and profit.knownShare < 0.5 and profit.materialsCost > 0 and 'medium' or nil
 	)
+	if profit.isSplitLost then
+		add(
+			"Part of this venture's history was lost in the update. Those materials count only what was paid.",
+			'medium'
+		)
+	end
+	if profit.hasUnpricedUnits then
+		add('Some estimates have no price now. They count as nothing.', 'medium')
+	end
 	if forecast then
 		add(
 			string.format(
@@ -197,7 +207,7 @@ function refresh(container, ctx)
 	container.crafts:SetValue(line and (line.plannedCrafts .. ' crafts') or '')
 	container.crafts:SetEnabled(line ~= nil and venture.status ~= 'closed')
 	local forecast = venture.status ~= 'closed' and forecastOf(venture, ctx) or nil
-	container.lines:SetLines(VenturesTab.detailLines(venture, forecast, itemName))
+	container.lines:SetLines(VenturesTab.detailLines(venture, forecast, itemName, liveValueOf(venture)))
 	ctx.setCredit(forecast and forecast.usesPriceSource and ctx.window:Credit() or nil)
 end
 
@@ -223,6 +233,15 @@ function selectedLine(container, venture)
 	return venture.lines[container.state.lineIndex]
 end
 
+-- Today's value of units at the venture's rule: estimates are read live, never stored.
+function liveValueOf(venture)
+	local priceCtx = ns.prices and ns.prices:Context()
+	return function(itemId, qty)
+		local value = ns.values and ns.values:Stack(itemId, qty, { ruleId = venture.ruleId, ctx = priceCtx })
+		return value and value.isPriced and value.copper or nil
+	end
+end
+
 function forecastOf(venture, ctx)
 	local prices = ns.prices
 	local priceCtx = prices and prices:Context()
@@ -242,7 +261,7 @@ function forecastOf(venture, ctx)
 	})
 	return ns.Ventures.forecast(venture, {
 		valueOf = function(itemId, qty)
-			local value = ns.values and ns.values:Stack(itemId, qty, { ctx = priceCtx })
+			local value = ns.values and ns.values:Stack(itemId, qty, { ruleId = venture.ruleId, ctx = priceCtx })
 			if not (value and value.isPriced) then
 				return nil
 			end

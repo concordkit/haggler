@@ -26,7 +26,7 @@ local _, ns = ...
 local Store = {}
 ns.Store = Store
 
-Store.SCHEMA_VERSION = 2
+Store.SCHEMA_VERSION = 3
 Store.CHAR_SCHEMA_VERSION = 1
 Store.SURFACES = { 'tooltip', 'crafting', 'ah', 'bar' }
 
@@ -38,7 +38,8 @@ local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
 
---- Migration n upgrades a database from version n - 1 to n. Each changes db in place.
+--- Migration n upgrades a database from version n - 1 to n. Each changes db in place and gets
+--- the context Store.migrate was given ({ now? }).
 Store.MIGRATIONS = {
 	-- 0 -> 1: the clean-slate layout. The 0.1.0 build (a prototype that never shipped) had no
 	-- version; whatever it left is parked under `legacy` rather than thrown away.
@@ -61,15 +62,21 @@ Store.MIGRATIONS = {
 			end
 		end
 	end,
+	-- 2 -> 3: own-only (ASK-M-005). Every value derived from a price source goes; cash parts
+	-- stay. See Engine/OwnOnly.lua.
+	[3] = function(db, context)
+		ns.OwnOnly.migrate(db, context)
+	end,
 }
 
 --- Runs the migrations a database needs, in order. Pure: only db is changed.
 --- @param db table saved table (changed in place)
 --- @param migrations table|nil { [version] = fun(db) }, default Store.MIGRATIONS
 --- @param targetVersion number|nil default Store.SCHEMA_VERSION
+--- @param context table|nil { now? } passed to each migration
 --- @return table|nil db
 --- @return string|nil reason 'newer schema' when the data comes from a newer Haggler
-function Store.migrate(db, migrations, targetVersion)
+function Store.migrate(db, migrations, targetVersion, context)
 	if type(db) ~= 'table' then
 		error('Store.migrate: db must be a table', 2)
 	end
@@ -84,7 +91,7 @@ function Store.migrate(db, migrations, targetVersion)
 		if not migration then
 			error(string.format('Store.migrate: no migration to version %d', nextVersion), 2)
 		end
-		migration(db)
+		migration(db, context or {})
 		db.version = nextVersion
 	end
 	return db
@@ -96,15 +103,16 @@ StoreMethods.__index = StoreMethods
 --- Opens the saved tables: migrates them, fills the layout and seeds the built-in rules.
 --- @param db table|nil HagglerDB (nil on first run)
 --- @param charDb table|nil HagglerCharDB
+--- @param options table|nil { now? } unix seconds, for migrations that keep a time window
 --- @return table|nil store
 --- @return string|nil reason 'newer schema'; the tables are then left untouched
-function Store.open(db, charDb)
+function Store.open(db, charDb, options)
 	db = db or {}
 	charDb = charDb or {}
 	if (tonumber(charDb.version) or 0) > Store.CHAR_SCHEMA_VERSION then
 		return nil, 'newer schema'
 	end
-	local migrated, reason = Store.migrate(db)
+	local migrated, reason = Store.migrate(db, nil, nil, options)
 	if not migrated then
 		return nil, reason
 	end
