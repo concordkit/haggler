@@ -142,10 +142,13 @@ function VenturesTab.detailLines(venture, forecast, nameOf, valueOf)
 		profit.knownShare and profit.knownShare < 0.5 and profit.materialsCost > 0 and 'medium' or nil
 	)
 	if profit.isSplitLost then
-		add('The known/estimated split was lost in the update: those materials count only what was paid', 'medium')
+		add(
+			"Part of this venture's history was lost in the update. Those materials count only what was paid.",
+			'medium'
+		)
 	end
 	if profit.hasUnpricedUnits then
-		add('Some estimates have no price now: counted as nothing', 'medium')
+		add('Some estimates have no price now. They count as nothing.', 'medium')
 	end
 	if forecast then
 		add(

@@ -495,6 +495,23 @@ t.test('cashCost reads a junk material as nothing paid', function()
 	t.eq(Ventures.cashCost(venture, { kind = 'material', itemId = 2, qty = 1 }), 0)
 end)
 
+t.test('cashCost reads a junk crafted line as nothing crafted', function()
+	local venture = {
+		lines = { { itemId = 900 }, 'junk', { itemId = 901, crafted = 2 } },
+		materials = { [10] = { need = 1, used = 1, knownCopper = 100 } },
+	}
+	t.eq(Ventures.cashCost(venture, { kind = 'crafted', itemId = 901, qty = 1 }), 50)
+	venture.lines = { { itemId = 900 } }
+	t.eq(Ventures.cashCost(venture, { kind = 'crafted', itemId = 900, qty = 1 }), 0)
+end)
+
+t.test('the migration survives a closed venture whose line lost its crafted count', function()
+	local market = legacyMarket()
+	market.ventures[6].lines[1].crafted = nil
+	OwnOnly.migrateMarket(market, NOW)
+	t.eq(eventsOf(market, 'toStock')[2].copper, 0)
+end)
+
 t.group('own-only boundary: quotes carry their inputs')
 
 local ITEM = 2589

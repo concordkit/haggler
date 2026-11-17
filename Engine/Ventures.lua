@@ -575,7 +575,8 @@ end
 function craftedUnits(venture)
 	local crafted = 0
 	for _, line in ipairs(venture.lines) do
-		crafted = crafted + line.crafted
+		-- A junk line counts as nothing crafted: the migration reads it on every load.
+		crafted = crafted + (type(line) == 'table' and isWhole(line.crafted) and line.crafted or 0)
 	end
 	return crafted
 end
