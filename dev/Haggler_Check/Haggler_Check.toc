@@ -1,0 +1,16 @@
+## Interface: 16001
+## Title: Haggler: Checks (dev)
+## Notes: Dev-only. Haggler's in-game check suite: /hc for the checklist, /hc reset for a new run. Never ship.
+## Author: Eiluviann
+## Version: 0.1.0
+## X-License: AGPL-3.0-or-later
+## Category: Concord (dev)
+## Dependencies: Haggler
+## OptionalDeps: Concord_Check
+## SavedVariables: Haggler_CheckDB
+
+Suite.lua
+Items.lua
+Observer.lua
+Panel.lua
+Check.lua

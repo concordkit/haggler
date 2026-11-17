@@ -3,6 +3,7 @@
 package-as: Haggler
 enable-nolib-creation: no
 ignore:
+  - dev
   - tests
   - tools
   - .claude

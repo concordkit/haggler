@@ -1,0 +1,14 @@
+{
+	"name": "haggler-dev",
+	"private": true,
+	"type": "module",
+	"description": "Dev-only tools for Haggler; never shipped.",
+	"scripts": {
+		"check": "tsc -p .",
+		"results": "node read-check-results.ts"
+	},
+	"devDependencies": {
+		"@types/node": "24.10.1",
+		"typescript": "5.9.3"
+	}
+}
