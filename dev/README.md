@@ -71,6 +71,10 @@ Provenance's probes (0, 8, 17, 18, 19) are not repeated here.
 
 Items 10, 14, 16 and 17 are proven by specs and also judged in game. The in-game run catches a client that behaves differently from the fake one.
 
+## Known limits
+
+- `mail.newmail` assumes 50 or fewer mails in the inbox. The client lists only the first 50, so new mail beyond them goes unseen.
+
 ## Engine hook points
 
 None needed. Every judge reads `HagglerDB`, `HagglerCharDB`, the named frames (`HagglerTopBar`, `HagglerFrame`, `HagglerOptionsPanel`, `HagglerInputButtonN`), the LDB objects, client events and post-hooks.
