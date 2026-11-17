@@ -14,7 +14,9 @@
 
 	A look answered in Concord_Check's panel is recorded here as a player verdict: through the
 	probe set's onAnswer when the host has it (ConcordCheck.FEATURES.onAnswer), else read from
-	ConcordCheckDB whenever the host judges. A once answer carried from an earlier run is not one.
+	ConcordCheckDB when the host judges. Each stored answer is taken once, so a later /hc verdict
+	wins until the player answers in Concord again. Answers from another Concord run, once answers
+	carried from an earlier run, and answers given before /hc reset are not taken.
 
 	  Check.create(env, db, identity) -> checker   identity = { version, build, charKey }
 	  checker:Deliver(signal)                      judges and records
@@ -26,7 +28,8 @@ local Suite, Items = ns.Suite, ns.Items
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local indexItemsBySignal, signalNamesOf, manifestOf, readIdentity, registerWithConcord, forwardToConcord, safeCall
-local concordOf, concordVerdictOf, concordItemOf, clientEventsOf, hasOnAnswer, adoptStoredAnswers, itemOfId
+local concordOf, concordVerdictOf, concordItemOf, clientEventsOf, hasOnAnswer, adoptStoredAnswers
+local indexItemsById, concordSuiteOf, concordLinkOf, answerMarkOf
 
 local CONCORD_VERSION = 1
 local OWNER = 'Haggler'
@@ -51,6 +54,7 @@ function Check.create(env, db, identity)
 		db = db,
 		identity = identity,
 		itemsBySignal = indexItemsBySignal(Items.list),
+		itemById = indexItemsById(Items.list),
 		listeners = {},
 	}, { __index = Check })
 	checker.run = Suite.openRun(db, identity.version, identity.build, checker:Now())
@@ -96,7 +100,7 @@ function Check:RecordPlayerAnswer(itemId, answer, source)
 	if answer ~= 'pass' and answer ~= 'fail' then
 		return false
 	end
-	local item = itemOfId(itemId)
+	local item = self.itemById[itemId]
 	if item == nil then
 		return false
 	end
@@ -115,6 +119,8 @@ end
 --- Starts a fresh run (the old one is kept aside) and tells the listeners.
 function Check:Reset()
 	self.run = Suite.resetRun(self.db, self.identity.version, self.identity.build, self:Now())
+	-- Concord's run still holds the answers given before the reset: they belong to the old run.
+	adoptStoredAnswers(self, false)
 	for _, listener in ipairs(self.listeners) do
 		listener(nil, nil)
 	end
@@ -276,9 +282,15 @@ function registerWithConcord(env, checker)
 		label = 'Haggler',
 		items = items,
 		onAnswer = function(answer)
-			if type(answer) == 'table' and answer.owner == OWNER then
-				checker:RecordPlayerAnswer(answer.id, answer.answer, 'Concord_Check')
+			if type(answer) ~= 'table' or answer.owner ~= OWNER then
+				return
 			end
+			local suite = concordSuiteOf(env)
+			-- An answer for a Concord run other than the current one is stale.
+			if suite == nil or answer.runKey ~= suite.current then
+				return
+			end
+			checker:RecordPlayerAnswer(answer.id, answer.answer, 'Concord_Check')
 		end,
 	})
 	if not isCalled then
@@ -311,10 +323,12 @@ function concordItemOf(checker, item)
 		zone = item.zone,
 		once = item.once == true,
 		events = clientEventsOf(item),
-		judge = function()
+		judge = function(context)
 			local concord = concordOf(checker.env)
-			if concord ~= nil and not hasOnAnswer(concord) then
-				adoptStoredAnswers(checker)
+			-- The host judges every item with one context per trigger: read the store once for it.
+			if concord ~= nil and not hasOnAnswer(concord) and (context == nil or checker.adoptedFor ~= context) then
+				checker.adoptedFor = context
+				adoptStoredAnswers(checker, true)
 			end
 			return concordVerdictOf(Suite.resultOf(checker.db, checker.run, item))
 		end,
@@ -363,30 +377,56 @@ function hasOnAnswer(concord)
 end
 
 -- A host without onAnswer keeps the player's answers in ConcordCheckDB.suites[owner], in the
--- current run's item list. The host never judges an answered item again, so every judge reads all.
-function adoptStoredAnswers(checker)
-	local store = checker.env.ConcordCheckDB
-	local suites = type(store) == 'table' and store.suites or nil
-	local suite = type(suites) == 'table' and suites[OWNER] or nil
-	local runs = type(suite) == 'table' and suite.runs or nil
+-- current run's item list. Each one is taken once (marked on Haggler's run), so a later /hc verdict
+-- is not overwritten; with shouldRecord false they are only marked as seen.
+function adoptStoredAnswers(checker, shouldRecord)
+	local suite = concordSuiteOf(checker.env)
+	local runs = suite ~= nil and suite.runs or nil
 	local run = type(runs) == 'table' and suite.current ~= nil and runs[suite.current] or nil
 	if type(run) ~= 'table' or type(run.items) ~= 'table' then
 		return
 	end
+	local link = concordLinkOf(checker.run, suite.current)
 	for _, record in ipairs(run.items) do
 		if type(record) == 'table' and record.answeredBy == 'player' and not record.fromOnce then
-			checker:RecordPlayerAnswer(record.id, record.state, 'Concord_Check')
+			local mark = answerMarkOf(record)
+			if not link.adopted[mark] then
+				link.adopted[mark] = true
+				if shouldRecord then
+					checker:RecordPlayerAnswer(record.id, record.state, 'Concord_Check')
+				end
+			end
 		end
 	end
 end
 
-function itemOfId(itemId)
-	for _, item in ipairs(Items.list) do
-		if item.id == itemId then
-			return item
-		end
+-- ConcordCheckDB.suites[owner], or nil.
+function concordSuiteOf(env)
+	local store = env.ConcordCheckDB
+	local suites = type(store) == 'table' and store.suites or nil
+	local suite = type(suites) == 'table' and suites[OWNER] or nil
+	return type(suite) == 'table' and suite or nil
+end
+
+-- What Haggler's run took from one Concord run; a new Concord run starts afresh.
+function concordLinkOf(run, concordRunKey)
+	if type(run.concord) ~= 'table' or run.concord.runKey ~= concordRunKey then
+		run.concord = { runKey = concordRunKey, adopted = {} }
 	end
-	return nil
+	return run.concord
+end
+
+-- One answer: a player answering again gets a new time, so it is a new answer.
+function answerMarkOf(record)
+	return tostring(record.id) .. '|' .. tostring(record.state) .. '|' .. tostring(record.at)
+end
+
+function indexItemsById(items)
+	local index = {}
+	for _, item in ipairs(items) do
+		index[item.id] = item
+	end
+	return index
 end
 
 function safeCall(fn, ...)
