@@ -157,6 +157,26 @@ t.test('a fail sticks, a look never replaces a judged result, evidence is capped
 	end, 'must be pass, fail')
 end)
 
+t.test('the player judges a look and may change it; a judged item stays judged', function()
+	local db = {}
+	local run = Suite.openRun(db, 'v', 'b', NOW)
+	local lookItem = { id = 'l', kind = 'look' }
+	t.eq(Suite.record(db, run, lookItem, { state = 'fail', evidence = { 'misclick' } }, NOW, true), true)
+	t.eq(Suite.record(db, run, lookItem, { state = 'pass', evidence = { 'fixed' } }, NOW, true), true, 'changed back')
+	t.eq(run.results.l.state, 'pass')
+	local onceItem = { id = 'o', kind = 'auto', once = true }
+	Suite.record(db, run, onceItem, { state = 'look', evidence = { 'cannot tell' } }, NOW)
+	local laterRun = Suite.openRun(db, 'v', 'b2', NOW + 1)
+	t.eq(Suite.canPlayerJudge(db, laterRun, onceItem), true, 'a once look stays confirmable in the next run')
+	t.eq(Suite.record(db, laterRun, onceItem, { state = 'pass', evidence = {} }, NOW, true), true)
+	t.eq(db.once.o.state, 'pass')
+	t.eq(Suite.canPlayerJudge(db, laterRun, onceItem), true, 'the player may change it again')
+	local actionItem = { id = 'a', kind = 'action' }
+	Suite.record(db, laterRun, actionItem, { state = 'fail', evidence = { 'judged' } }, NOW)
+	t.eq(Suite.canPlayerJudge(db, laterRun, actionItem), false)
+	t.eq(Suite.record(db, laterRun, actionItem, { state = 'pass', evidence = {} }, NOW, true), false)
+end)
+
 t.test('once answers carry over runs until a reset, which keeps the old run aside', function()
 	local db = {}
 	local run = Suite.openRun(db, 'v', 'b', NOW)
@@ -238,6 +258,14 @@ t.test('bar.position: the bar is placed after a reload where it was dragged', fu
 	charDb.ui.topBar = { point = 'TOP', relativePoint = 'TOP', x = 300, y = -40 }
 	item.judge(facts, scratch, signal('LOGOUT'))
 	t.eq(item.judge(facts, scratch, signal('LOAD', NOW, false, true)).state, 'fail', 'placed elsewhere')
+
+	local afterReset = {}
+	item.judge(facts, afterReset, signal('TICK'))
+	item.judge(facts, afterReset, signal('LOGOUT'))
+	t.eq(item.judge(facts, afterReset, signal('LOAD', NOW, false, true)), nil, 'a reset mid-session: no drag, no pass')
+	local noBaseline = {}
+	item.judge(facts, noBaseline, signal('LOGOUT'))
+	t.eq(item.judge(facts, noBaseline, signal('LOAD', NOW, false, true)), nil, 'no baseline, no verdict')
 end)
 
 t.test('session.reload: the session survives a reload, a moved start fails', function()
@@ -252,6 +280,9 @@ t.test('session.reload: the session survives a reload, a moved start fails', fun
 	t.eq(item.judge(facts, scratch, signal('LOAD', NOW, false, true)).state, 'fail')
 	item.judge(facts, scratch, signal('LOGOUT'))
 	t.eq(item.judge(facts, scratch, signal('LOAD', NOW, true, false)), nil, 'a login is not a reload')
+	local empty = factsWith({})
+	item.judge(empty, scratch, signal('LOGOUT'))
+	t.eq(item.judge(empty, scratch, signal('LOAD', NOW, false, true)), nil, 'no session saved: nothing to compare')
 end)
 
 t.test('session.relog: the login start moves on a relog of the same character', function()
@@ -279,19 +310,39 @@ t.test('persist.data: fails when the last ledger row changes across a reload', f
 	item.judge(factsWith(db), scratch, signal('LOGOUT'))
 	market.ledger = {}
 	t.eq(item.judge(factsWith(db), scratch, signal('LOAD')).state, 'fail')
+	local emptyDb = { markets = { [MARKET] = { ledger = {} } } }
+	item.judge(factsWith(emptyDb), scratch, signal('LOGOUT'))
+	t.eq(item.judge(factsWith(emptyDb), scratch, signal('LOAD')), nil, 'an empty store proves nothing')
 end)
 
-t.test('venture.plan: one venture planning two crafts passes, two one-craft ventures fail', function()
+t.test('venture.plan: planning twice grows one venture; a second venture fails', function()
 	local item = itemById('venture.plan')
-	local market = { ventures = { a = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 2 } } } } }
-	t.eq(item.judge(factsWith({ markets = { [MARKET] = market } }), {}, signal('TICK')).state, 'pass')
-	market.ventures = {
-		a = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1 } } },
-		b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1 } } },
-	}
-	t.eq(item.judge(factsWith({ markets = { [MARKET] = market } }), {}, signal('TICK')).state, 'fail')
+	local line = { recipeId = 9, plannedCrafts = 1 }
+	local market = { ventures = { a = { createdAt = NOW, lines = { line } } } }
+	local facts = factsWith({ markets = { [MARKET] = market } })
+	local scratch = {}
+	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'planned once')
+	line.plannedCrafts = 2
+	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
+	t.eq(
+		item.judge(
+			factsWith({
+				markets = {
+					[MARKET] = {
+						ventures = { a = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 4 } } } },
+					},
+				},
+			}),
+			{},
+			signal('TICK')
+		),
+		nil,
+		'first seen with many crafts: not planned twice'
+	)
+	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1 } } }
+	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'fail', 'a duplicate venture fails before a pass')
 	market.ventures.b.createdAt = NOW - 1000
-	t.eq(item.judge(factsWith({ markets = { [MARKET] = market } }), {}, signal('TICK')), nil, 'older venture ignored')
+	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'older venture ignored')
 end)
 
 t.test('craft.book: one craft row per cast, judged after the casts settle', function()
@@ -337,9 +388,11 @@ t.test('vendor.book: a vendor buy and sell pass, more vendor buys than buy calls
 	t.eq(
 		judgeAll(item, facts, {
 			signal('MERCHANT_SHOW'),
-			signal('LEDGER', NOW, { ledgerRow('vendorBuy', 5) }),
+			signal('HOOK:BuyMerchantItem', NOW, 3, 1),
+			signal('LEDGER', NOW, { ledgerRow('vendorBuy', 5), ledgerRow('vendorBuy', 5) }),
 		}).state,
-		'fail'
+		'fail',
+		'one buy booked twice'
 	)
 end)
 
@@ -388,6 +441,30 @@ t.test('mail.take: sale, return and won rows pass; more sales than sale takes fa
 		'pass'
 	)
 	t.eq(judgeAll(item, facts, { signal('MAIL_SHOW'), signal('LEDGER', NOW, { ledgerRow('sale', 5) }) }).state, 'fail')
+	t.eq(
+		judgeAll(item, facts, {
+			signal('MAIL_SHOW'),
+			take('seller'),
+			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
+			signal('MAIL_CLOSED'),
+			signal('MAIL_SHOW', NOW + 60),
+			signal('LEDGER', NOW + 60, { ledgerRow('cancel', 6), ledgerRow('buy', 7) }),
+		}),
+		nil,
+		'a second visit is no fail; a cancel is no expiry'
+	)
+	t.eq(
+		judgeAll(item, facts, {
+			signal('MAIL_SHOW'),
+			take('seller'),
+			signal('MAIL_CLOSED', NOW),
+			signal('LEDGER', NOW + 1, { ledgerRow('sale', 5) }),
+			signal('MAIL_SHOW', NOW + 60),
+			signal('LEDGER', NOW + 60, { ledgerRow('expire', 6), ledgerRow('buy', 7) }),
+		}).state,
+		'pass',
+		'over two visits, with a row read just after a close'
+	)
 end)
 
 t.test('mail.fullbags: a won take that failed on full bags is not booked, the retake is', function()
@@ -440,6 +517,34 @@ t.test('mail.newmail: new mail during a sale take still books one sale', functio
 			signal('TICK', NOW + 4),
 		}).state,
 		'fail'
+	)
+	inbox = 1
+	t.eq(
+		judgeAll(item, facts, {
+			take,
+			signal('MAIL_INBOX_UPDATE'),
+			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
+			signal('TICK', NOW + 4),
+		}).state,
+		'pass',
+		'the taken mail left as the new one landed: the count nets zero'
+	)
+	inbox = 0
+	t.eq(
+		judgeAll(item, facts, {
+			take,
+			signal('UPDATE_PENDING_MAIL'),
+			signal('MAIL_INBOX_UPDATE'),
+			signal('LEDGER', NOW, { ledgerRow('sale', 5) }),
+			signal('TICK', NOW + 4),
+		}).state,
+		'pass',
+		'new mail announced'
+	)
+	t.eq(
+		judgeAll(item, facts, { take, signal('MAIL_INBOX_UPDATE'), signal('TICK', NOW + 4) }),
+		nil,
+		'no new mail: nothing raced'
 	)
 end)
 
@@ -499,6 +604,18 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 		}).state,
 		'pass'
 	)
+	t.eq(
+		judgeAll(untracked, facts, {
+			signal('HOOK:CancelAuction', NOW, 2),
+			signal('HOOK:CancelAuction', NOW + 5, 4),
+			signal('AUCTION_HOUSE_CLOSED', NOW + 6),
+			signal('AUCTION_HOUSE_SHOW', NOW + 30),
+			signal('HOOK:CancelAuction', NOW + 31, 5),
+			signal('TICK', NOW + 40),
+		}).state,
+		'pass',
+		"Haggler's 5 s wait and an AH close or show end the wait"
+	)
 end)
 
 t.test('flips.buy: a live search from Flips that lands on Buy passes', function()
@@ -530,17 +647,39 @@ end)
 
 t.test('focus.combat: no key stays overridden to Haggler after combat', function()
 	local item = itemById('focus.combat')
-	local held = { UP = true }
-	local facts = factsWith({}, {
-		bindingAction = function(key)
-			return held[key] and 'CLICK HagglerInputButton1:LeftButton' or nil
-		end,
-	})
-	local scratch = {}
-	item.judge(facts, scratch, signal('PLAYER_REGEN_DISABLED'))
-	t.eq(item.judge(facts, scratch, signal('PLAYER_REGEN_ENABLED')).state, 'fail', 'still held')
-	held = {}
-	t.eq(item.judge(facts, scratch, signal('PLAYER_REGEN_ENABLED')).state, 'pass')
+	local facts = factsWith({})
+	local function sampled(name, at, keys)
+		local each = signal(name, at)
+		each.args.heldFocusKeys = keys
+		return each
+	end
+	t.eq(
+		judgeAll(item, facts, {
+			sampled('TICK', NOW, { 'UP' }),
+			sampled('PLAYER_REGEN_DISABLED', NOW + 1, {}),
+			sampled('PLAYER_REGEN_ENABLED', NOW + 9, { 'UP' }),
+		}).state,
+		'fail',
+		'still held'
+	)
+	t.eq(
+		judgeAll(item, facts, {
+			sampled('TICK', NOW, { 'UP' }),
+			sampled('PLAYER_REGEN_DISABLED', NOW + 1, {}),
+			sampled('PLAYER_REGEN_ENABLED', NOW + 9, {}),
+		}).state,
+		'pass',
+		'the tick before the pull stands for it'
+	)
+	t.eq(
+		judgeAll(item, facts, {
+			sampled('TICK', NOW, { 'UP' }),
+			sampled('PLAYER_REGEN_DISABLED', NOW + 10, {}),
+			sampled('PLAYER_REGEN_ENABLED', NOW + 19, {}),
+		}),
+		nil,
+		'an old sample is not the pull'
+	)
 end)
 
 t.test('focus.bind and feed.objects: the bound key and the feed texts', function()
@@ -641,22 +780,119 @@ t.test('the observer delivers events and hooks late and in order, ledger rows be
 	client.advance(0.6)
 	t.eq(heard[5].name, 'LOAD')
 	t.same(heard[5].args, { false, true })
+	client.advance(0.6)
 	t.eq(heard[6].name, 'TICK', 'the first read sets the cursors: rows from before are not new')
 
 	client.HagglerDB.markets[MARKET].ledger[2] = { NOW, 'cut', 5, 1, 5 }
 	heard = {}
 	client.advance(1)
+	t.eq(#heard, 0, 'ledger rows wait in the queue like everything else')
+	client.advance(0.5)
 	t.eq(heard[1].name, 'LEDGER')
 	t.eq(heard[1].args[1][1].kind, 'cut')
 	t.eq(heard[2].name, 'TICK')
 	client.HagglerDB.markets[MARKET].ledger = { { NOW, 'fold', 0, 0, 0 } }
 	heard = {}
 	client.advance(1)
+	client.advance(0.5)
 	t.eq(heard[1].name, 'TICK', 'a compacted ledger restarts at its end')
 
 	heard = {}
 	client.fire('PLAYER_LOGOUT')
 	t.eq(heard[1].name, 'LOGOUT', 'logout is delivered at once')
+end)
+
+-- Drives one item through a real observer over the fake client; returns every verdict it gave.
+local function observeItem(client, itemId, signalNames)
+	local item = itemById(itemId)
+	local scratch, verdicts = {}, {}
+	local observer
+	observer = ns.Observer.create(client, function(each)
+		local facts = factsWith(client.HagglerDB)
+		facts.api = observer:Api()
+		local verdict = item.judge(facts, scratch, each)
+		if verdict then
+			verdicts[#verdicts + 1] = verdict.state
+		end
+	end)
+	observer:Start(signalNames or item.on)
+	client.fire('PLAYER_ENTERING_WORLD', true, false)
+	for _ = 1, 25 do
+		client.advance(0.1)
+	end
+	return verdicts
+end
+
+local function hasVerdict(verdicts, state)
+	for _, each in ipairs(verdicts) do
+		if each == state then
+			return true
+		end
+	end
+	return false
+end
+
+t.test('vendor.book through the observer: a row booked in the same call never beats its hook', function()
+	-- The review's repro: Haggler books vendorBuy inside its own BuyMerchantItem hook, and the
+	-- next ledger read falls between that call and the delivery of our hook.
+	local client = fakeClient()
+	local ledger = {}
+	client.HagglerDB.markets[MARKET] = { ledger = ledger }
+	client.BuyMerchantItem = function() end
+	client.hooksecurefunc(client, 'BuyMerchantItem', function()
+		ledger[#ledger + 1] = { NOW, 'vendorBuy', 5, 1, 10 }
+	end)
+	local verdicts = observeItem(client, 'vendor.book')
+	client.fire('MERCHANT_SHOW')
+	for _ = 1, 6 do
+		client.advance(0.1)
+	end
+	for _ = 1, 10 do
+		client.BuyMerchantItem(3, 1)
+		client.advance(0.1)
+	end
+	ledger[#ledger + 1] = { NOW, 'vendorSell', 6, 1, 5 }
+	for _ = 1, 20 do
+		client.advance(0.1)
+	end
+	client.fire('MERCHANT_CLOSED')
+	for _ = 1, 10 do
+		client.advance(0.1)
+	end
+	t.eq(hasVerdict(verdicts, 'fail'), false, 'no false fail')
+	t.eq(hasVerdict(verdicts, 'pass'), true)
+end)
+
+t.test('focus.combat through the observer: Haggler drops the focus inside the combat event', function()
+	local client = fakeClient()
+	local held = { UP = true, DOWN = true }
+	function client.GetBindingAction(key)
+		return held[key] and 'CLICK HagglerInputButton1:LeftButton' or nil
+	end
+	local verdicts = observeItem(client, 'focus.combat')
+	for _ = 1, 15 do
+		client.advance(0.1)
+	end
+	held = {}
+	client.fire('PLAYER_REGEN_DISABLED')
+	for _ = 1, 30 do
+		client.advance(0.1)
+	end
+	client.fire('PLAYER_REGEN_ENABLED')
+	for _ = 1, 10 do
+		client.advance(0.1)
+	end
+	t.same(verdicts, { 'pass' })
+
+	held = { UP = true }
+	for _ = 1, 15 do
+		client.advance(0.1)
+	end
+	client.fire('PLAYER_REGEN_DISABLED')
+	client.advance(0.6)
+	client.fire('PLAYER_REGEN_ENABLED')
+	client.advance(0.6)
+	t.same(verdicts, { 'pass', 'fail' }, 'a key still held after combat')
 end)
 
 t.test('the checker records verdicts, skips answered once items and survives a judge error', function()
@@ -686,7 +922,43 @@ t.test('the checker records verdicts, skips answered once items and survives a j
 	end)
 	checker:Model().setVerdict(itemById('window.tabs'), 'pass')
 	t.same(heard, { 'window.tabs' })
+	checker:Model().setVerdict(itemById('window.tabs'), 'fail')
+	checker:Model().setVerdict(itemById('window.tabs'), 'pass')
+	t.eq(Suite.resultOf(db, checker.run, itemById('window.tabs')).state, 'pass', 'a misclicked fail changes back')
+	t.eq(checker:Model().canSetVerdict(itemById('load.clean')), false, "a judged item is not the player's")
+
+	db.once['client.override-query'] = { state = 'look', evidence = { 'unreadable' } }
+	checker.api = fakeApi({
+		bindingAction = function()
+			return 'CLICK HagglerInputButton1:LeftButton'
+		end,
+	})
+	client.HagglerDB.settings = { topbar = { focusKey = 'CTRL-SHIFT-H' } }
+	checker:Deliver(signal('TICK'))
+	t.eq(db.once['client.override-query'].state, 'pass', 'a once look keeps listening')
 	checker:Reset()
 	t.eq(Suite.resultOf(db, checker.run, itemById('window.tabs')), nil, 'fresh run')
 	t.eq(db.once['client.error-hook'], nil, 'once answers cleared')
+end)
+
+t.test('verdicts go to ConcordCheck.Log as owner, verdict, text', function()
+	local client = fakeClient()
+	local logged = {}
+	client.ConcordCheck = {
+		Log = function(...)
+			logged[#logged + 1] = { ... }
+		end,
+	}
+	local db = {}
+	local checker = ns.Check.create(client, db, { version = '0.2.0', build = '1.15.8.1', charKey = CHAR })
+	checker.api = fakeApi()
+	client.HagglerDB = { version = 2 }
+	checker:OnRecord(function(item, result)
+		ns.Check.forwardToConcord(client, item, result)
+	end)
+	checker:Deliver(signal('LOAD', NOW, true, false))
+	t.truthy(#logged >= 1)
+	t.eq(logged[1][1], 'Haggler')
+	t.eq(logged[1][2], 'pass')
+	t.truthy(logged[1][3]:find('^load%.clean: '), 'text names the item')
 end)

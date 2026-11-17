@@ -14,7 +14,7 @@ ln -s "$PWD/dev/Haggler_Check" "/Applications/World of Warcraft/_forever_/Interf
 
 In game:
 
-- `/hc` toggles the checklist. Its top line names the next thing to do and where (town, mailbox, auction house, then combat). Click a row to see what to do and the evidence so far. Look items have Pass, Fail and N/A buttons.
+- `/hc` toggles the checklist. Its top line names the next thing to do and where (town, mailbox, auction house, then combat). Click a row to see what to do and the evidence so far. Pass, Fail and N/A buttons show on look items and on any item the suite could only judge as a look; a verdict you set there can be changed again.
 - `/hc reset` starts a fresh run. The old run is kept as `<run> #n`.
 
 A run is keyed by Haggler's version and the client build, so a new build starts a new run. A fail sticks for the rest of the run. Items marked `once` (client capabilities) are answered once and carried into later runs until a reset.
@@ -24,10 +24,10 @@ When `ConcordCheck.RegisterProbes` exists (Concord_Check v2), the items also reg
 Read the run after a `/reload` or logout. The reader exits 0 only when every item passed or was marked N/A:
 
 ```bash
-node dev/read-check-results.ts
+node dev/read-check-results.ts --version 0.2.0
 ```
 
-With several WoW accounts, pass the account folder name or the full path to `Haggler_Check.lua`.
+`--version` is optional; with it the reader is green only when the current run is of that Haggler version. With several WoW accounts, also pass the account folder name or the full path to `Haggler_Check.lua`.
 
 Typecheck the reader (one-time `npm install` in `dev/`):
 
@@ -41,8 +41,8 @@ npm --prefix dev install && npm --prefix dev run check
 
 The checklist is "Combined in-game checklist, steps 4–6" in the step 5 handover. Its sub-checks fall into three groups:
 
-- **a, spec**: proven outside the game, so the run leaves them out. There are 18 sub-checks.
-- **b, judged**: `auto` and `action` items the suite judges from Haggler's state. There are 30.
+- **a, spec**: proven outside the game, so the run leaves them out. There are 23 sub-checks, one per clause in the column below: rows 2, 5, 7, 14, 15 and 17 have one each, 10, 13 and 16 three each, 6 and 8 four each.
+- **b, judged**: `auto` and `action` items the suite judges from Haggler's state. There are 30 (5 auto, 25 action).
 - **c, look**: items that need eyes. There are 10.
 
 Provenance's probes (0, 8, 17, 18, 19) are not repeated here.

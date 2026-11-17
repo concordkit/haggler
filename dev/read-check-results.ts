@@ -3,24 +3,25 @@
 //   node dev/read-check-results.ts                 the one account that has Haggler_Check.lua
 //   node dev/read-check-results.ts <account>       an account folder name under WTF/Account
 //   node dev/read-check-results.ts <path>          a Haggler_Check.lua anywhere
+//   --version <v>                                    green only when the run is of Haggler <v>
 // The Lua literal parser is the one in Provenance's Dev/read-probe-results.ts.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 type LuaValue = string | number | boolean | undefined | LuaTable;
 type LuaTable = Map<string | number, LuaValue>;
 type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 type Token =
-	| { kind: 'string'; text: string }
-	| { kind: 'number'; value: number }
-	| { kind: 'name'; text: string }
-	| { kind: 'symbol'; text: string };
+	{ kind: 'string'; text: string } | { kind: 'number'; value: number } | { kind: 'name'; text: string } | { kind: 'symbol'; text: string };
 type ItemState = 'pass' | 'fail' | 'look' | 'na' | 'pending';
 type SavedState = Exclude<ItemState, 'pending'>;
 type CheckItem = { id: string; title: string; zone: string; place: string; isOnce: boolean };
 type CheckResult = { state: ItemState; evidence: string[] };
 type CheckReport = { markdown: string; isGreen: boolean };
+type ReaderArguments = { location: string | undefined; expectedVersion: string | undefined };
+type ReportOptions = { expectedVersion?: string | undefined };
 
 const DATABASE_NAME = 'Haggler_CheckDB';
 const SAVED_VARIABLES_FILE = 'Haggler_Check.lua';
@@ -28,6 +29,11 @@ const ACCOUNT_ROOT = '/Applications/World of Warcraft/_forever_/WTF/Account';
 const JUDGED_STATES: ReadonlySet<ItemState> = new Set(['pass', 'fail', 'na']);
 const SAVED_STATES: readonly SavedState[] = ['pass', 'fail', 'look', 'na'];
 const SYMBOLS = new Set(['{', '}', '[', ']', '=', ',', ';']);
+// How the client writes math.huge and NaN into a saved table.
+const NUMBER_NAMES: ReadonlyMap<string, number> = new Map([
+	['inf', Number.POSITIVE_INFINITY],
+	['nan', Number.NaN],
+]);
 const ESCAPES: Readonly<Record<string, string>> = { n: '\n', t: '\t', r: '\r', '\\': '\\', '"': '"', "'": "'" };
 
 class TokenStream {
@@ -65,10 +71,15 @@ class TokenStream {
 	}
 }
 
-main();
+if (isRunDirectly()) main();
 
 function main(): void {
-	const located = locateSavedVariables(process.argv[2]);
+	const readerArguments = parseArguments(process.argv.slice(2));
+	if (!readerArguments.ok) {
+		process.stderr.write(`${readerArguments.error.message}\n`);
+		process.exit(2);
+	}
+	const located = locateSavedVariables(readerArguments.value.location);
 	if (!located.ok) {
 		process.stderr.write(`${located.error.message}\n`);
 		process.exit(2);
@@ -83,9 +94,33 @@ function main(): void {
 		process.stderr.write(`${DATABASE_NAME} is missing from ${located.value}\n`);
 		process.exit(2);
 	}
-	const report = renderReport(database);
+	const report = renderReport(database, { expectedVersion: readerArguments.value.expectedVersion });
 	process.stdout.write(report.markdown);
 	process.exit(report.isGreen ? 0 : 1);
+}
+
+/**
+ * Reads the command line: an optional `--version <v>` and an optional account or path.
+ * @returns the arguments, or why they are malformed.
+ */
+export function parseArguments(argv: readonly string[]): Result<ReaderArguments> {
+	let location: string | undefined;
+	let expectedVersion: string | undefined;
+	for (let index = 0; index < argv.length; index += 1) {
+		const argument = argv[index];
+		if (argument === '--version') {
+			expectedVersion = argv[index + 1];
+			if (expectedVersion === undefined || expectedVersion === '') {
+				return { ok: false, error: new Error('--version needs a version, e.g. --version 0.2.0') };
+			}
+			index += 1;
+		} else if (argument !== undefined && location === undefined) {
+			location = argument;
+		} else {
+			return { ok: false, error: new Error(`unexpected argument ${String(argument)}`) };
+		}
+	}
+	return { ok: true, value: { location, expectedVersion } };
 }
 
 /**
@@ -138,10 +173,12 @@ export function parseSavedVariables(source: string): Result<Map<string, LuaValue
 
 /**
  * Renders the current run: a summary, then one row per item in suite order. Green only when no
- * item failed and every item passed or was marked not applicable.
+ * item failed, every item passed or was marked not applicable, and the run is of the expected
+ * Haggler version when one is given.
  * @param database the parsed Haggler_CheckDB
+ * @param options expectedVersion: the Haggler version the run must be of
  */
-export function renderReport(database: LuaTable): CheckReport {
+export function renderReport(database: LuaTable, options: ReportOptions = {}): CheckReport {
 	const items = readItems(database.get('items'));
 	const runKey = database.get('current');
 	const runs = database.get('runs');
@@ -153,7 +190,9 @@ export function renderReport(database: LuaTable): CheckReport {
 	const onceResults = database.get('once');
 	const rows = items.map((item) => ({ item, result: resultOf(item, results, onceResults) }));
 	const counts = countStates(rows.map((row) => row.result.state));
-	const isGreen = counts.fail === 0 && rows.every((row) => JUDGED_STATES.has(row.result.state));
+	const runVersion = run.get('version');
+	const isExpectedVersion = options.expectedVersion === undefined || runVersion === options.expectedVersion;
+	const isGreen = isExpectedVersion && counts.fail === 0 && rows.every((row) => JUDGED_STATES.has(row.result.state));
 	const summary = [
 		`${String(counts.pass)} pass`,
 		`${String(counts.na)} n/a`,
@@ -165,6 +204,12 @@ export function renderReport(database: LuaTable): CheckReport {
 		`## Haggler checks: ${runKey}`,
 		'',
 		`${isGreen ? 'GREEN' : 'NOT GREEN'}: ${summary}, of ${String(items.length)}.`,
+		...(isExpectedVersion
+			? []
+			: [
+					'',
+					`The current run is of Haggler ${stringOr(runVersion, '?')}, not ${String(options.expectedVersion)}: run the suite on that build.`,
+				]),
 		'',
 		'| State | Place | Item | Evidence |',
 		'| --- | --- | --- | --- |',
@@ -221,12 +266,15 @@ function parseValue(stream: TokenStream): LuaValue {
 			if (token.text === 'true') return true;
 			if (token.text === 'false') return false;
 			if (token.text === 'nil') return undefined;
+			if (NUMBER_NAMES.has(token.text)) return NUMBER_NAMES.get(token.text);
 			throw new SyntaxError(`unexpected name '${token.text}'`);
 		case 'symbol':
 			if (token.text === '{') return parseTableBody(stream);
 			if (token.text === '-') {
 				const negated = stream.next();
 				if (negated.kind === 'number') return -negated.value;
+				const namedNumber = negated.kind === 'name' ? NUMBER_NAMES.get(negated.text) : undefined;
+				if (namedNumber !== undefined) return -namedNumber;
 			}
 			throw new SyntaxError(`unexpected ${describeToken(token)}`);
 	}
@@ -351,6 +399,12 @@ function arrayOf(value: LuaValue): LuaValue[] {
 
 function describeToken(token: Token): string {
 	return token.kind === 'number' ? `number ${String(token.value)}` : `${token.kind} '${token.text}'`;
+}
+
+// True when node runs this file, false when a test or another script imports it.
+function isRunDirectly(): boolean {
+	const entry = process.argv[1];
+	return entry !== undefined && resolve(entry) === fileURLToPath(import.meta.url);
 }
 
 function countStates(states: ItemState[]): Record<ItemState, number> {

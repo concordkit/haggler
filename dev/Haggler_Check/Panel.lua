@@ -4,10 +4,11 @@
 	  progress line · next action
 	  12 rows a page: [state] place · title       click a row to select it
 	  selected item: what to do, then its evidence
-	  look items: Pass · Fail · N/A               prev / next page · close
+	  Pass · Fail · N/A while the player may judge   prev / next page · close
+	  (a look item, any item whose result is a look, or one the player judged: changeable)
 
 	  Panel.create(env, model) -> panel   model: items(), resultOf(item), progress(), nextItem(),
-	                                      runKey(), setVerdict(item, state)
+	                                      runKey(), canSetVerdict(item), setVerdict(item, state)
 	  panel:Toggle() · panel:Refresh()
 ]]
 local _, ns = ...
@@ -133,7 +134,7 @@ end
 
 function Panel:SetVerdict(state)
 	local item = self.selected
-	if item == nil or item.kind ~= 'look' then
+	if item == nil or not self.model.canSetVerdict(item) then
 		return
 	end
 	self.model.setVerdict(item, state)
@@ -201,9 +202,9 @@ function Panel:RefreshDetail()
 		end
 	end
 	self.detailText:SetText(table.concat(lines, '\n'))
-	local isLook = item ~= nil and item.kind == 'look'
+	local canJudge = item ~= nil and self.model.canSetVerdict(item)
 	for _, button in ipairs(self.verdictButtons) do
-		button:SetShown(isLook)
+		button:SetShown(canJudge)
 	end
 end
 

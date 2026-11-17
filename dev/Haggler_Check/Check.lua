@@ -7,7 +7,7 @@
 	  /hc reset   keeps the current run aside and starts a fresh one
 
 	When Concord_Check offers ConcordCheck.RegisterProbes the items are registered there too and
-	each verdict is forwarded with ConcordCheck.Log; the panel stays either way.
+	each verdict is forwarded with ConcordCheck.Log(owner, verdict, text); the panel stays either way.
 
 	  Check.create(env, db, identity) -> checker   identity = { version, build, charKey }
 	  checker:Deliver(signal)                      judges and records
@@ -50,7 +50,8 @@ end
 function Check:Deliver(signal)
 	local facts = self:Facts()
 	for _, item in ipairs(self.itemsBySignal[signal.name] or {}) do
-		local isAnsweredOnce = item.once and type(self.db.once) == 'table' and self.db.once[item.id] ~= nil
+		-- A once item answered with a look keeps listening: the player may still confirm it.
+		local isAnsweredOnce = item.once and type(self.db.once) == 'table' and Suite.isJudged(self.db.once[item.id])
 		if not isAnsweredOnce then
 			self.run.scratch[item.id] = self.run.scratch[item.id] or {}
 			local isJudged, verdict = pcall(item.judge, facts, self.run.scratch[item.id], signal)
@@ -64,8 +65,8 @@ function Check:Deliver(signal)
 	end
 end
 
-function Check:Record(item, verdict)
-	if Suite.record(self.db, self.run, item, verdict, self:Now()) then
+function Check:Record(item, verdict, isByPlayer)
+	if Suite.record(self.db, self.run, item, verdict, self:Now(), isByPlayer) then
 		for _, listener in ipairs(self.listeners) do
 			listener(item, Suite.resultOf(self.db, self.run, item))
 		end
@@ -121,8 +122,11 @@ function Check:Model()
 		runKey = function()
 			return checker.run.key
 		end,
+		canSetVerdict = function(item)
+			return Suite.canPlayerJudge(checker.db, checker.run, item)
+		end,
 		setVerdict = function(item, state)
-			checker:Record(item, { state = state, evidence = { 'marked ' .. state .. ' by the player' } })
+			checker:Record(item, { state = state, evidence = { 'marked ' .. state .. ' by the player' } }, true)
 		end,
 	}
 end
@@ -222,12 +226,15 @@ function registerWithConcord(env, checker)
 	safeCall(concord.RegisterProbes, { module = 'Haggler', runKey = checker.run.key, items = Items.list })
 end
 
+-- ConcordCheck.Log(owner, verdict, text): the text names the item, then its first evidence line.
 function forwardToConcord(env, item, result)
 	local concord = env.ConcordCheck
 	if item == nil or type(concord) ~= 'table' or type(concord.Log) ~= 'function' then
 		return
 	end
-	safeCall(concord.Log, 'Haggler', item.id, result)
+	local firstLine = result and type(result.evidence) == 'table' and result.evidence[1] or nil
+	local text = item.id .. (firstLine and (': ' .. firstLine) or '')
+	safeCall(concord.Log, 'Haggler', result and result.state or 'pending', text)
 end
 
 function safeCall(fn, ...)
@@ -240,6 +247,8 @@ function safeCall(fn, ...)
 	end
 	return unpack(results, 2, table.maxn(results))
 end
+
+Check.forwardToConcord = forwardToConcord
 
 if type(rawget(_G, 'CreateFrame')) == 'function' then
 	Check.boot(_G)

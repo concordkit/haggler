@@ -36,13 +36,17 @@ local FOCUS_KEYS = {
 	'PAD2',
 }
 local SETTLE_SECONDS = 3
+-- Haggler's own wait for the server after a cancel (Features/Window/AuctionsTab.lua).
+local SERVER_WAIT_SECONDS = 5
+-- How old the last tick's focus sample may be to stand for the moment combat started.
+local FOCUS_SAMPLE_SECONDS = 2
 local MISMATCH_TICKS = 3
 local POSITION_TOLERANCE = 0.5
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local pass, fail, look, setting, eachMarket, trackedAuction, sessionOf, copySession, sameSession
 local ledgerTails, newestScanAt, countKinds, focusOverrides, postUnitPrice, isSamePosition, add
-local snapshotLogout, isOnSameCharacter
+local snapshotLogout, isOnSameCharacter, hasStoredData
 
 local Items = {}
 ns.Items = Items
@@ -56,6 +60,13 @@ function Items.decodeLedgerRow(tuple)
 		event[field] = tuple[index]
 	end
 	return event
+end
+
+--- The focus keys (FOCUS_KEYS) currently bound to Haggler's input buttons.
+--- @param api table facts.api
+--- @return string[] keys
+function Items.heldFocusKeys(api)
+	return focusOverrides(api)
 end
 
 Items.list = {
@@ -133,18 +144,26 @@ Items.list = {
 		prompt = 'Drag the top bar to a new place, then /reload.',
 		zone = 'safe',
 		place = 'town',
-		on = { 'LOAD', 'LOGOUT' },
+		on = { 'LOAD', 'LOGOUT', 'TICK' },
 		judge = function(facts, scratch, signal)
 			local saved = type(facts.charDb.ui) == 'table' and facts.charDb.ui.topBar or nil
+			local position = saved
+					and { point = saved.point, relativePoint = saved.relativePoint, x = saved.x, y = saved.y }
+				or nil
+			if signal.name == 'TICK' then
+				-- A run reset mid-session has no load to start from: the first tick is the baseline.
+				if not scratch.hasBaseline then
+					scratch.hasBaseline, scratch.loadPosition = true, position
+				end
+				return nil
+			end
 			if signal.name == 'LOGOUT' then
-				scratch.isMoved = not isSamePosition(scratch.loadPosition, saved)
+				scratch.isMoved = scratch.hasBaseline == true and not isSamePosition(scratch.loadPosition, saved)
 				scratch.logoutPosition = saved and { saved.point, saved.relativePoint, saved.x, saved.y } or nil
 				return nil
 			end
 			local wasMoved, expected = scratch.isMoved, scratch.logoutPosition
-			scratch.loadPosition = saved
-					and { point = saved.point, relativePoint = saved.relativePoint, x = saved.x, y = saved.y }
-				or nil
+			scratch.hasBaseline, scratch.loadPosition = true, position
 			scratch.isMoved = nil
 			if not wasMoved or not expected then
 				return nil
@@ -391,7 +410,7 @@ Items.list = {
 			end
 			local saved = scratch.saved
 			scratch.saved = nil
-			if not signal.args[2] or not isOnSameCharacter(facts, saved) then
+			if not signal.args[2] or not isOnSameCharacter(facts, saved) or type(saved.loginAt) ~= 'number' then
 				return nil
 			end
 			local now = copySession(facts)
@@ -416,7 +435,7 @@ Items.list = {
 			end
 			local before = scratch.tails
 			scratch.tails = nil
-			if type(before) ~= 'table' then
+			if type(before) ~= 'table' or not hasStoredData(before) then
 				return nil
 			end
 			local after, lost = ledgerTails(facts.db), {}
@@ -483,34 +502,54 @@ Items.list = {
 		zone = 'safe',
 		place = 'town',
 		on = { 'TICK' },
-		judge = function(facts)
+		judge = function(facts, scratch)
 			local startedAt = facts.run.startedAt or 0
-			local byRecipe = {}
+			scratch.firstPlanned = scratch.firstPlanned or {}
+			local venturesByRecipe, grown = {}, nil
 			for _, market in eachMarket(facts.db) do
 				for id, venture in pairs(type(market.ventures) == 'table' and market.ventures or {}) do
 					if type(venture) == 'table' and (venture.createdAt or 0) >= startedAt then
 						for _, line in ipairs(type(venture.lines) == 'table' and venture.lines or {}) do
-							if (line.plannedCrafts or 0) >= 2 then
-								return pass({
-									'venture '
-										.. tostring(id)
-										.. ' plans '
-										.. line.plannedCrafts
-										.. ' crafts of recipe '
-										.. tostring(line.recipeId),
-								})
+							local planned = tonumber(line.plannedCrafts) or 0
+							local lineKey = tostring(id) .. ':' .. tostring(line.recipeId)
+							venturesByRecipe[line.recipeId] = venturesByRecipe[line.recipeId] or {}
+							venturesByRecipe[line.recipeId][id] = true
+							if planned > 0 and scratch.firstPlanned[lineKey] == nil then
+								scratch.firstPlanned[lineKey] = planned
+							elseif planned > (scratch.firstPlanned[lineKey] or math.huge) then
+								grown = grown
+									or {
+										id = id,
+										recipeId = line.recipeId,
+										from = scratch.firstPlanned[lineKey],
+										to = planned,
+									}
 							end
-							byRecipe[line.recipeId] = (byRecipe[line.recipeId] or 0) + 1
 						end
 					end
 				end
 			end
-			for recipeId, count in pairs(byRecipe) do
-				if count >= 2 then
-					return fail({
-						count .. ' new ventures for recipe ' .. tostring(recipeId) .. ' instead of one with 2 crafts',
-					})
+			for recipeId, ventureIds in pairs(venturesByRecipe) do
+				local count = 0
+				for _ in pairs(ventureIds) do
+					count = count + 1
 				end
+				if count >= 2 then
+					return fail({ count .. ' new ventures for recipe ' .. tostring(recipeId) .. ' instead of one' })
+				end
+			end
+			if grown then
+				return pass({
+					'venture '
+						.. tostring(grown.id)
+						.. ': recipe '
+						.. tostring(grown.recipeId)
+						.. ' planned '
+						.. grown.from
+						.. ' then '
+						.. grown.to
+						.. ' crafts; no second venture',
+				})
 			end
 			return nil
 		end,
@@ -645,12 +684,14 @@ Items.list = {
 		place = 'mailbox',
 		on = { 'MAIL_SHOW', 'HOOK:TakeInboxMoney', 'LEDGER', 'MAIL_CLOSED' },
 		judge = function(_, scratch, signal)
+			-- Counts add up over every mailbox visit of the run; rows read up to SETTLE_SECONDS
+			-- after a close still belong to the visit.
 			if signal.name == 'MAIL_SHOW' then
-				scratch.isOpen, scratch.sellerTakes = true, 0
+				scratch.isOpen = true
 				return nil
 			end
 			if signal.name == 'MAIL_CLOSED' then
-				scratch.isOpen = false
+				scratch.isOpen, scratch.closedAt = false, signal.at
 				return nil
 			end
 			if signal.name == 'HOOK:TakeInboxMoney' then
@@ -659,15 +700,15 @@ Items.list = {
 				end
 				return nil
 			end
-			if not scratch.isOpen then
+			if not scratch.isOpen and signal.at - (scratch.closedAt or -math.huge) > SETTLE_SECONDS then
 				return nil
 			end
 			scratch.sales = (scratch.sales or 0) + countKinds(signal.args[1], { sale = true })
-			scratch.expires = (scratch.expires or 0) + countKinds(signal.args[1], { expire = true, cancel = true })
+			scratch.expires = (scratch.expires or 0) + countKinds(signal.args[1], { expire = true })
 			scratch.wins = (scratch.wins or 0) + countKinds(signal.args[1], { buy = true })
 			local evidence = {
 				scratch.sales .. ' sale row(s) for ' .. (scratch.sellerTakes or 0) .. ' sale-gold take(s)',
-				scratch.expires .. ' return row(s), ' .. scratch.wins .. ' won row(s)',
+				scratch.expires .. ' expire row(s), ' .. scratch.wins .. ' won row(s)',
 			}
 			if scratch.sales > (scratch.sellerTakes or 0) then
 				return fail(evidence)
@@ -730,7 +771,7 @@ Items.list = {
 		prompt = "Have an alt send you a letter; take a sale's gold just as it lands.",
 		zone = 'safe',
 		place = 'mailbox',
-		on = { 'HOOK:TakeInboxMoney', 'MAIL_INBOX_UPDATE', 'LEDGER', 'TICK' },
+		on = { 'HOOK:TakeInboxMoney', 'MAIL_INBOX_UPDATE', 'UPDATE_PENDING_MAIL', 'LEDGER', 'TICK' },
 		judge = function(facts, scratch, signal)
 			if signal.name == 'HOOK:TakeInboxMoney' then
 				if signal.args.invoiceType == 'seller' then
@@ -743,8 +784,14 @@ Items.list = {
 			if not take then
 				return nil
 			end
+			if signal.name == 'UPDATE_PENDING_MAIL' then
+				take.isRaced = true
+				return nil
+			end
 			if signal.name == 'MAIL_INBOX_UPDATE' then
-				take.isRaced = take.isRaced or facts.api.inboxCount() > take.inboxCount
+				-- The taken sale mail leaves the inbox, so new mail shows as a count that did not
+				-- drop: the two can net to zero.
+				take.isRaced = take.isRaced or facts.api.inboxCount() >= take.inboxCount
 				return nil
 			end
 			if signal.name == 'LEDGER' then
@@ -982,11 +1029,22 @@ Items.list = {
 		prompt = 'Post an item outside a venture; Auctions tab: arm Cancel untracked, then click until done.',
 		zone = 'safe',
 		place = 'auction house',
-		on = { 'HOOK:CancelAuction', 'OWNED_AUCTIONS_UPDATED', 'AUCTION_CANCELED', 'TICK' },
+		on = {
+			'HOOK:CancelAuction',
+			'OWNED_AUCTIONS_UPDATED',
+			'AUCTION_CANCELED',
+			'AUCTION_HOUSE_SHOW',
+			'AUCTION_HOUSE_CLOSED',
+			'TICK',
+		},
 		judge = function(facts, scratch, signal)
-			if signal.name == 'OWNED_AUCTIONS_UPDATED' or signal.name == 'AUCTION_CANCELED' then
+			-- Haggler's wait ends on any of these events, or after SERVER_WAIT_SECONDS.
+			if signal.name ~= 'HOOK:CancelAuction' and signal.name ~= 'TICK' then
 				scratch.isAwaiting = false
 				return nil
+			end
+			if scratch.isAwaiting and signal.at - (scratch.lastAt or 0) >= SERVER_WAIT_SECONDS then
+				scratch.isAwaiting = false
 			end
 			if signal.name == 'HOOK:CancelAuction' then
 				if scratch.isAwaiting then
@@ -1070,20 +1128,30 @@ Items.list = {
 		prompt = 'Focus the bar, then pull a training dummy; leave combat.',
 		zone = 'fight',
 		place = 'combat',
-		on = { 'PLAYER_REGEN_DISABLED', 'PLAYER_REGEN_ENABLED' },
+		on = { 'TICK', 'PLAYER_REGEN_DISABLED', 'PLAYER_REGEN_ENABLED' },
 		judge = function(facts, scratch, signal)
-			local overrides = focusOverrides(facts.api)
+			-- The observer reads the keys when a signal fires (args.heldFocusKeys): Haggler drops
+			-- the focus inside PLAYER_REGEN_DISABLED, so the last tick before it stands for the pull.
+			local held = signal.args.heldFocusKeys or focusOverrides(facts.api)
+			if signal.name == 'TICK' then
+				scratch.lastHeld, scratch.lastHeldAt = held, signal.at
+				return nil
+			end
 			if signal.name == 'PLAYER_REGEN_DISABLED' then
-				scratch.wasFocused = scratch.wasFocused or #overrides > 0
+				local isRecent = signal.at - (scratch.lastHeldAt or -math.huge) <= FOCUS_SAMPLE_SECONDS
+				local before = #held > 0 and held or (isRecent and scratch.lastHeld or {})
+				scratch.heldAtPull = #before > 0 and before or nil
 				return nil
 			end
-			if not scratch.wasFocused then
+			local heldAtPull = scratch.heldAtPull
+			scratch.heldAtPull = nil
+			if not heldAtPull then
 				return nil
 			end
-			if #overrides > 0 then
-				return fail({ 'still overridden after combat: ' .. table.concat(overrides, ', ') })
+			if #held > 0 then
+				return fail({ 'still overridden after combat: ' .. table.concat(held, ', ') })
 			end
-			return pass({ 'the focus held keys at the pull; none overridden after combat' })
+			return pass({ 'the focus held ' .. table.concat(heldAtPull, ', ') .. ' at the pull; none after combat' })
 		end,
 	},
 	{
@@ -1223,6 +1291,16 @@ function ledgerTails(db)
 		end
 	end
 	return tails
+end
+
+-- Whether any market had a ledger row, a venture or a pool: an empty store proves nothing.
+function hasStoredData(tails)
+	for _, tail in pairs(tails) do
+		if tail.ledgerTail ~= '' or tail.ventures > 0 or tail.pools > 0 then
+			return true
+		end
+	end
+	return false
 end
 
 function newestScanAt(db)

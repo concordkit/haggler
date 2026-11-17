@@ -15,17 +15,20 @@
 	    current               the runKey shown
 	    once[itemId] = Result  answers of once probes; a rerun skips them until reset
 	  Run = { key, version, build, startedAt, results = { [itemId] = Result }, scratch = { [itemId] = {} } }
-	  Result = { state, evidence, at, runKey? }
+	  Result = { state, evidence, at, runKey?, isByPlayer? }
 
 	A fail sticks for the rest of the run: a later pass does not hide it, and a look does not
-	replace a pass. /hc reset keeps the old
+	replace a pass. The player's verdict from the panel (isByPlayer) is the exception: it sets
+	any item whose result is a look, and the player may change it again. /hc reset keeps the old
 	run under '<runKey> #<n>' and starts a fresh one, once answers included.
 
 	  Suite.validateItems(items)                 throws on a malformed table (a programmer error)
 	  Suite.runKey(version, build) -> key
 	  Suite.openRun(db, version, build, now) -> run
 	  Suite.resetRun(db, version, build, now) -> run
-	  Suite.record(db, run, item, verdict, now) -> boolean changed
+	  Suite.record(db, run, item, verdict, now, isByPlayer?) -> boolean changed
+	  Suite.canPlayerJudge(db, run, item) -> boolean
+	  Suite.isJudged(result) -> boolean
 	  Suite.resultOf(db, run, item) -> Result|nil
 	  Suite.progress(db, run, items) -> { judged, total, pass, fail, look, na, pending }
 	  Suite.nextItem(db, run, items) -> item|nil  the first unjudged item, safe zone first
@@ -111,17 +114,21 @@ function Suite.resetRun(db, version, build, now)
 	return db.runs[key]
 end
 
---- Stores a verdict. A fail sticks; a look never replaces a judged result.
+--- Stores a verdict. A fail sticks and a look never replaces a judged result, unless the player
+--- sets it (isByPlayer) on an item canPlayerJudge allows.
 --- @return boolean changed
-function Suite.record(db, run, item, verdict, now)
+function Suite.record(db, run, item, verdict, now, isByPlayer)
 	if type(verdict) ~= 'table' or not Suite.VERDICT_STATES[verdict.state] then
 		error('Suite.record: verdict.state must be pass, fail, look or na', 2)
 	end
-	local previous = run.results[item.id]
-	if previous and previous.state == 'fail' and verdict.state ~= 'fail' then
+	local previous = Suite.resultOf(db, run, item)
+	if isByPlayer then
+		if not Suite.canPlayerJudge(db, run, item) then
+			return false
+		end
+	elseif previous and previous.state == 'fail' and verdict.state ~= 'fail' then
 		return false
-	end
-	if previous and isJudgedState(previous.state) and verdict.state == 'look' then
+	elseif previous and isJudgedState(previous.state) and verdict.state == 'look' then
 		return false
 	end
 	local evidence = keepEvidence(verdict.evidence)
@@ -132,13 +139,36 @@ function Suite.record(db, run, item, verdict, now)
 	then
 		return false
 	end
-	local result = { state = verdict.state, evidence = evidence, at = now }
+	local result = { state = verdict.state, evidence = evidence, at = now, isByPlayer = isByPlayer == true or nil }
 	run.results[item.id] = result
 	if item.once then
 		ensureDb(db)
-		db.once[item.id] = { state = result.state, evidence = evidence, at = now, runKey = run.key }
+		db.once[item.id] = {
+			state = result.state,
+			evidence = evidence,
+			at = now,
+			runKey = run.key,
+			isByPlayer = result.isByPlayer,
+		}
 	end
 	return true
+end
+
+--- Whether the player may set (or change) an item's verdict in the panel: a look item always; any
+--- other item while its result is a look, or after the player judged it.
+--- @return boolean
+function Suite.canPlayerJudge(db, run, item)
+	if item.kind == 'look' then
+		return true
+	end
+	local result = Suite.resultOf(db, run, item)
+	return result ~= nil and (result.state == 'look' or result.isByPlayer == true)
+end
+
+--- Whether a result is final (pass, fail or na); a look still waits for the player.
+--- @return boolean
+function Suite.isJudged(result)
+	return result ~= nil and isJudgedState(result.state)
 end
 
 --- The result shown for an item: this run's, else a stored once answer.

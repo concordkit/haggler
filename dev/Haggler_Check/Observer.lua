@@ -3,10 +3,15 @@
 	hooksecurefunc post-hooks on the calls Haggler makes. No Blizzard function is replaced and no
 	secure frame is touched.
 
-	Client events and hooks are delivered half a second late, in order, so Haggler has handled
-	them first (its own books run on the same events). LOGOUT is delivered at once: nothing runs
-	after it. Every second the observer reads Haggler's ledgers and sends LEDGER with the new rows,
-	then TICK.
+	Every signal goes through one queue and is delivered half a second late, in the order it was
+	seen, so Haggler has handled it first (its own books run on the same events and hooks). Every
+	second the observer reads Haggler's ledgers and queues LEDGER with the new rows, then TICK:
+	a row Haggler booked in its own hook of a call is read after that call's hook was queued, so a
+	judge never sees a booking before the call that made it. LOGOUT is delivered at once: nothing
+	runs after it.
+
+	Haggler drops the bar focus inside PLAYER_REGEN_DISABLED, so the focus keys are read when the
+	signal is seen, not when it is delivered: TICK and PLAYER_REGEN_* carry args.heldFocusKeys.
 
 	  Observer.create(env, deliver) -> observer   env is _G in the game, a fake in the spec
 	  observer:Start(eventNames)                  registers events and hooks
@@ -19,6 +24,8 @@ local TICK_SECONDS = 1
 local LOAD_DELAY = 1
 local BAG_COUNT = 4
 local SYNTHETIC_SIGNALS = { LOAD = true, LOGOUT = true, TICK = true, LEDGER = true, LUA_ERROR = true }
+-- Events whose args carry the focus keys held at the moment they fired.
+local FOCUS_SAMPLED_EVENTS = { PLAYER_REGEN_DISABLED = true, PLAYER_REGEN_ENABLED = true }
 -- Always heard, whatever the items listen to.
 local OWN_EVENTS = { 'ADDON_LOADED', 'PLAYER_ENTERING_WORLD', 'PLAYER_LOGOUT', 'CURSOR_CHANGED' }
 -- 'HOOK:<name>' signal -> where the function lives ('_G' for a global).
@@ -151,31 +158,39 @@ function Observer:OnEvent(event, ...)
 		self.deliver({ name = 'LOGOUT', args = {}, at = self:Now() })
 		return
 	end
-	self:Enqueue(event, packArgs(...))
+	local args = packArgs(...)
+	if FOCUS_SAMPLED_EVENTS[event] then
+		args.heldFocusKeys = self:HeldFocusKeys()
+	end
+	self:Enqueue(event, args)
 end
 
 function Observer:OnUpdate(elapsed)
 	local clock = self.env.GetTime()
-	while self.queue[1] and self.queue[1].dueAt <= clock do
-		local entry = table.remove(self.queue, 1)
-		self.deliver(entry.signal)
-	end
 	if self.pendingLoad and self.pendingLoad.dueAt <= clock then
+		self:DeliverDue(self.pendingLoad.dueAt)
 		local loadSignal = self.pendingLoad.signal
 		self.pendingLoad, self.hasLoaded = nil, true
 		self.deliver(loadSignal)
 	end
 	self.sinceTick = self.sinceTick + elapsed
-	if self.sinceTick < TICK_SECONDS or not self.hasLoaded then
-		return
+	if self.sinceTick >= TICK_SECONDS and self.hasLoaded then
+		self.sinceTick = 0
+		local rows = self:NewLedgerRows()
+		if #rows > 0 then
+			self:Enqueue('LEDGER', { rows })
+		end
+		self:Enqueue('TICK', { heldFocusKeys = self:HeldFocusKeys() })
 	end
-	self.sinceTick = 0
-	local now = self:Now()
-	local rows = self:NewLedgerRows()
-	if #rows > 0 then
-		self.deliver({ name = 'LEDGER', args = { rows }, at = now })
+	self:DeliverDue(clock)
+end
+
+-- Delivers the queued signals due by `clock`, oldest first.
+function Observer:DeliverDue(clock)
+	while self.queue[1] and self.queue[1].dueAt <= clock do
+		local entry = table.remove(self.queue, 1)
+		self.deliver(entry.signal)
 	end
-	self.deliver({ name = 'TICK', args = {}, at = now })
 end
 
 function Observer:Enqueue(name, args)
@@ -196,6 +211,13 @@ function Observer:NewLedgerRows()
 		return {}
 	end
 	return newLedgerRows(db, self.ledgerCursors)
+end
+
+--- The focus keys bound to Haggler's input buttons right now.
+--- @return string[] keys
+function Observer:HeldFocusKeys()
+	self.api = self.api or self:Api()
+	return ns.Items.heldFocusKeys(self.api)
 end
 
 function Observer:Now()

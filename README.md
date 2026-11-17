@@ -60,7 +60,7 @@ stylua --check .
 luajit tests/run.lua
 ```
 
-Before a release, run the in-game check suite (`/hc`, see [dev/README.md](dev/README.md)) on the release build until `node dev/read-check-results.ts` reports green.
+Before a release, run the in-game check suite (`/hc`, see [dev/README.md](dev/README.md)) on the release build until `node dev/read-check-results.ts --version <release version>` reports green.
 
 To refresh the design tokens from the Concord design system:
 
