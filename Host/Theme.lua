@@ -7,6 +7,8 @@
 	  theme:Color(name) -> { r, g, b, a }
 	  theme:Hex(name)   -> 'ffrrggbb' for |c escapes
 	  theme:Wrap(name, text) -> text in that colour
+	  theme:Number(name) -> number, e.g. 'focus.ringWidth'; 0 when no theme in the chain has it
+	  theme:Anatomy(part) -> string|nil, e.g. Anatomy('focus') -> 'ring' or 'frame'
 ]]
 local _, ns = ...
 
@@ -18,7 +20,7 @@ Theme.FALLBACK_COLOR = { r = 0.5, g = 0.5, b = 0.5, a = 1 }
 local MAX_EXTENDS_DEPTH = 8
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local findToken, toColor, toHexByte
+local findToken, findAnatomy, toColor, toHexByte
 
 local ThemeMethods = {}
 ThemeMethods.__index = ThemeMethods
@@ -57,6 +59,28 @@ function ThemeMethods:Wrap(name, text)
 	return '|c' .. self:Hex(name) .. tostring(text) .. '|r'
 end
 
+--- A size or count token; 0 when missing, so a renamed token draws nothing instead of failing.
+--- @param name string token name, e.g. 'focus.ringWidth'
+--- @return number
+function ThemeMethods:Number(name)
+	local value = findToken(self.themes, self.key, name)
+	if type(value) ~= 'number' then
+		value = findToken(self.themes, Theme.DEFAULT_THEME, name)
+	end
+	return type(value) == 'number' and value or 0
+end
+
+--- Which structure the theme gives a part (the design system's anatomy).
+--- @param part string e.g. 'focus'
+--- @return string|nil
+function ThemeMethods:Anatomy(part)
+	local value = findAnatomy(self.themes, self.key, part)
+	if type(value) ~= 'string' then
+		value = findAnatomy(self.themes, Theme.DEFAULT_THEME, part)
+	end
+	return type(value) == 'string' and value or nil
+end
+
 -- Helpers ---------------------------------------------------------------------------------
 
 function findToken(themes, key, name)
@@ -66,6 +90,21 @@ function findToken(themes, key, name)
 			return nil
 		end
 		local value = type(theme.tokens) == 'table' and theme.tokens[name] or nil
+		if value ~= nil then
+			return value
+		end
+		key = theme.extends
+	end
+	return nil
+end
+
+function findAnatomy(themes, key, part)
+	for _ = 1, MAX_EXTENDS_DEPTH do
+		local theme = themes[key]
+		if type(theme) ~= 'table' then
+			return nil
+		end
+		local value = type(theme.anatomy) == 'table' and theme.anatomy[part] or nil
 		if value ~= nil then
 			return value
 		end

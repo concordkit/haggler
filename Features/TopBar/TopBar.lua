@@ -423,7 +423,7 @@ end
 
 function paintFocus(self, index)
 	for at, button in ipairs(shownButtons(self)) do
-		button:SetSelected(at == index)
+		button:SetFocused(at == index)
 	end
 end
 
