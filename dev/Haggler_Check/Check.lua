@@ -6,8 +6,10 @@
 	  /hc         toggles the checklist panel
 	  /hc reset   keeps the current run aside and starts a fresh one
 
-	When Concord_Check offers ConcordCheck.RegisterProbes the items are registered there too and
-	each verdict is forwarded with ConcordCheck.Log(owner, verdict, text); the panel stays either way.
+	With Concord_Check v1 (ConcordCheck.VERSION == 1) the items are registered with
+	ConcordCheck.RegisterProbes; each Concord judge reports what this checker recorded, so the
+	host shows the same verdicts. When the host refuses (a false return) the verdicts go to
+	ConcordCheck.Log(owner, verdict, text) instead. The /hc panel stays either way.
 
 	  Check.create(env, db, identity) -> checker   identity = { version, build, charKey }
 	  checker:Deliver(signal)                      judges and records
@@ -19,6 +21,10 @@ local Suite, Items = ns.Suite, ns.Items
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local indexItemsBySignal, signalNamesOf, manifestOf, readIdentity, registerWithConcord, forwardToConcord, safeCall
+local concordOf, concordVerdictOf, concordItemOf, clientEventsOf
+
+local CONCORD_VERSION = 1
+local OWNER = 'Haggler'
 
 local Check = {}
 ns.Check = Check
@@ -148,11 +154,13 @@ function Check.boot(env)
 		end)
 		checker.api = observer:Api()
 		local panel = ns.Panel.create(env, checker:Model())
+		local isRegistered = registerWithConcord(env, checker)
 		checker:OnRecord(function(item, result)
-			forwardToConcord(env, item, result)
+			if not isRegistered then
+				forwardToConcord(env, item, result)
+			end
 			panel:Refresh()
 		end)
-		registerWithConcord(env, checker)
 		observer:Start(signalNamesOf(Items.list))
 		env.SLASH_HAGGLERCHECK1 = '/hc'
 		env.SlashCmdList.HAGGLERCHECK = function(message)
@@ -218,23 +226,94 @@ function readIdentity(env)
 	}
 end
 
+--- Registers the items with Concord_Check v1. A refusal is an expected outcome, not an error.
+--- @return boolean isRegistered
+--- @return string|nil reason 'no host', 'unsupported version', 'already registered', 'run in progress'
 function registerWithConcord(env, checker)
-	local concord = env.ConcordCheck
-	if type(concord) ~= 'table' or type(concord.RegisterProbes) ~= 'function' then
-		return
+	local concord = concordOf(env)
+	if concord == nil or type(concord.RegisterProbes) ~= 'function' then
+		return false, 'no host'
 	end
-	safeCall(concord.RegisterProbes, { module = 'Haggler', runKey = checker.run.key, items = Items.list })
+	local items = {}
+	for index, item in ipairs(Items.list) do
+		items[index] = concordItemOf(checker, item)
+	end
+	local isCalled, isRegistered, reason = pcall(concord.RegisterProbes, {
+		version = CONCORD_VERSION,
+		owner = OWNER,
+		addon = 'Haggler',
+		label = 'Haggler',
+		items = items,
+	})
+	if not isCalled then
+		return false, 'host error: ' .. tostring(isRegistered)
+	end
+	return isRegistered == true, reason
 end
 
 -- ConcordCheck.Log(owner, verdict, text): the text names the item, then its first evidence line.
 function forwardToConcord(env, item, result)
-	local concord = env.ConcordCheck
-	if item == nil or type(concord) ~= 'table' or type(concord.Log) ~= 'function' then
+	local concord = concordOf(env)
+	if item == nil or concord == nil or type(concord.Log) ~= 'function' then
 		return
 	end
-	local firstLine = result and type(result.evidence) == 'table' and result.evidence[1] or nil
-	local text = item.id .. (firstLine and (': ' .. firstLine) or '')
-	safeCall(concord.Log, 'Haggler', result and result.state or 'pending', text)
+	local verdict, evidence = concordVerdictOf(result)
+	local text = item.id .. (evidence[1] and (': ' .. evidence[1]) or '')
+	safeCall(concord.Log, OWNER, verdict, text)
+end
+
+-- The host's item: the same fields, events to re-judge on, and a judge that reports this
+-- checker's recorded result (the checker already ran Haggler's judge over its facts and scratch).
+function concordItemOf(checker, item)
+	return {
+		id = item.id,
+		title = item.title,
+		kind = item.kind,
+		prompt = item.prompt,
+		zone = item.zone,
+		once = item.once == true,
+		events = clientEventsOf(item),
+		judge = function()
+			return concordVerdictOf(Suite.resultOf(checker.db, checker.run, item))
+		end,
+	}
+end
+
+-- Haggler's result -> the host's verdict ('pass'|'fail'|'look'|nil) and evidence. The host has no
+-- n/a: a player's N/A is a pass whose evidence says so.
+function concordVerdictOf(result)
+	if type(result) ~= 'table' then
+		return nil, {}
+	end
+	local evidence = {}
+	for index, line in ipairs(type(result.evidence) == 'table' and result.evidence or {}) do
+		evidence[index] = line
+	end
+	if result.state == 'na' then
+		table.insert(evidence, 1, 'n/a')
+		return 'pass', evidence
+	end
+	return result.state, evidence
+end
+
+-- The client events in an item's `on` list (no hooks, no observer signals).
+function clientEventsOf(item)
+	local events = {}
+	for _, name in ipairs(item.on or {}) do
+		if not name:find(':', 1, true) and not ns.Observer.SYNTHETIC_SIGNALS[name] then
+			events[#events + 1] = name
+		end
+	end
+	return events
+end
+
+-- ConcordCheck when it speaks the contract this add-on was written for, else nil.
+function concordOf(env)
+	local concord = env.ConcordCheck
+	if type(concord) == 'table' and concord.VERSION == CONCORD_VERSION then
+		return concord
+	end
+	return nil
 end
 
 function safeCall(fn, ...)
@@ -248,7 +327,9 @@ function safeCall(fn, ...)
 	return unpack(results, 2, table.maxn(results))
 end
 
+-- Exposed for the spec.
 Check.forwardToConcord = forwardToConcord
+Check.registerWithConcord = registerWithConcord
 
 if type(rawget(_G, 'CreateFrame')) == 'function' then
 	Check.boot(_G)

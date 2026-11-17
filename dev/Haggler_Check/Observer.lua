@@ -49,6 +49,7 @@ local readLedgerCursors, newLedgerRows, packArgs, describeMailTake, countFreeBag
 
 local Observer = {}
 ns.Observer = Observer
+Observer.SYNTHETIC_SIGNALS = SYNTHETIC_SIGNALS
 
 --- Builds an observer over a client environment.
 --- @param env table _G, or a fake with the same names

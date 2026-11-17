@@ -941,10 +941,19 @@ t.test('the checker records verdicts, skips answered once items and survives a j
 	t.eq(db.once['client.error-hook'], nil, 'once answers cleared')
 end)
 
-t.test('verdicts go to ConcordCheck.Log as owner, verdict, text', function()
+t.test('Concord v1: the items register with adapted judges; a refusal falls back to Log', function()
 	local client = fakeClient()
-	local logged = {}
+	local registered, logged = nil, {}
+	local accepts = true
 	client.ConcordCheck = {
+		VERSION = 1,
+		RegisterProbes = function(probes)
+			registered = probes
+			if accepts then
+				return true
+			end
+			return false, 'run in progress'
+		end,
 		Log = function(...)
 			logged[#logged + 1] = { ... }
 		end,
@@ -953,12 +962,45 @@ t.test('verdicts go to ConcordCheck.Log as owner, verdict, text', function()
 	local checker = ns.Check.create(client, db, { version = '0.2.0', build = '1.15.8.1', charKey = CHAR })
 	checker.api = fakeApi()
 	client.HagglerDB = { version = 2 }
-	checker:OnRecord(function(item, result)
-		ns.Check.forwardToConcord(client, item, result)
-	end)
+
+	t.same({ ns.Check.registerWithConcord(client, checker) }, { true })
+	t.eq(registered.version, 1)
+	t.eq(registered.owner, 'Haggler')
+	t.eq(registered.addon, 'Haggler')
+	t.eq(registered.label, 'Haggler')
+	t.eq(registered.runKey, nil, 'the host makes the run key')
+	t.eq(#registered.items, #Items.list)
+	local byId = {}
+	for _, item in ipairs(registered.items) do
+		byId[item.id] = item
+	end
+	t.same(byId['load.clean'].events, { 'ADDON_ACTION_BLOCKED', 'ADDON_ACTION_FORBIDDEN' }, 'client events only')
+	t.same({ byId['load.clean'].judge({ lines = {}, trigger = { kind = 'open' } }) }, { nil, {} }, 'nothing yet')
 	checker:Deliver(signal('LOAD', NOW, true, false))
-	t.truthy(#logged >= 1)
+	local verdict, evidence = byId['load.clean'].judge({ lines = {}, trigger = { kind = 'event' } })
+	t.eq(verdict, 'pass')
+	t.truthy(evidence[1]:find('HagglerDB schema 2', 1, true))
+	checker:Model().setVerdict(itemById('feed.display'), 'na')
+	verdict, evidence = byId['feed.display'].judge({ lines = {}, trigger = { kind = 'answer' } })
+	t.eq(verdict, 'pass', 'n/a has no host verdict: a pass that says so')
+	t.eq(evidence[1], 'n/a')
+
+	accepts = false
+	t.same({ ns.Check.registerWithConcord(client, checker) }, { false, 'run in progress' })
+	ns.Check.forwardToConcord(client, itemById('load.clean'), Suite.resultOf(db, checker.run, itemById('load.clean')))
 	t.eq(logged[1][1], 'Haggler')
 	t.eq(logged[1][2], 'pass')
 	t.truthy(logged[1][3]:find('^load%.clean: '), 'text names the item')
+
+	client.ConcordCheck.VERSION = 2
+	registered, logged = nil, {}
+	t.same({ ns.Check.registerWithConcord(client, checker) }, { false, 'no host' })
+	ns.Check.forwardToConcord(client, itemById('load.clean'), Suite.resultOf(db, checker.run, itemById('load.clean')))
+	t.eq(registered, nil, 'another contract version is never called')
+	t.eq(#logged, 0)
+	client.ConcordCheck.VERSION = 1
+	client.ConcordCheck.RegisterProbes = function()
+		error('host bug')
+	end
+	t.eq(ns.Check.registerWithConcord(client, checker), false, 'a host that raises is a refusal')
 end)
