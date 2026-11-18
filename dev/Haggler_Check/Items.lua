@@ -128,7 +128,7 @@ Items.list = {
 		id = 'window.tabs',
 		title = 'Window tabs',
 		kind = 'look',
-		prompt = '/hag: the window shows Scan, Lookup, Rules, Sell, Auctions, Flips, Buy, Ledger and Ventures.',
+		prompt = '/hag: the window shows Scan, Lookup, Rules, Sell, Auctions, Buy and Ledger.',
 		zone = 'safe',
 		place = 'town',
 	},
