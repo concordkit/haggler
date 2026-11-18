@@ -239,7 +239,7 @@ local function panelBeside(frameLeft, frameRight, tabs)
 		tabs(parts.frame)
 	end
 	parts.form:Init({ recipeID = RECIPE_ID })
-	return craftingPanel(game, parts.frame), parts.frame, addon
+	return craftingPanel(game, parts.frame), parts.frame, addon, game
 end
 
 -- A point with its relative frame named, so a mismatch never deep-compares two frames.
@@ -302,10 +302,32 @@ t.test('a scaled profession frame measures in screen pixels', function()
 	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 })
 end)
 
+t.test('tabs that show or appear after the first paint move the panel', function()
+	local lateTab
+	local panel, frame, addon, game = panelBeside(400, 1000, function(hostFrame)
+		lateTab = sideTab(hostFrame, 997, 1040, 760)
+		lateTab:Hide()
+	end)
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 8, 0 })
+	lateTab:Show()
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 }, 'a hidden tab shows')
+	sideTab(frame, 997, 1060, 700)
+	frame:Hide()
+	frame:Show()
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 68, 0 }, 'the frame shows with a new tab')
+	placeAt(frame, 400, 1020, 800, 200)
+	frame.scripts.OnSizeChanged(frame)
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 }, 'the frame resizes')
+	t.same(addon.errors, {})
+end)
+
 t.test('the panel keeps to the 8-point grid', function()
 	local panel = panelBeside(400, 1000)
-	t.eq(panel.width % 4, 0, 'width a multiple of 4')
-	t.eq(panel.height % 4, 0, 'height a multiple of 4')
+	t.eq(panel.width % 8, 0, 'width on the grid')
+	t.eq(panel.height % 8, 0, 'height on the grid')
 	t.same(pointOf(panel.plan, 'panel', panel), { 'BOTTOMLEFT', 'panel', 'BOTTOMLEFT', 8, 8 })
 end)
 

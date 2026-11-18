@@ -13,8 +13,11 @@
 	      right of the tab column (or the frame edge when there is none) when the panel fits on
 	      screen there, else left of the frame, else right and clamped to the screen
 	  CraftingAnchor.columnRight(frame, exclude) -> screen x|nil   the column's right edge
+	  CraftingAnchor.columnFrames(frame, exclude) -> { frame }      the column's frames, shown
+	      or hidden, for a caller to re-place the panel when one shows or hides
 
-	Cost: one walk of the frame's children, run when the selected recipe repaints, not per frame.
+	Cost: one walk of the frame's children, run when the selected recipe repaints or the frame
+	or a column frame shows, hides or resizes; never per frame.
 ]]
 local _, ns = ...
 
@@ -31,7 +34,7 @@ local COLUMN_MAX_WIDTH = 96
 local COLUMN_DEPTH = 2
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local scaleOf, screenEdges, isColumnPart, widestColumnRight, regionsAndChildren
+local scaleOf, screenEdges, isColumnPart, widestColumnRight, collectColumnFrames, regionsAndChildren
 
 --- Anchors the panel beside the profession frame and clamps it to the screen.
 --- @param panel table the side panel, a child of frame
@@ -81,6 +84,19 @@ function CraftingAnchor.columnRight(frame, exclude)
 	return widestColumnRight(frame, edges, exclude, COLUMN_DEPTH)
 end
 
+--- The frames of the side tab column, shown or hidden (a hidden one may show later).
+--- @param frame table Blizzard's profession frame
+--- @param exclude table|nil a frame left out with everything in it (the panel)
+--- @return table frames empty when the frame is not laid out or has no column
+function CraftingAnchor.columnFrames(frame, exclude)
+	local frames = {}
+	local edges = screenEdges(frame)
+	if edges then
+		collectColumnFrames(frame, edges, exclude, COLUMN_DEPTH, frames)
+	end
+	return frames
+end
+
 -- Helpers ---------------------------------------------------------------------------------
 
 function scaleOf(region)
@@ -106,10 +122,8 @@ function screenEdges(region)
 	}
 end
 
+-- The geometry test alone; whether the region shows is the caller's question.
 function isColumnPart(region, frameEdges)
-	if region.IsShown and not region:IsShown() then
-		return false, nil
-	end
 	local edges = screenEdges(region)
 	if not edges or edges.right <= frameEdges.right then
 		return false, edges
@@ -139,6 +153,22 @@ function widestColumnRight(parent, frameEdges, exclude, depth)
 		end
 	end
 	return widest
+end
+
+function collectColumnFrames(parent, frameEdges, exclude, depth, frames)
+	if not parent.GetChildren then
+		return
+	end
+	for _, child in ipairs({ parent:GetChildren() }) do
+		if child ~= exclude then
+			if isColumnPart(child, frameEdges) then
+				frames[#frames + 1] = child
+			end
+			if depth > 1 then
+				collectColumnFrames(child, frameEdges, exclude, depth - 1, frames)
+			end
+		end
+	end
 end
 
 function regionsAndChildren(parent)

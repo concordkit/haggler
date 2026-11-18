@@ -26,8 +26,9 @@ local PANEL_WIDTH = 264
 local PANEL_LINES = 9
 local LINE_SIZE = 12
 local PANEL_PADDING = 8
--- Nine 18-high lines (Widgets:Lines) round up to the next multiple of 4.
-local PANEL_BODY_HEIGHT = math.ceil(PANEL_LINES * (LINE_SIZE + 6) / 4) * 4
+local GRID = 8
+-- Nine 18-high lines (Widgets:Lines) round up to the grid.
+local PANEL_BODY_HEIGHT = math.ceil(PANEL_LINES * (LINE_SIZE + 6) / GRID) * GRID
 local ROW_TEXT_INSET = -6
 local LEVEL_TOKENS = { low = 'color.state.danger', medium = 'color.state.warning' }
 local INVALIDATING_MESSAGES =
@@ -35,6 +36,7 @@ local INVALIDATING_MESSAGES =
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local attach, paintRow, paintRecipeRow, paintDetail, ensurePanel, invalidate, repaint, planVenture, marketNow, setColor
+local placePanel, queuePlacement, watchColumn
 
 local state = {
 	isOn = false,
@@ -42,6 +44,8 @@ local state = {
 	-- Blizzard recycles row frames: weak keys let a dropped frame go.
 	rowTexts = setmetatable({}, { __mode = 'k' }),
 	rowRecipes = setmetatable({}, { __mode = 'k' }),
+	-- Tab column frames already hooked (a script hook cannot be removed, so once each).
+	watchedColumnFrames = setmetatable({}, { __mode = 'k' }),
 }
 
 ns.host.AddModule({
@@ -120,6 +124,9 @@ function attach()
 	end
 	state.isHooked = true
 	state.frame = frame
+	-- The tab column lays out with the frame and changes with the profession: place again then.
+	ns.wow:HookFrameScript(frame, 'OnShow', queuePlacement)
+	ns.wow:HookFrameScript(frame, 'OnSizeChanged', queuePlacement)
 	ns.wow:HookMethod(page.SchematicForm, 'Init', function(_, recipeInfo)
 		state.recipeId = type(recipeInfo) == 'table' and recipeInfo.recipeID or nil
 		paintDetail()
@@ -183,7 +190,7 @@ function paintDetail()
 	end
 	panel.lines:SetLines(lines)
 	panel.plan:SetShown(canPlan)
-	ns.CraftingAnchor.place(panel, state.frame, ns.wow.env.UIParent, PANEL_WIDTH)
+	placePanel()
 	panel:SetShown(#lines > 0 or canPlan)
 end
 
@@ -254,6 +261,37 @@ function repaint()
 		paintRecipeRow(row, state.rowRecipes[row])
 	end
 	paintDetail()
+end
+
+function placePanel()
+	if not state.panel or not state.frame then
+		return
+	end
+	ns.CraftingAnchor.place(state.panel, state.frame, ns.wow.env.UIParent, PANEL_WIDTH)
+	watchColumn()
+end
+
+-- Next frame: a frame that just showed or resized has not laid out its children yet.
+function queuePlacement()
+	if state.isPlacementQueued or not state.isOn then
+		return
+	end
+	state.isPlacementQueued = true
+	ns.wow:After(0, function()
+		state.isPlacementQueued = false
+		placePanel()
+	end)
+end
+
+function watchColumn()
+	for _, columnFrame in ipairs(ns.CraftingAnchor.columnFrames(state.frame, state.panel)) do
+		if not state.watchedColumnFrames[columnFrame] then
+			state.watchedColumnFrames[columnFrame] = true
+			ns.wow:HookFrameScript(columnFrame, 'OnShow', queuePlacement)
+			ns.wow:HookFrameScript(columnFrame, 'OnHide', queuePlacement)
+			ns.wow:HookFrameScript(columnFrame, 'OnSizeChanged', queuePlacement)
+		end
+	end
 end
 
 function marketNow()
