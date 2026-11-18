@@ -219,6 +219,89 @@ t.test("the focused widget also shows the chevron, its right edge on the widget'
 	t.eq(second.focusChevron:IsShown(), false, 'leaving clears the chevron')
 end)
 
+-- Every top-bar widget that shows a focus mark, shown or not.
+local function markedWidgets(topBar)
+	local marked = {}
+	local all = { topBar.buttons.gold, topBar.buttons.rule, topBar.buttons.scan }
+	for _, button in ipairs(topBar.shortcuts) do
+		all[#all + 1] = button
+	end
+	for _, button in ipairs(all) do
+		local isRingShown = button.focusRing ~= nil and button.focusRing:IsShown()
+		local isChevronShown = button.focusChevron ~= nil and button.focusChevron:IsShown()
+		if button.isFocused or isRingShown or isChevronShown then
+			marked[#marked + 1] = button
+		end
+	end
+	return marked
+end
+
+t.test('hiding the bar clears the focus mark, so showing it again shows none', function()
+	local game, addon = start()
+	local module = addon.host.Module('topbar')
+	module:SetSetting('focusKey', 'PADLSHOULDER')
+	game:PressKey('PADLSHOULDER')
+	module:SetSetting('visibility', 'hidden')
+	module:SetSetting('visibility', 'always')
+	t.eq(addon.input:HasFocus('topbar'), false)
+	t.eq(#markedWidgets(addon.topBar), 0, 'no mark without the focus')
+end)
+
+t.test('switching the module off clears the focus mark, so switching it on shows none', function()
+	local game, addon = start()
+	addon.host.Module('topbar'):SetSetting('focusKey', 'PADLSHOULDER')
+	game:PressKey('PADLSHOULDER')
+	addon.host.Disable('topbar')
+	addon.host.Enable('topbar')
+	t.eq(addon.input:HasFocus('topbar'), false)
+	t.eq(#markedWidgets(addon.topBar), 0, 'no mark without the focus')
+end)
+
+t.test('switching the focused widget off moves the focus to a shown one, and A presses it', function()
+	local game, addon = start()
+	local module = addon.host.Module('topbar')
+	module:SetSetting('focusKey', 'PADLSHOULDER')
+	game:PressKey('PADLSHOULDER')
+	local gold = addon.topBar.buttons.gold
+	module:SetSetting('showGold', false)
+	local marked = markedWidgets(addon.topBar)
+	t.eq(#marked, 1, 'one mark')
+	t.eq(marked[1], addon.topBar.order[1], 'on the first shown widget')
+	t.eq(gold.isFocused, false, 'the hidden widget keeps no mark')
+	local pressed
+	marked[1]:OnClick(function()
+		pressed = true
+	end)
+	game:PressKey('PAD1')
+	t.eq(pressed, true, 'A presses the marked widget')
+	module:SetSetting('showGold', true)
+	t.eq(#markedWidgets(addon.topBar), 1, 'showing it again brings no stale mark')
+end)
+
+t.test('switching off the widgets after the focus clamps it to the last shown one', function()
+	local game, addon = start()
+	local module = addon.host.Module('topbar')
+	module:SetSetting('focusKey', 'PADLSHOULDER')
+	game:PressKey('PADLSHOULDER')
+	game:PressKey('PADDLEFT') -- wraps to the last shortcut
+	module:SetSetting('showShortcuts', false)
+	local order = addon.topBar.order
+	local marked = markedWidgets(addon.topBar)
+	t.eq(#marked, 1, 'one mark')
+	t.eq(marked[1], order[#order], 'on the last shown widget')
+end)
+
+t.test('a disabled widget does not dim its focus mark', function()
+	local game, addon = start()
+	local ui = addon.Widgets.new(addon.wow, addon.theme)
+	local button = ui:Button(game.env.UIParent, 'Scan', 'ghost')
+	button:SetEnabled(false)
+	button:SetFocused(true)
+	t.eq(button:GetEffectiveAlpha(), addon.Widgets.DISABLED_ALPHA, 'the button dims')
+	t.eq(button.focusChevron:GetEffectiveAlpha(), 1, 'the chevron does not')
+	t.eq(button.focusRing:GetEffectiveAlpha(), 1, 'nor the ring')
+end)
+
 t.test('A presses the focused widget', function()
 	local game, addon = start()
 	addon.host.Module('topbar'):SetSetting('focusKey', 'CTRL-SHIFT-H')

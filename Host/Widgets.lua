@@ -48,7 +48,7 @@ local BUTTON_STYLES = {
 }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local setColor, paintButton, paintFocusRing, paintFocusChevron, roundToFour
+local setColor, paintButton, paintFocusMark, makeFocusRing, makeFocusChevron, roundToFour
 
 local WidgetsMethods = {}
 WidgetsMethods.__index = WidgetsMethods
@@ -174,8 +174,7 @@ function WidgetsMethods:Button(parent, label, style)
 	local ui = self
 	function button.SetFocused(_, isFocused)
 		button.isFocused = isFocused == true
-		paintFocusRing(ui, button)
-		paintFocusChevron(ui, button)
+		paintFocusMark(ui, button)
 	end
 	button:SetLabel(label or '')
 	return button
@@ -301,53 +300,55 @@ function paintButton(button, theme, isHovered)
 	setColor(button.background, theme:Color(token))
 end
 
--- The ring stands outside the button, past a gap band (focus.ringOffset +
--- focus.ringGap) in color.focus.gap that keeps it at 3:1 against any fill it would touch.
--- Made on first focus, then only shown and hidden.
-function paintFocusRing(ui, button)
+-- The focus mark: the ring outside the button, past a gap band (focus.ringOffset +
+-- focus.ringGap) in color.focus.gap that keeps it at 3:1 against any fill it would touch, and
+-- the one chevron icon, its right edge on the button's left edge where the client's gamepad
+-- cursor sits. Both overhang: the button keeps its size and place. They live on a frame beside
+-- the button, not inside it, so a disabled button's alpha does not dim them. Made on first
+-- focus, then only shown and hidden.
+function paintFocusMark(ui, button)
 	local ring = button.focusRing
 	if not ring and not button.isFocused then
 		return
 	end
 	if not ring then
-		local theme = ui.theme
-		local ringWidth = theme:Number('focus.ringWidth')
-		local gapWidth = theme:Number('focus.ringOffset') + theme:Number('focus.ringGap')
-		local reach = ringWidth + gapWidth
-		ring = ui.wow:CreateFrame('Frame', button)
-		ring:SetPoint('TOPLEFT', button, 'TOPLEFT', -reach, reach)
-		ring:SetPoint('BOTTOMRIGHT', button, 'BOTTOMRIGHT', reach, -reach)
-		ring.edges = ui:Border(ring, 'color.focus.ring', ringWidth)
-		if gapWidth > 0 then
-			local gap = ui.wow:CreateFrame('Frame', ring)
-			gap:SetPoint('TOPLEFT', ring, 'TOPLEFT', ringWidth, -ringWidth)
-			gap:SetPoint('BOTTOMRIGHT', ring, 'BOTTOMRIGHT', -ringWidth, ringWidth)
-			ring.gapEdges = ui:Border(gap, 'color.focus.gap', gapWidth)
-		end
+		ring = makeFocusRing(ui, button)
 		button.focusRing = ring
+		button.focusChevron = makeFocusChevron(ui, button, ring)
 	end
 	ring:SetShown(button.isFocused)
+	button.focusChevron:SetShown(button.isFocused)
 end
 
--- The one chevron icon, its right edge on the button's left edge, where the client's gamepad
--- cursor sits. It overhangs: the button keeps its size and place.
-function paintFocusChevron(ui, button)
-	local chevron = button.focusChevron
-	if not chevron and not button.isFocused then
-		return
+function makeFocusRing(ui, button)
+	local theme = ui.theme
+	local ringWidth = theme:Number('focus.ringWidth')
+	local gapWidth = theme:Number('focus.ringOffset') + theme:Number('focus.ringGap')
+	local reach = ringWidth + gapWidth
+	local ring = ui.wow:CreateFrame('Frame', button:GetParent())
+	ring:SetFrameLevel(button:GetFrameLevel() + 1)
+	ring:SetPoint('TOPLEFT', button, 'TOPLEFT', -reach, reach)
+	ring:SetPoint('BOTTOMRIGHT', button, 'BOTTOMRIGHT', reach, -reach)
+	ring.edges = ui:Border(ring, 'color.focus.ring', ringWidth)
+	if gapWidth > 0 then
+		local gap = ui.wow:CreateFrame('Frame', ring)
+		gap:SetPoint('TOPLEFT', ring, 'TOPLEFT', ringWidth, -ringWidth)
+		gap:SetPoint('BOTTOMRIGHT', ring, 'BOTTOMRIGHT', -ringWidth, ringWidth)
+		ring.gapEdges = ui:Border(gap, 'color.focus.gap', gapWidth)
 	end
-	if not chevron then
-		local theme = ui.theme
-		chevron = button:CreateTexture(nil, 'OVERLAY')
-		chevron:SetSize(
-			roundToFour(theme:Number('focus.chevronWidth') * Widgets.FOCUS_CHEVRON_SCALE),
-			roundToFour(theme:Number('focus.chevronHeight') * Widgets.FOCUS_CHEVRON_SCALE)
-		)
-		chevron:SetPoint('RIGHT', button, 'LEFT', 0, 0)
-		ns.IconSet.new({ theme = theme }):Apply(chevron, Widgets.FOCUS_CHEVRON_ICON, 'color.focus.chevron')
-		button.focusChevron = chevron
-	end
-	chevron:SetShown(button.isFocused)
+	return ring
+end
+
+function makeFocusChevron(ui, button, ring)
+	local theme = ui.theme
+	local chevron = ring:CreateTexture(nil, 'OVERLAY')
+	chevron:SetSize(
+		roundToFour(theme:Number('focus.chevronWidth') * Widgets.FOCUS_CHEVRON_SCALE),
+		roundToFour(theme:Number('focus.chevronHeight') * Widgets.FOCUS_CHEVRON_SCALE)
+	)
+	chevron:SetPoint('RIGHT', button, 'LEFT', 0, 0)
+	ns.IconSet.new({ theme = theme }):Apply(chevron, Widgets.FOCUS_CHEVRON_ICON, 'color.focus.chevron')
+	return chevron
 end
 
 function roundToFour(value)
