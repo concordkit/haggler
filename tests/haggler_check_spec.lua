@@ -44,6 +44,9 @@ local function fakeApi(overrides)
 		framePoint = function()
 			return nil
 		end,
+		settingsCategoryShown = function()
+			return nil
+		end,
 		bindingAction = function()
 			return nil
 		end,
@@ -240,6 +243,53 @@ t.test('bar.rule: passes after two changes of the default rule', function()
 	t.same(item.judge(facts, scratch, signal('TICK')), { state = 'pass', evidence = { 'r1 -> r2', 'r2 -> r1' } })
 end)
 
+t.test('bar.shortcuts: the settings shortcut passes through the Settings window or the legacy panel', function()
+	local item = itemById('bar.shortcuts')
+	local function windowOn(tab)
+		return { window = { lastTab = tab } }
+	end
+	local function tickWith(tab, overrides)
+		local db = { settings = windowOn(tab) }
+		local facts = factsWith(db, overrides)
+		facts.db = db
+		return facts
+	end
+	local isWindowShown = function(name)
+		return name == 'HagglerFrame'
+	end
+	local function run(settingsOverrides)
+		local scratch = {}
+		t.eq(item.judge(tickWith('sell', { frameShown = isWindowShown }), scratch, signal('TICK')), nil)
+		return item.judge(tickWith('sell', settingsOverrides), scratch, signal('TICK'))
+	end
+
+	local viaSettings = run({
+		settingsCategoryShown = function()
+			return 'Haggler'
+		end,
+	})
+	t.eq(
+		viaSettings and viaSettings.state,
+		'pass',
+		'Settings API: no HagglerOptionsPanel, the Settings window on Haggler'
+	)
+	t.eq(
+		run({
+			settingsCategoryShown = function()
+				return 'Controls'
+			end,
+		}),
+		nil,
+		'the Settings window on another category'
+	)
+	local viaLegacy = run({
+		frameShown = function(name)
+			return name == 'HagglerOptionsPanel'
+		end,
+	})
+	t.eq(viaLegacy and viaLegacy.state, 'pass', 'legacy fallback: the named panel')
+end)
+
 t.test('bar.position: the bar is placed after a reload where it was dragged', function()
 	local item = itemById('bar.position')
 	local charDb = { ui = { topBar = { point = 'TOP', relativePoint = 'TOP', x = 0, y = 0 } } }
@@ -302,7 +352,7 @@ end)
 
 t.test('persist.data: fails when the last ledger row changes across a reload', function()
 	local item = itemById('persist.data')
-	local market = { ledger = { { NOW, 'sale', 1, 1, 100 } }, ventures = { v1 = {} }, costPools = {} }
+	local market = { ledger = { { NOW, 'sale', 1, 1, 100 } }, costPools = {} }
 	local db = { markets = { [MARKET] = market } }
 	local scratch = {}
 	item.judge(factsWith(db), scratch, signal('LOGOUT'))
@@ -313,58 +363,6 @@ t.test('persist.data: fails when the last ledger row changes across a reload', f
 	local emptyDb = { markets = { [MARKET] = { ledger = {} } } }
 	item.judge(factsWith(emptyDb), scratch, signal('LOGOUT'))
 	t.eq(item.judge(factsWith(emptyDb), scratch, signal('LOAD')), nil, 'an empty store proves nothing')
-end)
-
-t.test('venture.plan: planning twice grows one venture; a second venture fails', function()
-	local item = itemById('venture.plan')
-	local line = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
-	local market = { ventures = { a = { createdAt = NOW, lines = { line } } } }
-	local facts = factsWith({ markets = { [MARKET] = market } })
-	local scratch = {}
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'planned once')
-	line.plannedCrafts, line.planned = 2, 2
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
-	t.eq(
-		item.judge(
-			factsWith({
-				markets = {
-					[MARKET] = {
-						ventures = {
-							a = {
-								createdAt = NOW,
-								lines = { { recipeId = 9, plannedCrafts = 4, planned = 4, crafted = 0 } },
-							},
-						},
-					},
-				},
-			}),
-			{},
-			signal('TICK')
-		),
-		nil,
-		'first seen with many crafts: not planned twice'
-	)
-	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
-	t.eq(item.judge(facts, {}, signal('TICK')).state, 'fail', 'two ventures open for one recipe fail')
-	market.ventures.b.createdAt = NOW - 1000
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'older venture ignored')
-end)
-
-t.test('venture.plan: plan, craft out, plan again stays a pass', function()
-	local item = itemById('venture.plan')
-	local first = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
-	local market = { ventures = { a = { createdAt = NOW, lines = { first } } } }
-	local facts = factsWith({ markets = { [MARKET] = market } })
-	local scratch = {}
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil)
-	first.plannedCrafts, first.planned = 2, 2
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
-	first.crafted = 2
-	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'no verdict after the pass')
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a crafted-out venture is not a duplicate')
-	first.crafted, market.ventures.a.closedAt = 0, NOW
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a closed venture is not a duplicate')
 end)
 
 t.test('craft.book: one craft row per cast, judged after the casts settle', function()
@@ -582,7 +580,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 				auctions = {
 					[1] = { state = 'cancelled', deposit = 10 },
 					[2] = { state = 'active' },
-					[3] = { state = 'active', ventureId = 'v' },
 				},
 			},
 		},
@@ -597,7 +594,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 		'fail',
 		'no server answer between'
 	)
-	t.eq(judgeAll(untracked, facts, { signal('HOOK:CancelAuction', NOW, 3) }).state, 'look', 'a venture auction')
 	t.eq(
 		judgeAll(untracked, facts, {
 			signal('HOOK:CancelAuction', NOW, 2),
@@ -620,17 +616,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 		'pass',
 		"Haggler's 5 s wait and an AH close or show end the wait"
 	)
-end)
-
-t.test('flips.buy: a live search from Flips that lands on Buy passes', function()
-	local item = itemById('flips.buy')
-	local db = { settings = { window = { lastTab = 'flips' } } }
-	local facts = factsWith(db)
-	local scratch = {}
-	item.judge(facts, scratch, signal('TICK'))
-	item.judge(facts, scratch, signal('HOOK:SendSearchQuery', NOW))
-	db.settings.window.lastTab = 'buy'
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
 end)
 
 t.test('session.ahvisit: closing the AH sets the AH-visit start', function()
@@ -804,6 +789,36 @@ t.test('the observer delivers events and hooks late and in order, ledger rows be
 	heard = {}
 	client.fire('PLAYER_LOGOUT')
 	t.eq(heard[1].name, 'LOGOUT', 'logout is delivered at once')
+end)
+
+t.test('the observer reads the Settings window nil-safely', function()
+	local client = fakeClient()
+	local api = ns.Observer.create(client, function() end):Api()
+	t.eq(api.settingsCategoryShown(), nil, 'no SettingsPanel')
+	local isShown = false
+	client.SettingsPanel = {
+		IsShown = function()
+			return isShown
+		end,
+		GetCurrentCategory = function()
+			return {
+				GetName = function()
+					return 'Haggler'
+				end,
+			}
+		end,
+	}
+	t.eq(api.settingsCategoryShown(), nil, 'closed')
+	isShown = true
+	t.eq(api.settingsCategoryShown(), 'Haggler')
+	client.SettingsPanel.GetCurrentCategory = function()
+		return nil
+	end
+	t.eq(api.settingsCategoryShown(), nil, 'no current category')
+	client.SettingsPanel.GetCurrentCategory = function()
+		error('boom')
+	end
+	t.eq(api.settingsCategoryShown(), nil, 'a raising client read')
 end)
 
 -- Drives one item through a real observer over the fake client; returns every verdict it gave.

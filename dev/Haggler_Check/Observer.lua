@@ -250,6 +250,20 @@ function Observer:Api()
 		end
 		return frame:IsShown() == true
 	end
+	-- The client's Settings window (Settings API, 10.0+): the name of the category it shows, nil
+	-- when it is closed or missing. The legacy panel is a named frame; frameShown covers it.
+	function api.settingsCategoryShown()
+		local panel = env.SettingsPanel
+		if type(panel) ~= 'table' or type(panel.IsShown) ~= 'function' or not safeCall(panel.IsShown, panel) then
+			return nil
+		end
+		local category = type(panel.GetCurrentCategory) == 'function' and safeCall(panel.GetCurrentCategory, panel)
+		if type(category) ~= 'table' or type(category.GetName) ~= 'function' then
+			return nil
+		end
+		local name = safeCall(category.GetName, category)
+		return type(name) == 'string' and name or nil
+	end
 	function api.framePoint(name)
 		local frame = env[name]
 		if type(frame) ~= 'table' or type(frame.GetPoint) ~= 'function' then

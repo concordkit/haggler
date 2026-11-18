@@ -11,7 +11,8 @@
 	           LOAD (args: isInitialLogin, isReload), LOGOUT, TICK (every second), LEDGER (args:
 	           events, the ledger rows booked since the last tick) and LUA_ERROR (args: message)
 	  api    = isHagglerLoaded() · hagglerVersion() · hasErrorHook() · frameShown(name) ->
-	           boolean|nil · framePoint(name) -> point, relativePoint, x, y · bindingAction(key)
+	           boolean|nil · settingsCategoryShown() -> name|nil · framePoint(name) -> point, relativePoint,
+	           x, y · bindingAction(key)
 	           · hasLdb() · ldbText(name) -> exists, text · freeBagSlots() · inboxCount() · inboxHeaders()
 	           · isInCombat()
 ]]
@@ -20,6 +21,8 @@ local _, ns = ...
 local LEDGER_FIELDS = { 't', 'kind', 'itemId', 'qty', 'copper', 'char', 'ventureId', 'auctionId', 'flags' }
 local FEED_NAMES = { 'Haggler', 'Haggler: Gold', 'Haggler: Rule', 'Haggler: Scan' }
 local FOCUS_BUTTON_PATTERN = '^CLICK HagglerInputButton'
+-- Options.CATEGORY_NAME in Features/Options.lua.
+local SETTINGS_CATEGORY_NAME = 'Haggler'
 -- Keys the focus takes while the bar has it: the d-pad, the arrows, Enter and Escape.
 local FOCUS_KEYS = {
 	'UP',
@@ -125,7 +128,7 @@ Items.list = {
 		id = 'window.tabs',
 		title = 'Window tabs',
 		kind = 'look',
-		prompt = '/hag: the window shows Scan, Lookup, Rules, Sell, Auctions, Flips, Buy, Ledger and Ventures.',
+		prompt = '/hag: the window shows Scan, Lookup, Rules, Sell, Auctions, Buy and Ledger.',
 		zone = 'safe',
 		place = 'town',
 	},
@@ -272,7 +275,7 @@ Items.list = {
 		id = 'bar.shortcuts',
 		title = 'Shortcuts open their places',
 		kind = 'action',
-		prompt = 'Click the Sell, Flips and settings shortcuts on the top bar (with the bar hidden: /hag set topbar.visibility always).',
+		prompt = 'Click the Sell and settings shortcuts on the top bar (with the bar hidden: /hag set topbar.visibility always).',
 		zone = 'safe',
 		place = 'town',
 		on = { 'TICK' },
@@ -281,11 +284,14 @@ Items.list = {
 			if facts.api.frameShown('HagglerFrame') then
 				scratch.tabs[tostring(setting(facts.db, 'window', 'lastTab', '?'))] = true
 			end
-			if facts.api.frameShown('HagglerOptionsPanel') then
-				scratch.isSettingsSeen = true
+			-- The Settings API makes no named frame; only the legacy fallback builds HagglerOptionsPanel.
+			if facts.api.settingsCategoryShown() == SETTINGS_CATEGORY_NAME then
+				scratch.settingsSeenIn = 'the Settings window on Haggler'
+			elseif facts.api.frameShown('HagglerOptionsPanel') then
+				scratch.settingsSeenIn = 'the Haggler options panel'
 			end
-			if scratch.tabs.sell and scratch.tabs.flips and scratch.isSettingsSeen then
-				return pass({ 'window seen on Sell and Flips; the Haggler options panel shown' })
+			if scratch.tabs.sell and scratch.settingsSeenIn then
+				return pass({ 'window seen on Sell; ' .. scratch.settingsSeenIn .. ' shown' })
 			end
 			return nil
 		end,
@@ -422,7 +428,7 @@ Items.list = {
 	},
 	{
 		id = 'persist.data',
-		title = 'Ledger, ventures and pools persist',
+		title = 'Ledger and pools persist',
 		kind = 'auto',
 		prompt = '',
 		zone = 'safe',
@@ -441,19 +447,14 @@ Items.list = {
 			local after, lost = ledgerTails(facts.db), {}
 			for marketKey, tail in pairs(before) do
 				local now = after[marketKey]
-				if
-					not now
-					or now.ledgerTail ~= tail.ledgerTail
-					or now.ventures < tail.ventures
-					or now.pools < tail.pools
-				then
+				if not now or now.ledgerTail ~= tail.ledgerTail or now.pools < tail.pools then
 					lost[#lost + 1] = marketKey
 				end
 			end
 			if #lost > 0 then
 				return fail({ 'changed across the reload: ' .. table.concat(lost, ', ') })
 			end
-			return pass({ 'the last ledger row, venture and pool counts are unchanged after the reload' })
+			return pass({ 'the last ledger row and pool count are unchanged after the reload' })
 		end,
 	},
 	{
@@ -495,89 +496,10 @@ Items.list = {
 		place = 'town',
 	},
 	{
-		id = 'venture.plan',
-		title = 'Planning twice makes one venture',
-		kind = 'action',
-		prompt = 'Profession window: plan a venture twice on one recipe.',
-		zone = 'safe',
-		place = 'town',
-		on = { 'TICK' },
-		judge = function(facts, scratch)
-			-- Haggler starts a new venture once the open one is crafted out or closed, so after
-			-- a pass a later venture proves nothing.
-			if scratch.isPassed then
-				return nil
-			end
-			local startedAt = facts.run.startedAt or 0
-			scratch.firstPlanned = scratch.firstPlanned or {}
-			local venturesByRecipe, grown = {}, nil
-			for _, market in eachMarket(facts.db) do
-				for id, venture in pairs(type(market.ventures) == 'table' and market.ventures or {}) do
-					if type(venture) == 'table' and (venture.createdAt or 0) >= startedAt then
-						for _, line in ipairs(type(venture.lines) == 'table' and venture.lines or {}) do
-							local planned = tonumber(line.plannedCrafts) or 0
-							local lineKey = tostring(id) .. ':' .. tostring(line.recipeId)
-							-- Only ventures still open for crafts at once are duplicates.
-							local isOpenForCrafts = venture.closedAt == nil
-								and (tonumber(line.crafted) or 0) < (tonumber(line.planned) or 0)
-							if isOpenForCrafts then
-								venturesByRecipe[line.recipeId] = venturesByRecipe[line.recipeId] or {}
-								venturesByRecipe[line.recipeId][id] = true
-							end
-							if planned > 0 and scratch.firstPlanned[lineKey] == nil then
-								scratch.firstPlanned[lineKey] = planned
-							elseif planned > (scratch.firstPlanned[lineKey] or math.huge) then
-								grown = grown
-									or {
-										id = id,
-										recipeId = line.recipeId,
-										from = scratch.firstPlanned[lineKey],
-										to = planned,
-									}
-							end
-						end
-					end
-				end
-			end
-			for recipeId, ventureIds in pairs(venturesByRecipe) do
-				local count = 0
-				for _ in pairs(ventureIds) do
-					count = count + 1
-				end
-				if count >= 2 then
-					return fail({ count .. ' new ventures for recipe ' .. tostring(recipeId) .. ' instead of one' })
-				end
-			end
-			if grown then
-				scratch.isPassed = true
-				return pass({
-					'venture '
-						.. tostring(grown.id)
-						.. ': recipe '
-						.. tostring(grown.recipeId)
-						.. ' planned '
-						.. grown.from
-						.. ' then '
-						.. grown.to
-						.. ' crafts; no second venture',
-				})
-			end
-			return nil
-		end,
-	},
-	{
-		id = 'venture.look',
-		title = 'Ventures tab',
-		kind = 'look',
-		prompt = 'Ventures tab: the forecast confidence shows; ± crafts works; close one to stock or write off.',
-		zone = 'safe',
-		place = 'town',
-	},
-	{
 		id = 'craft.book',
 		title = 'A craft is booked once',
 		kind = 'action',
-		prompt = 'Craft once (a venture recipe if you have one).',
+		prompt = 'Craft once.',
 		zone = 'safe',
 		place = 'town',
 		on = { 'HOOK:CraftRecipe', 'UNIT_SPELLCAST_SUCCEEDED', 'LEDGER', 'TICK' },
@@ -855,39 +777,6 @@ Items.list = {
 		place = 'auction house',
 	},
 	{
-		id = 'flips.look',
-		title = 'Flips tab',
-		kind = 'look',
-		prompt = 'Flips: Find lists vendor and relist flips; the AHledger credit shows on relist rows priced from AHledger.',
-		zone = 'safe',
-		place = 'auction house',
-	},
-	{
-		id = 'flips.buy',
-		title = 'Flips Buy hands over to Buy',
-		kind = 'action',
-		prompt = 'Flips: press Buy on a row.',
-		zone = 'safe',
-		place = 'auction house',
-		on = { 'HOOK:SendSearchQuery', 'TICK' },
-		judge = function(facts, scratch, signal)
-			local tab = setting(facts.db, 'window', 'lastTab', '?')
-			if signal.name == 'HOOK:SendSearchQuery' then
-				if scratch.lastTab == 'flips' or tab == 'flips' or tab == 'buy' then
-					scratch.searchAt = signal.at
-				end
-				return nil
-			end
-			local previous = scratch.lastTab
-			scratch.lastTab = tab
-			if scratch.searchAt and tab == 'buy' and (previous == 'flips' or scratch.wasOnFlips) then
-				return pass({ 'Flips -> Buy with a live search at ' .. scratch.searchAt })
-			end
-			scratch.wasOnFlips = tab == 'flips' or (scratch.wasOnFlips and tab == 'buy')
-			return nil
-		end,
-	},
-	{
 		id = 'auctions.look',
 		title = 'Auctions tab',
 		kind = 'look',
@@ -1031,7 +920,7 @@ Items.list = {
 		id = 'ah.untracked',
 		title = 'Cancel untracked waits for the server',
 		kind = 'action',
-		prompt = 'Post an item outside a venture; Auctions tab: arm Cancel untracked, then click until done.',
+		prompt = 'Post an item; Auctions tab: arm Cancel untracked, then click until done.',
 		zone = 'safe',
 		place = 'auction house',
 		on = {
@@ -1042,7 +931,7 @@ Items.list = {
 			'AUCTION_HOUSE_CLOSED',
 			'TICK',
 		},
-		judge = function(facts, scratch, signal)
+		judge = function(_, scratch, signal)
 			-- Haggler's wait ends on any of these events, or after SERVER_WAIT_SECONDS.
 			if signal.name ~= 'HOOK:CancelAuction' and signal.name ~= 'TICK' then
 				scratch.isAwaiting = false
@@ -1057,14 +946,6 @@ Items.list = {
 						'cancel of ' .. tostring(signal.args[1]) .. ' sent before the server answered the last',
 					})
 				end
-				local record = trackedAuction(facts.db, signal.args[1])
-				if record and record.ventureId then
-					return look({
-						'venture auction '
-							.. tostring(signal.args[1])
-							.. ' cancelled: a relist by hand, or Cancel untracked?',
-					})
-				end
 				scratch.isAwaiting, scratch.cancels, scratch.lastAt = true, (scratch.cancels or 0) + 1, signal.at
 				return nil
 			end
@@ -1074,7 +955,7 @@ Items.list = {
 				and signal.at - (scratch.lastAt or 0) >= SETTLE_SECONDS
 			then
 				return pass({
-					scratch.cancels .. ' cancels, each after the server answered; no venture auction touched',
+					scratch.cancels .. ' cancels, each after the server answered',
 				})
 			end
 			return nil
@@ -1287,17 +1168,14 @@ function isOnSameCharacter(facts, saved)
 	return type(saved) == 'table' and saved.charKey ~= nil and saved.charKey == facts.charKey
 end
 
--- Per market: the last ledger row as text, and the venture and cost-pool counts.
+-- Per market: the last ledger row as text, and the cost-pool count.
 function ledgerTails(db)
 	local tails = {}
 	for marketKey, market in eachMarket(db) do
 		if type(market) == 'table' then
 			local ledger = type(market.ledger) == 'table' and market.ledger or {}
 			local last = ledger[#ledger]
-			local ventures, pools = 0, 0
-			for _ in pairs(type(market.ventures) == 'table' and market.ventures or {}) do
-				ventures = ventures + 1
-			end
+			local pools = 0
 			for _ in pairs(type(market.costPools) == 'table' and market.costPools or {}) do
 				pools = pools + 1
 			end
@@ -1305,7 +1183,6 @@ function ledgerTails(db)
 				ledgerTail = type(last) == 'table'
 						and table.concat({ tostring(last[1]), tostring(last[2]), tostring(last[5]) }, '/')
 					or '',
-				ventures = ventures,
 				pools = pools,
 			}
 		end
@@ -1313,10 +1190,10 @@ function ledgerTails(db)
 	return tails
 end
 
--- Whether any market had a ledger row, a venture or a pool: an empty store proves nothing.
+-- Whether any market had a ledger row or a pool: an empty store proves nothing.
 function hasStoredData(tails)
 	for _, tail in pairs(tails) do
-		if tail.ledgerTail ~= '' or tail.ventures > 0 or tail.pools > 0 then
+		if tail.ledgerTail ~= '' or tail.pools > 0 then
 			return true
 		end
 	end
