@@ -352,7 +352,7 @@ end)
 
 t.test('persist.data: fails when the last ledger row changes across a reload', function()
 	local item = itemById('persist.data')
-	local market = { ledger = { { NOW, 'sale', 1, 1, 100 } }, ventures = { v1 = {} }, costPools = {} }
+	local market = { ledger = { { NOW, 'sale', 1, 1, 100 } }, costPools = {} }
 	local db = { markets = { [MARKET] = market } }
 	local scratch = {}
 	item.judge(factsWith(db), scratch, signal('LOGOUT'))
@@ -363,58 +363,6 @@ t.test('persist.data: fails when the last ledger row changes across a reload', f
 	local emptyDb = { markets = { [MARKET] = { ledger = {} } } }
 	item.judge(factsWith(emptyDb), scratch, signal('LOGOUT'))
 	t.eq(item.judge(factsWith(emptyDb), scratch, signal('LOAD')), nil, 'an empty store proves nothing')
-end)
-
-t.test('venture.plan: planning twice grows one venture; a second venture fails', function()
-	local item = itemById('venture.plan')
-	local line = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
-	local market = { ventures = { a = { createdAt = NOW, lines = { line } } } }
-	local facts = factsWith({ markets = { [MARKET] = market } })
-	local scratch = {}
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'planned once')
-	line.plannedCrafts, line.planned = 2, 2
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
-	t.eq(
-		item.judge(
-			factsWith({
-				markets = {
-					[MARKET] = {
-						ventures = {
-							a = {
-								createdAt = NOW,
-								lines = { { recipeId = 9, plannedCrafts = 4, planned = 4, crafted = 0 } },
-							},
-						},
-					},
-				},
-			}),
-			{},
-			signal('TICK')
-		),
-		nil,
-		'first seen with many crafts: not planned twice'
-	)
-	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
-	t.eq(item.judge(facts, {}, signal('TICK')).state, 'fail', 'two ventures open for one recipe fail')
-	market.ventures.b.createdAt = NOW - 1000
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'older venture ignored')
-end)
-
-t.test('venture.plan: plan, craft out, plan again stays a pass', function()
-	local item = itemById('venture.plan')
-	local first = { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 }
-	local market = { ventures = { a = { createdAt = NOW, lines = { first } } } }
-	local facts = factsWith({ markets = { [MARKET] = market } })
-	local scratch = {}
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil)
-	first.plannedCrafts, first.planned = 2, 2
-	t.eq(item.judge(facts, scratch, signal('TICK')).state, 'pass')
-	first.crafted = 2
-	market.ventures.b = { createdAt = NOW, lines = { { recipeId = 9, plannedCrafts = 1, planned = 1, crafted = 0 } } }
-	t.eq(item.judge(facts, scratch, signal('TICK')), nil, 'no verdict after the pass')
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a crafted-out venture is not a duplicate')
-	first.crafted, market.ventures.a.closedAt = 0, NOW
-	t.eq(item.judge(facts, {}, signal('TICK')), nil, 'a closed venture is not a duplicate')
 end)
 
 t.test('craft.book: one craft row per cast, judged after the casts settle', function()
@@ -632,7 +580,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 				auctions = {
 					[1] = { state = 'cancelled', deposit = 10 },
 					[2] = { state = 'active' },
-					[3] = { state = 'active', ventureId = 'v' },
 				},
 			},
 		},
@@ -647,7 +594,6 @@ t.test('ah.cancel and ah.untracked: cancel marks the record; a second cancel wai
 		'fail',
 		'no server answer between'
 	)
-	t.eq(judgeAll(untracked, facts, { signal('HOOK:CancelAuction', NOW, 3) }).state, 'look', 'a venture auction')
 	t.eq(
 		judgeAll(untracked, facts, {
 			signal('HOOK:CancelAuction', NOW, 2),

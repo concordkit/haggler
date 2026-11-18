@@ -42,8 +42,8 @@ npm --prefix dev install && npm --prefix dev run check
 The checklist is "Combined in-game checklist, steps 4–6" in the step 5 handover. Its sub-checks fall into three groups:
 
 - **a, spec**: proven outside the game, so the run leaves them out. There are 19 sub-checks, one per clause in the column below: rows 2, 5, 7, 15 and 17 have one each, 10 and 16 three each, 6 and 8 four each.
-- **b, judged**: `auto` and `action` items the suite judges from Haggler's state. There are 29 (5 auto, 24 action).
-- **c, look**: items that need eyes. There are 9.
+- **b, judged**: `auto` and `action` items the suite judges from Haggler's state. There are 28 (5 auto, 23 action).
+- **c, look**: items that need eyes. There are 8.
 
 Provenance's probes (0, 8, 17, 18, 19) are not repeated here.
 
@@ -57,7 +57,7 @@ Provenance's probes (0, 8, 17, 18, 19) are not repeated here.
 | 6 | Focus binding, combat | pad focus, B leaves, in-combat binds, freed keys: topbar_spec 159–258 | `focus.bind`, `client.override-query`, `focus.combat`, `focus.combat-bind` | `focus.pad` |
 | 7 | LDB feed | feed-off tooltip: topbar_spec "with the feed off the launcher tooltip offers no clicks" | `feed.objects` | `feed.display` |
 | 8 | Session modes | every mode, Reset, the alt's mode: sessions_spec; today rolls over: checklist_moved_spec | `session.reload`, `session.relog` | |
-| 9 | Step 5 town items | | `venture.plan`, `craft.book`, `vendor.book`, `bags.destroy` | `craft.look`, `venture.look` |
+| 9 | Step 5 town items (ventures: V2, not checked) | | `craft.book`, `vendor.book`, `bags.destroy` | `craft.look` |
 | 10 | Mail: sold, expired, won; full bags; new mail; two posts | full bags, new mail mid-take: tracking_spec 238, 257; two posts: books_spec 95 | `mail.take`, `mail.fullbags`, `mail.newmail`, `ah.twoposts` | |
 | 11 | Scan completes | | `ah.scan` | |
 | 12 | Lookup, Sell, Buy | | | `ah.flows` |
