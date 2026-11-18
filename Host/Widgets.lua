@@ -12,9 +12,9 @@
 	  ui:Button(parent, label, style)  style 'primary'|'secondary'|'tab'|'ghost'
 	      button:SetLabel(text) · button:SetEnabled(isEnabled) · button:OnClick(fn)
 	      button:SetSelected(isSelected) (tabs: the accent underline)
-	      button:SetFocused(isFocused) the theme's focus mark: a ring theme (Banneret) draws
-	          the ring outside the edge over a gap band, a frame theme (Forever) the chevron,
-	          which overhangs the left edge and reserves no gutter
+	      button:SetFocused(isFocused) the focus mark: the button's outer ring, drawn outside
+	          the edge over a gap band, and the chevron, whose right edge sits on the button's
+	          left edge as the client's own gamepad cursor does; it overhangs, reserving no gutter
 	  ui:Stepper(parent, width, onStep) a ‹ value › or − value + row; onStep(-1|1)
 	      stepper:SetValue(text) · stepper:SetEnabled(isEnabled)
 	  ui:Input(parent, width, onSubmit) a single-line edit box; onSubmit(text)
@@ -174,11 +174,8 @@ function WidgetsMethods:Button(parent, label, style)
 	local ui = self
 	function button.SetFocused(_, isFocused)
 		button.isFocused = isFocused == true
-		if theme:Anatomy('focus') == 'frame' then
-			paintFocusChevron(ui, button)
-		else
-			paintFocusRing(ui, button)
-		end
+		paintFocusRing(ui, button)
+		paintFocusChevron(ui, button)
 	end
 	button:SetLabel(label or '')
 	return button
@@ -304,7 +301,7 @@ function paintButton(button, theme, isHovered)
 	setColor(button.background, theme:Color(token))
 end
 
--- Ring theme: the ring stands outside the button, past a gap band (focus.ringOffset +
+-- The ring stands outside the button, past a gap band (focus.ringOffset +
 -- focus.ringGap) in color.focus.gap that keeps it at 3:1 against any fill it would touch.
 -- Made on first focus, then only shown and hidden.
 function paintFocusRing(ui, button)
@@ -332,8 +329,8 @@ function paintFocusRing(ui, button)
 	ring:SetShown(button.isFocused)
 end
 
--- Frame theme: the one chevron icon, left of the button by the theme's gutter. It overhangs:
--- the button keeps its size and place.
+-- The one chevron icon, its right edge on the button's left edge, where the client's gamepad
+-- cursor sits. It overhangs: the button keeps its size and place.
 function paintFocusChevron(ui, button)
 	local chevron = button.focusChevron
 	if not chevron and not button.isFocused then
@@ -346,7 +343,7 @@ function paintFocusChevron(ui, button)
 			roundToFour(theme:Number('focus.chevronWidth') * Widgets.FOCUS_CHEVRON_SCALE),
 			roundToFour(theme:Number('focus.chevronHeight') * Widgets.FOCUS_CHEVRON_SCALE)
 		)
-		chevron:SetPoint('LEFT', button, 'LEFT', -theme:Number('space.gutter'), 0)
+		chevron:SetPoint('RIGHT', button, 'LEFT', 0, 0)
 		ns.IconSet.new({ theme = theme }):Apply(chevron, Widgets.FOCUS_CHEVRON_ICON, 'color.focus.chevron')
 		button.focusChevron = chevron
 	end

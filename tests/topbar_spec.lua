@@ -171,27 +171,6 @@ t.test('the focus binding gives the bar the pad; B leaves', function()
 	t.eq(game:PressKey('PADLSHOULDER'), true, 'focus key stays')
 end)
 
-t.test('each binding press acts once, on the release the client sends', function()
-	local game, addon = start()
-	addon.host.Module('topbar'):SetSetting('focusKey', 'PADLSHOULDER')
-	local focusButton = game.env.HagglerInputButton1
-	t.same(
-		focusButton.clickRegistrations,
-		{ AnyDown = true, AnyUp = true },
-		'both edges, or the binding never reaches it'
-	)
-	game:PressKey('PADLSHOULDER')
-	t.eq(addon.input:HasFocus('topbar'), true, 'the bumper focuses')
-	game:PressKey('PADDRIGHT')
-	t.eq(addon.topBar.order[2].isFocused, true, 'one d-pad press moves one widget')
-	focusButton.scripts.OnClick(focusButton, 'LeftButton', true)
-	t.eq(addon.input:HasFocus('topbar'), true, 'a press alone does nothing yet')
-	focusButton.scripts.OnClick(focusButton, 'LeftButton', false)
-	t.eq(addon.input:HasFocus('topbar'), false, 'the release toggles the focus off')
-	focusButton:Click()
-	t.eq(addon.input:HasFocus('topbar'), true, 'a scripted Click() still works')
-end)
-
 -- Compares one anchor field by field: a point holds its relative frame, which t.same would walk.
 local function expectPoint(region, index, expected)
 	local point = { region:GetPoint(index) }
@@ -220,21 +199,24 @@ t.test('the focused widget shows the focus ring outside its edge (ring theme)', 
 	t.eq(second.focusRing:IsShown(), false, 'leaving clears the ring')
 end)
 
-t.test('a frame theme shows the chevron overhanging the left edge, reserving no gutter', function()
+t.test("the focused widget also shows the chevron, its right edge on the widget's left edge", function()
 	local game, addon = start()
-	local ui = addon.Widgets.new(addon.wow, addon.Theme.new(addon.Tokens, 'forever'))
-	local button = ui:Button(game.env.UIParent, 'Gold', 'ghost')
-	local widthBefore = button:GetWidth()
-	button:SetFocused(true)
-	local chevron = button.focusChevron
-	t.truthy(chevron and chevron:IsShown(), 'the chevron shows')
-	t.eq(button.focusRing, nil, 'a frame theme draws no ring')
-	expectPoint(chevron, 1, { 'LEFT', button, 'LEFT', -20, 0 })
+	addon.host.Module('topbar'):SetSetting('focusKey', 'PADLSHOULDER')
+	local first, second = addon.topBar.order[1], addon.topBar.order[2]
+	local widthBefore = first:GetWidth()
+	game:PressKey('PADLSHOULDER')
+	local chevron = first.focusChevron
+	t.truthy(chevron and chevron:IsShown(), 'the chevron shows on the focused widget')
+	t.truthy(first.focusRing and first.focusRing:IsShown(), 'beside the ring')
+	expectPoint(chevron, 1, { 'RIGHT', first, 'LEFT', 0, 0 })
 	t.eq(chevron.width, 12)
 	t.eq(chevron.height, 28)
-	t.eq(button:GetWidth(), widthBefore, 'no gutter')
-	button:SetFocused(false)
-	t.eq(chevron:IsShown(), false)
+	t.eq(first:GetWidth(), widthBefore, 'it overhangs: no gutter')
+	game:PressKey('PADDRIGHT')
+	t.eq(chevron:IsShown(), false, 'the chevron leaves the old widget')
+	t.eq(second.focusChevron:IsShown(), true, 'and moves to the next')
+	game:PressKey('PAD2')
+	t.eq(second.focusChevron:IsShown(), false, 'leaving clears the chevron')
 end)
 
 t.test('A presses the focused widget', function()

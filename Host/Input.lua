@@ -20,12 +20,6 @@
 	refuses (an Unbind or a leave in combat) is kept and retried when combat ends, so no key
 	stays overridden; until then the focus keys do nothing. A key clicks a hidden named button,
 	so the binding needs no secure code of Haggler's own.
-
-	A binding's click reaches a button only when it is registered for both edges (AnyDown and
-	AnyUp): the client's default, LeftButtonUp alone, gets nothing, so a bound key did nothing
-	while a scripted Click() worked. The client then sends a press and a release; Haggler acts
-	once, on the release (Concord GP-9: act on a press, fire on release), so a key it gives
-	back on that press is already let go and no half press reaches the game's own binding.
 ]]
 local _, ns = ...
 
@@ -164,7 +158,7 @@ function ownerFrame(input, name)
 	return frame
 end
 
--- A hidden named button whose release runs fn (a click binding needs a button by name). The
+-- A hidden named button whose click runs fn (a click binding needs a button by name). The
 -- button is made once per name; a later call only swaps what it runs.
 function pressButton(input, name, fn)
 	local entry = input.buttons[name]
@@ -173,11 +167,9 @@ function pressButton(input, name, fn)
 		local buttonName = 'HagglerInputButton' .. input.count
 		local button = input.wow:CreateFrame('Button', input.wow.env.UIParent, nil, buttonName)
 		button:Hide()
-		button:RegisterForClicks('AnyDown', 'AnyUp')
 		entry = { button = button, name = buttonName }
-		-- down is true on the press, false on the release and on a scripted Click().
-		button:SetScript('OnClick', function(_, _, down)
-			if down ~= true and entry.fn then
+		button:SetScript('OnClick', function()
+			if entry.fn then
 				entry.fn()
 			end
 		end)

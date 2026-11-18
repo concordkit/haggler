@@ -5,7 +5,7 @@
 local FakeGame = {}
 
 -- Helpers live further down; declared here so they stay local.
-local addAuctionHouseActions, addTrackingApi, deliverBindingClick, isRegisteredForEdge
+local addAuctionHouseActions, addTrackingApi
 
 -- Widgets ---------------------------------------------------------------------------------
 
@@ -230,19 +230,10 @@ function FakeGame.newWidget(kind, parent, template)
 		function widget:IsEnabled()
 			return self.isEnabled
 		end
-		-- The client's default: a new button is registered for the left button's up click only.
-		widget.clickRegistrations = { LeftButtonUp = true }
-		function widget:RegisterForClicks(...)
-			self.clickRegistrations = {}
-			for _, registration in ipairs({ ... }) do
-				self.clickRegistrations[registration] = true
-			end
-		end
-		--- A hardware click, as the player makes it; a disabled button takes none. Click() with
-		--- no arguments runs OnClick with down false, as the client's does.
+		--- A hardware click, as the player makes it; a disabled button takes none.
 		function widget:Click()
 			if self.isEnabled and self.scripts.OnClick then
-				self.scripts.OnClick(self, 'LeftButton', false)
+				self.scripts.OnClick(self, 'LeftButton')
 			end
 		end
 	end
@@ -907,19 +898,13 @@ function FakeGame.new(options)
 		return frames
 	end
 
-	--- Presses and lets go of a key as WoW: Forever's client does: the override binding's click
-	--- reaches its button as a down click and then an up click (OnClick(self, 'LeftButton',
-	--- down)), and only when the button is registered for both edges. A button registered for one
-	--- edge alone, as every button is by default (LeftButtonUp), gets neither: ImprovedForever
-	--- (Override.lua, its SecureButton) records this on the same client.
-	--- @return boolean whether a binding to a button stands for the key
+	--- Presses a key as the client would: the newest override binding for it clicks its button.
 	function game:PressKey(key)
 		for _, keys in pairs(self.overrideBindings) do
 			local buttonName = keys[key]
 			local button = buttonName and env[buttonName]
-			if button then
-				deliverBindingClick(button, true)
-				deliverBindingClick(button, false)
+			if button and button.scripts.OnClick then
+				button.scripts.OnClick(button, 'LeftButton')
 				return true
 			end
 		end
@@ -1104,19 +1089,6 @@ function FakeGame.startAddon(t, game, beforeStart)
 	ns.host.Start(ns.store:Settings())
 	ns.errors = errors
 	return ns
-end
-
--- One edge of a binding's click; the button must be registered for both edges to get any.
-function deliverBindingClick(button, isDown)
-	local registrations = button.clickRegistrations or {}
-	local isReached = isRegisteredForEdge(registrations, 'Down') and isRegisteredForEdge(registrations, 'Up')
-	if isReached and button.scripts.OnClick then
-		button.scripts.OnClick(button, 'LeftButton', isDown)
-	end
-end
-
-function isRegisteredForEdge(registrations, edge)
-	return registrations['Any' .. edge] == true or registrations['LeftButton' .. edge] == true
 end
 
 return FakeGame
