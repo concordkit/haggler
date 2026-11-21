@@ -5,13 +5,18 @@
 	costs a table lookup a row.
 
 	  CraftingView.new(deps) deps = { schematic = fun(recipeId) -> schematic|nil, prices, values,
-	    market = fun() -> market|nil, held = fun(itemId) -> units, valuation = fun() -> name }
+	    market = fun() -> market|nil, held = fun(itemId) -> units, valuation = fun() -> name,
+	    knownRecipes? = fun() -> recipeIds | false }
+	    A reagent a known recipe makes is costed by crafting when that is cheaper (CraftCost).
+	    knownRecipes defaults to the open profession's learned recipes (Wow:KnownRecipeIds);
+	    false costs every missing reagent as a buy, as the venture forecast does.
 	  view:Craft(recipeId, crafts?) -> Craft|nil   cached
 	  view:Invalidate()                            drops the cache and the price context
 	  CraftingView.rowText(craft)          -> text, level|nil   '+1g 20s · 15%' for a list row
 	  CraftingView.detailLines(craft, parts) -> { { text, level? } }
 	      parts = { figures, share, credit? }; low confidence and its reasons always show; the
-	      credit line shows whenever an AHledger figure went into the craft
+	      credit line shows whenever an AHledger figure went into the craft; figures adds a
+	      'Bolt of Linen Cloth × 2 crafted' line for each reagent costed by crafting
 	  CraftingView.ventureRecipe(schematic) -> recipe for Ventures.addCrafts
 	  CraftingView.marginToken(margin)      -> token|nil   the colour of a recipe's prices, by margin band
 	  CraftingView.MARGIN_BANDS             the bands, best first; tune them here
@@ -38,14 +43,14 @@ CraftingView.MARGIN_BANDS = {
 }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local signedMoney, percentText, wholePercent, sourcesFor, colorFor
+local signedMoney, percentText, wholePercent, sourcesFor, colorFor, recipeFinder, craftedLines, itemName
 
 --- @param deps table see the file header
 function CraftingView.new(deps)
 	if type(deps) ~= 'table' or type(deps.schematic) ~= 'function' or type(deps.held) ~= 'function' then
 		error('CraftingView.new: needs schematic and held', 2)
 	end
-	return setmetatable({ deps = deps, cache = {} }, ViewMethods)
+	return setmetatable({ deps = deps, cache = {}, schematics = {} }, ViewMethods)
 end
 
 --- The recipe priced under the current valuation, or nil when the client has no schematic.
@@ -74,6 +79,7 @@ end
 function ViewMethods:Invalidate()
 	self.cache = {}
 	self.ctx = nil
+	self.recipeByOutput = nil
 end
 
 --- The figures a recipe list row shows: profit and margin, '?' when a price is missing.
@@ -110,6 +116,9 @@ function CraftingView.detailLines(craft, parts)
 			-- The band colour already tells a loss; without a margin the line still reads low.
 			level = not craft.margin and craft.profit < 0 and 'low' or nil,
 		}
+		for _, line in ipairs(craftedLines(craft)) do
+			lines[#lines + 1] = line
+		end
 	end
 	if parts.share and craft.knownShare then
 		lines[#lines + 1] = {
@@ -181,6 +190,22 @@ function wholePercent(fraction)
 	return fraction < 0 and -percent or percent
 end
 
+function craftedLines(craft)
+	local lines = {}
+	for _, reagent in ipairs(type(craft.reagents) == 'table' and craft.reagents or {}) do
+		if reagent.source == 'crafted' and reagent.craftedUnits then
+			lines[#lines + 1] =
+				{ text = string.format('%s × %d crafted', itemName(reagent.itemId), reagent.craftedUnits) }
+		end
+	end
+	return lines
+end
+
+function itemName(itemId)
+	local info = ns.prices and ns.prices:ItemInfo(itemId)
+	return info and info.name or ('item ' .. itemId)
+end
+
 function colorFor(craft, text)
 	local token = CraftingView.marginToken(craft.margin)
 	return token and ns.theme:Wrap(token, text) or text
@@ -208,5 +233,30 @@ function sourcesFor(view, valuation, crafts)
 			return deps.prices and deps.prices:Get(itemId, nil, ctx) or nil
 		end,
 		value = stack,
+		recipeFor = recipeFinder(view),
 	}
+end
+
+-- The known recipe that makes an item, from one pass over the known recipes a cache generation.
+-- Schematics never change, so they are kept across generations.
+function recipeFinder(view)
+	local knownRecipes = view.deps.knownRecipes
+	if knownRecipes == false then
+		return nil
+	end
+	return function(itemId)
+		if not view.recipeByOutput then
+			local recipeIds = knownRecipes and knownRecipes() or (ns.wow and ns.wow:KnownRecipeIds()) or {}
+			view.recipeByOutput = {}
+			for _, recipeId in ipairs(recipeIds) do
+				local schematic = view.schematics[recipeId] or view.deps.schematic(recipeId)
+				view.schematics[recipeId] = schematic
+				local outputItemId = schematic and schematic.outputItemId
+				if outputItemId and not view.recipeByOutput[outputItemId] then
+					view.recipeByOutput[outputItemId] = schematic
+				end
+			end
+		end
+		return view.recipeByOutput[itemId]
+	end
 end

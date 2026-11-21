@@ -409,7 +409,8 @@ end
 --- game.owned = { { auctionID, itemKey, quantity, status } }; game.mail = { { subject, money,
 --- daysLeft, invoice = { type, itemName, bid, deposit, cut, count }, items = { { itemId, count } } } };
 --- game.merchant = { [index] = { itemId, price, stack, hasExtendedCost } }; game.itemCounts;
---- game.schematics = { [recipeId] = schematic }; game.cursorItem; game.isMerchantOpen.
+--- game.schematics = { [recipeId] = schematic }, all learned unless game.unlearned[recipeId];
+--- game.cursorItem; game.isMerchantOpen.
 function addTrackingApi(game, env)
 	--- Hooks other than the tracking module's (Features/Tracking.lua), which every start installs.
 	function game:HookCount()
@@ -521,6 +522,20 @@ function addTrackingApi(game, env)
 	env.C_TradeSkillUI = {
 		GetRecipeSchematic = function(recipeId)
 			return game.schematics[recipeId]
+		end,
+		GetAllRecipeIDs = function()
+			local recipeIds = {}
+			for recipeId in pairs(game.schematics) do
+				recipeIds[#recipeIds + 1] = recipeId
+			end
+			table.sort(recipeIds)
+			return recipeIds
+		end,
+		GetRecipeInfo = function(recipeId)
+			if not game.schematics[recipeId] then
+				return nil
+			end
+			return { recipeID = recipeId, learned = not (game.unlearned and game.unlearned[recipeId]) }
 		end,
 		CraftRecipe = function(...)
 			record('CraftRecipe', ...)

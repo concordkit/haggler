@@ -3,6 +3,7 @@ local FakeGame = require('tests.fake_game')
 
 local LINEN, BOLT = 2589, 2996
 local RECIPE_ID = 3275
+local SHIRT, SHIRT_RECIPE_ID = 1000, 3900
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 local AHLEDGER_ROWS = {
@@ -45,6 +46,11 @@ local function start()
 		outputItemID = BOLT,
 		quantityMin = 1,
 		reagentSlotSchematics = { { reagentType = 1, quantityRequired = 2, reagents = { { itemID = LINEN } } } },
+	}
+	game.schematics[SHIRT_RECIPE_ID] = {
+		outputItemID = SHIRT,
+		quantityMin = 1,
+		reagentSlotSchematics = { { reagentType = 1, quantityRequired = 2, reagents = { { itemID = BOLT } } } },
 	}
 	local frame, form, scrollBox = professionFrame(game)
 	local addon = FakeGame.startAddon(t, game)
@@ -241,6 +247,71 @@ t.test('every theme defines the margin colours', function()
 	end
 end)
 
+t.group('crafting nested reagents')
+
+local BOLT_SCHEMATIC = { recipeId = 200, outputItemId = BOLT, quantity = 1, reagents = { { itemId = LINEN, qty = 2 } } }
+local SHIRT_SCHEMATIC =
+	{ recipeId = 300, outputItemId = SHIRT, quantity = 1, reagents = { { itemId = BOLT, qty = 2 } } }
+
+local function nestedView(knownRecipes)
+	local schematics = { [200] = BOLT_SCHEMATIC, [300] = SHIRT_SCHEMATIC }
+	local buy = { [LINEN] = { copper = 10 }, [BOLT] = { copper = 50 } }
+	return ns.CraftingView.new({
+		schematic = function(recipeId)
+			return schematics[recipeId]
+		end,
+		held = function()
+			return 0
+		end,
+		prices = {
+			Context = function()
+				return {}
+			end,
+			Get = function(_, itemId)
+				return buy[itemId]
+			end,
+		},
+		knownRecipes = knownRecipes,
+	})
+end
+
+t.test('the craft window crafts a known reagent; a view without known recipes buys it', function()
+	local known = nestedView(function()
+		return { 200, 300 }
+	end)
+	t.eq(known:Craft(300).reagents[1].source, 'crafted')
+	t.eq(known:Craft(300).cost, 40)
+	t.eq(nestedView(false):Craft(300).reagents[1].source, 'buy', 'the venture forecast opts out')
+end)
+
+t.test("known recipes are the open profession's learned ones", function()
+	local game, addon = start()
+	t.same(addon.wow:KnownRecipeIds(), { RECIPE_ID, SHIRT_RECIPE_ID })
+	game.unlearned = { [RECIPE_ID] = true }
+	t.same(addon.wow:KnownRecipeIds(), { SHIRT_RECIPE_ID })
+	game.env.C_TradeSkillUI.GetAllRecipeIDs = nil
+	t.same(addon.wow:KnownRecipeIds(), {}, 'a client without the API')
+end)
+
+t.test('a crafted reagent gets a detail line', function()
+	local craft = {
+		cost = 40,
+		value = 300,
+		profit = 260,
+		made = 1,
+		margin = 260 / 300,
+		confidence = { level = 'high' },
+		reagents = {
+			{ itemId = BOLT, qty = 2, held = 0, source = 'crafted', craftedUnits = 2 },
+			{ itemId = LINEN, qty = 1, held = 0, source = 'buy' },
+		},
+	}
+	local lines = ns.CraftingView.detailLines(craft, { figures = true })
+	t.eq(lines[4].text, 'Bolt of Linen Cloth × 2 crafted')
+	t.eq(#lines, 4, 'a bought reagent gets none')
+	t.eq(#ns.CraftingView.detailLines(craft, { figures = false }), 0, 'the line is part of the figures')
+end)
+
 t.group('crafting on the profession frame')
 
 t.test('recipe rows get profit text; headers and the setting hide it', function()
@@ -270,6 +341,9 @@ t.test('the selected recipe gets a panel; Plan venture starts one and opens the 
 	end
 	t.truthy(panel and panel:IsShown())
 	t.truthy(linesText(panel.lines):find('Cost'))
+	parts.form:Init({ recipeID = SHIRT_RECIPE_ID })
+	t.truthy(linesText(panel.lines):find('Bolt of Linen Cloth × 2 crafted', 1, true), 'a bolt is cheaper to craft')
+	parts.form:Init({ recipeID = RECIPE_ID })
 	t.truthy(linesText(panel.lines):find(addon.window:Credit(), 1, true), 'the panel credits AHledger')
 	panel.plan:Click()
 	local market = addon.store:Market(MARKET)
