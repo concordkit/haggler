@@ -77,6 +77,10 @@ local function rowText(row)
 	return nil
 end
 
+local function withoutColor(text)
+	return (text:gsub('|c%x%x%x%x%x%x%x%x', ''):gsub('|r', ''))
+end
+
 -- The feature files only load with a started add-on.
 local _, ns = start()
 
@@ -88,7 +92,7 @@ t.test('a row shows profit and margin; low confidence gets a mark and its level'
 		margin = 0.3,
 		confidence = { level = 'high', reasons = {} },
 	})
-	t.eq(text, '+1s 20c · 30%')
+	t.eq(text, ns.theme:Wrap('money.gainStrong', '+1s 20c · 30%'))
 	t.eq(level, nil)
 	text, level = ns.CraftingView.rowText({ profit = -5, confidence = { level = 'low', reasons = {} } })
 	t.eq(text, '? -5c')
@@ -166,6 +170,77 @@ t.test('a schematic becomes a venture recipe', function()
 	t.eq(ns.CraftingView.ventureRecipe({ recipeId = 1 }), nil, 'no output, no venture')
 end)
 
+t.group('crafting margin bands')
+
+local function craftWithMargin(margin)
+	return { cost = 1000, value = 2000, profit = 1000, made = 1, margin = margin, confidence = { level = 'high' } }
+end
+
+t.test('each band edge takes the band above it; under -25% is a loss', function()
+	local cases = {
+		{ -0.5, 'money.loss' },
+		{ -0.26, 'money.loss' },
+		{ -0.25, 'color.state.caution' },
+		{ -0.11, 'color.state.caution' },
+		{ -0.10, 'money.lossTint' },
+		{ -0.01, 'money.lossTint' },
+		{ 0, 'money.gainTint' },
+		{ 0.09, 'money.gainTint' },
+		{ 0.10, 'money.gain' },
+		{ 0.24, 'money.gain' },
+		{ 0.25, 'money.gainStrong' },
+		{ 3, 'money.gainStrong' },
+	}
+	for _, case in ipairs(cases) do
+		t.eq(ns.CraftingView.marginToken(case[1]), case[2], 'margin ' .. case[1])
+	end
+end)
+
+t.test('the band follows the whole percent the row shows', function()
+	t.eq(ns.CraftingView.marginToken(-0.2504), 'color.state.caution', '-25% shown')
+	t.eq(ns.CraftingView.marginToken(0.0996), 'money.gain', '10% shown')
+	t.eq(ns.CraftingView.marginToken(-0.004), 'money.gainTint', '0% shown')
+	t.eq(select(1, ns.CraftingView.rowText(craftWithMargin(-0.10))):find('-10%', 1, true) ~= nil, true)
+end)
+
+t.test('a recipe with no margin stays uncoloured', function()
+	t.eq(ns.CraftingView.marginToken(nil), nil)
+	local text = ns.CraftingView.rowText({ profit = 0, confidence = { level = 'high' } })
+	t.eq(text, '+0c')
+	local lines = ns.CraftingView.detailLines({ cost = 100, value = 0, profit = -100, made = 1 }, { figures = true })
+	t.eq(lines[1].text, 'Cost 1s')
+	t.eq(lines[2].text, 'Value 0c after the cut and deposit risk')
+	t.eq(lines[3].text, 'Profit -1s')
+	t.eq(lines[3].level, 'low', 'a loss with no margin still reads as low')
+end)
+
+t.test('every price of a banded recipe takes its colour, in the row and the detail', function()
+	local wrap = function(text)
+		return ns.theme:Wrap('color.state.caution', text)
+	end
+	local craft = { cost = 1200, value = 1000, profit = -200, made = 2, margin = -0.2, confidence = { level = 'high' } }
+	t.eq(ns.CraftingView.rowText(craft), wrap('-2s · -20%'))
+	local lines = ns.CraftingView.detailLines(craft, { figures = true })
+	t.eq(lines[1].text, 'Cost ' .. wrap('12s') .. ' for 2')
+	t.eq(lines[2].text, 'Value ' .. wrap('10s') .. ' after the cut and deposit risk')
+	t.eq(lines[3].text, 'Profit ' .. wrap('-2s') .. ' · margin ' .. wrap('-20%'))
+	t.eq(lines[3].level, nil, 'the band colour replaces the low level')
+end)
+
+t.test('a loss is red and a low-confidence mark stays outside the colour', function()
+	local craft = { cost = 1000, value = 500, profit = -500, made = 1, margin = -1, confidence = { level = 'low' } }
+	t.eq(ns.CraftingView.rowText(craft), '? ' .. ns.theme:Wrap('money.loss', '-5s · -100%'))
+end)
+
+t.test('every theme defines the margin colours', function()
+	for key in pairs(ns.Tokens.themes) do
+		local theme = ns.Theme.new(ns.Tokens, key)
+		for _, band in ipairs(ns.CraftingView.MARGIN_BANDS) do
+			t.truthy(theme:Color(band.token) ~= ns.Theme.FALLBACK_COLOR, key .. ' ' .. band.token)
+		end
+	end
+end)
+
 t.group('crafting on the profession frame')
 
 t.test('recipe rows get profit text; headers and the setting hide it', function()
@@ -175,7 +250,7 @@ t.test('recipe rows get profit text; headers and the setting hide it', function(
 	game.rowCallback(nil, row, recipeNode(RECIPE_ID))
 	local text = rowText(row)
 	t.truthy(text and text:IsShown())
-	t.truthy(text:GetText():find('^[%+%-?]'))
+	t.truthy(withoutColor(text:GetText()):find('^[%+%-?]'))
 	game.rowCallback(nil, row, recipeNode(nil))
 	t.eq(text:IsShown(), false, 'a recycled row that became a header')
 	addon.host.Module('crafting'):SetSetting('showList', false)

@@ -13,6 +13,8 @@
 	      parts = { figures, share, credit? }; low confidence and its reasons always show; the
 	      credit line shows whenever an AHledger figure went into the craft
 	  CraftingView.ventureRecipe(schematic) -> recipe for Ventures.addCrafts
+	  CraftingView.marginToken(margin)      -> token|nil   the colour of a recipe's prices, by margin band
+	  CraftingView.MARGIN_BANDS             the bands, best first; tune them here
 ]]
 local _, ns = ...
 
@@ -24,8 +26,19 @@ ViewMethods.__index = ViewMethods
 
 local PERCENT = 100
 
+-- A recipe's margin, as the whole percent it shows, takes the first band it reaches; so each
+-- edge belongs to the band above it (-25% is orange, 0% green tint). Best band first.
+CraftingView.MARGIN_BANDS = {
+	{ atLeast = 25, token = 'money.gainStrong' },
+	{ atLeast = 10, token = 'money.gain' },
+	{ atLeast = 0, token = 'money.gainTint' },
+	{ atLeast = -10, token = 'money.lossTint' },
+	{ atLeast = -25, token = 'color.state.caution' },
+	{ atLeast = -math.huge, token = 'money.loss' },
+}
+
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local signedMoney, percentText, sourcesFor
+local signedMoney, percentText, wholePercent, sourcesFor, colorFor
 
 --- @param deps table see the file header
 function CraftingView.new(deps)
@@ -73,7 +86,7 @@ function CraftingView.rowText(craft)
 	local level = craft.confidence and craft.confidence.level
 	local mark = level == 'low' and '? ' or ''
 	local margin = craft.margin and (' · ' .. percentText(craft.margin)) or ''
-	return mark .. signedMoney(craft.profit) .. margin, level ~= 'high' and level or nil
+	return mark .. colorFor(craft, signedMoney(craft.profit) .. margin), level ~= 'high' and level or nil
 end
 
 --- The selected recipe's lines. Low confidence and its reasons show whatever parts are off.
@@ -87,13 +100,15 @@ function CraftingView.detailLines(craft, parts)
 	local money = ns.TooltipLines.money
 	if parts.figures then
 		local perCraft = craft.made and craft.made > 1 and (' for ' .. craft.made) or ''
-		lines[#lines + 1] = { text = 'Cost ' .. money(craft.cost) .. perCraft }
-		lines[#lines + 1] = { text = 'Value ' .. money(craft.value) .. ' after the cut and deposit risk' }
+		local marginText = craft.margin and (' · margin ' .. colorFor(craft, percentText(craft.margin))) or ''
+		lines[#lines + 1] = { text = 'Cost ' .. colorFor(craft, money(craft.cost)) .. perCraft }
 		lines[#lines + 1] = {
-			text = 'Profit ' .. signedMoney(craft.profit) .. (craft.margin and (' · margin ' .. percentText(
-				craft.margin
-			)) or ''),
-			level = craft.profit < 0 and 'low' or nil,
+			text = 'Value ' .. colorFor(craft, money(craft.value)) .. ' after the cut and deposit risk',
+		}
+		lines[#lines + 1] = {
+			text = 'Profit ' .. colorFor(craft, signedMoney(craft.profit)) .. marginText,
+			-- The band colour already tells a loss; without a margin the line still reads low.
+			level = not craft.margin and craft.profit < 0 and 'low' or nil,
 		}
 	end
 	if parts.share and craft.knownShare then
@@ -120,6 +135,22 @@ function CraftingView.detailLines(craft, parts)
 	return lines
 end
 
+--- The token a recipe's prices take, from its margin band.
+--- @param margin number|nil profit / value; nil when a price is missing
+--- @return string|nil token nil leaves the prices uncoloured
+function CraftingView.marginToken(margin)
+	if type(margin) ~= 'number' then
+		return nil
+	end
+	local percent = wholePercent(margin)
+	for _, band in ipairs(CraftingView.MARGIN_BANDS) do
+		if percent >= band.atLeast then
+			return band.token
+		end
+	end
+	return nil
+end
+
 --- A schematic as the recipe a venture plans (Ventures.addCrafts).
 function CraftingView.ventureRecipe(schematic)
 	if type(schematic) ~= 'table' or not schematic.outputItemId then
@@ -141,7 +172,18 @@ function signedMoney(copper)
 end
 
 function percentText(fraction)
-	return string.format('%d%%', math.floor(fraction * PERCENT + (fraction < 0 and -0.5 or 0.5)))
+	return string.format('%d%%', wholePercent(fraction))
+end
+
+-- Rounds half away from zero: -20.4% is -20, not -21.
+function wholePercent(fraction)
+	local percent = math.floor(math.abs(fraction) * PERCENT + 0.5)
+	return fraction < 0 and -percent or percent
+end
+
+function colorFor(craft, text)
+	local token = CraftingView.marginToken(craft.margin)
+	return token and ns.theme:Wrap(token, text) or text
 end
 
 -- One price context a cache generation: every row shares it.
