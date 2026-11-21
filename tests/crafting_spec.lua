@@ -127,10 +127,12 @@ t.test('detail parts switch off, but low confidence and its reasons always show'
 	t.truthy(none[2].text:find('no price for the output'))
 	craft.usesPriceSource = true
 	local credited = ns.CraftingView.detailLines(craft, { credit = 'Prices from AHledger' })
-	t.eq(credited[#credited].text, 'Prices from AHledger', 'an AHledger figure is credited')
+	t.eq(credited[1].text, 'Prices from AHledger', 'an AHledger figure is credited, ahead of the confidence')
+	t.eq(#credited, 3)
 	craft.usesPriceSource = false
 	credited = ns.CraftingView.detailLines(craft, { credit = 'Prices from AHledger' })
-	t.eq(credited[#credited].text:find('AHledger'), nil)
+	t.eq(credited[1].text:find('AHledger'), nil)
+	t.eq(#credited, 2)
 end)
 
 t.test('the ventures tab shows a low forecast confidence and its reasons', function()
@@ -202,10 +204,11 @@ t.test('each band edge takes the band above it; under -25% is a loss', function(
 	end
 end)
 
-t.test('the band follows the whole percent the row shows', function()
-	t.eq(ns.CraftingView.marginToken(-0.2504), 'color.state.caution', '-25% shown')
-	t.eq(ns.CraftingView.marginToken(0.0996), 'money.gain', '10% shown')
-	t.eq(ns.CraftingView.marginToken(-0.004), 'money.gainTint', '0% shown')
+t.test('the band follows the unrounded margin; a loss never takes a gain band', function()
+	t.eq(ns.CraftingView.marginToken(-0.004), 'money.lossTint', 'a loss shown as 0%')
+	t.eq(ns.CraftingView.marginToken(-0.2504), 'money.loss', 'past -25%, shown as -25%')
+	t.eq(ns.CraftingView.marginToken(0.0996), 'money.gainTint', 'short of 10%, shown as 10%')
+	t.eq(ns.CraftingView.marginToken(-0.0001), 'money.lossTint')
 	t.eq(select(1, ns.CraftingView.rowText(craftWithMargin(-0.10))):find('-10%', 1, true) ~= nil, true)
 end)
 
@@ -293,7 +296,7 @@ t.test("known recipes are the open profession's learned ones", function()
 	t.same(addon.wow:KnownRecipeIds(), {}, 'a client without the API')
 end)
 
-t.test('a crafted reagent gets a detail line', function()
+t.test('the crafted reagents share one detail line', function()
 	local craft = {
 		cost = 40,
 		value = 300,
@@ -304,12 +307,43 @@ t.test('a crafted reagent gets a detail line', function()
 		reagents = {
 			{ itemId = BOLT, qty = 2, held = 0, source = 'crafted', craftedUnits = 2 },
 			{ itemId = LINEN, qty = 1, held = 0, source = 'buy' },
+			{ itemId = 77, qty = 1, held = 0, source = 'crafted', craftedUnits = 1 },
 		},
 	}
 	local lines = ns.CraftingView.detailLines(craft, { figures = true })
-	t.eq(lines[4].text, 'Bolt of Linen Cloth × 2 crafted')
-	t.eq(#lines, 4, 'a bought reagent gets none')
+	t.eq(lines[4].text, 'Crafted: Bolt of Linen Cloth × 2, item 77 × 1')
+	t.eq(#lines, 4, 'a bought reagent is not named')
 	t.eq(#ns.CraftingView.detailLines(craft, { figures = false }), 0, 'the line is part of the figures')
+end)
+
+t.test('a full panel with crafted reagents still credits AHledger', function()
+	local reasons = {}
+	for index = 1, 3 do
+		reasons[index] = { code = 'r' .. index, text = 'reason ' .. index }
+	end
+	local craft = {
+		cost = 40,
+		value = 300,
+		profit = 260,
+		made = 1,
+		margin = 260 / 300,
+		knownShare = 0.5,
+		knownCopper = 20,
+		estimatedCopper = 20,
+		usesPriceSource = true,
+		confidence = { level = 'low', reasons = reasons },
+		reagents = {
+			{ itemId = BOLT, qty = 2, held = 0, source = 'crafted', craftedUnits = 2 },
+			{ itemId = 77, qty = 1, held = 0, source = 'crafted', craftedUnits = 1 },
+		},
+	}
+	local lines = ns.CraftingView.detailLines(craft, { figures = true, share = true, credit = 'Prices from AHledger' })
+	local PANEL_LINES = 9
+	local shown = {}
+	for index = 1, PANEL_LINES do
+		shown[#shown + 1] = lines[index] and lines[index].text or ''
+	end
+	t.truthy(table.concat(shown, '\n'):find('Prices from AHledger', 1, true), 'the credit fits the 9-line panel')
 end)
 
 t.group('crafting on the profession frame')
@@ -342,7 +376,7 @@ t.test('the selected recipe gets a panel; Plan venture starts one and opens the 
 	t.truthy(panel and panel:IsShown())
 	t.truthy(linesText(panel.lines):find('Cost'))
 	parts.form:Init({ recipeID = SHIRT_RECIPE_ID })
-	t.truthy(linesText(panel.lines):find('Bolt of Linen Cloth × 2 crafted', 1, true), 'a bolt is cheaper to craft')
+	t.truthy(linesText(panel.lines):find('Crafted: Bolt of Linen Cloth × 2', 1, true), 'a bolt is cheaper to craft')
 	parts.form:Init({ recipeID = RECIPE_ID })
 	t.truthy(linesText(panel.lines):find(addon.window:Credit(), 1, true), 'the panel credits AHledger')
 	panel.plan:Click()

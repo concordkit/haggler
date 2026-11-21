@@ -15,8 +15,9 @@
 	  CraftingView.rowText(craft)          -> text, level|nil   '+1g 20s · 15%' for a list row
 	  CraftingView.detailLines(craft, parts) -> { { text, level? } }
 	      parts = { figures, share, credit? }; low confidence and its reasons always show; the
-	      credit line shows whenever an AHledger figure went into the craft; figures adds a
-	      'Bolt of Linen Cloth × 2 crafted' line for each reagent costed by crafting
+	      credit line shows whenever an AHledger figure went into the craft, ahead of the
+	      confidence lines so a full panel keeps it; figures adds one line naming the
+	      reagents costed by crafting: 'Crafted: Bolt of Linen Cloth × 2, …'
 	  CraftingView.ventureRecipe(schematic) -> recipe for Ventures.addCrafts
 	  CraftingView.marginToken(margin)      -> token|nil   the colour of a recipe's prices, by margin band
 	  CraftingView.MARGIN_BANDS             the bands, best first; tune them here
@@ -31,19 +32,20 @@ ViewMethods.__index = ViewMethods
 
 local PERCENT = 100
 
--- A recipe's margin, as the whole percent it shows, takes the first band it reaches; so each
--- edge belongs to the band above it (-25% is orange, 0% green tint). Best band first.
+-- A recipe's margin (profit / value, unrounded) takes the first band it reaches; so each edge
+-- belongs to the band above it (-25% is orange, 0% green tint), and a loss too small to show
+-- as -1% still reads as a loss. Best band first.
 CraftingView.MARGIN_BANDS = {
-	{ atLeast = 25, token = 'money.gainStrong' },
-	{ atLeast = 10, token = 'money.gain' },
+	{ atLeast = 0.25, token = 'money.gainStrong' },
+	{ atLeast = 0.10, token = 'money.gain' },
 	{ atLeast = 0, token = 'money.gainTint' },
-	{ atLeast = -10, token = 'money.lossTint' },
-	{ atLeast = -25, token = 'color.state.caution' },
+	{ atLeast = -0.10, token = 'money.lossTint' },
+	{ atLeast = -0.25, token = 'color.state.caution' },
 	{ atLeast = -math.huge, token = 'money.loss' },
 }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local signedMoney, percentText, wholePercent, sourcesFor, colorFor, recipeFinder, craftedLines, itemName
+local signedMoney, percentText, wholePercent, sourcesFor, colorFor, recipeFinder, craftedLine, itemName
 
 --- @param deps table see the file header
 function CraftingView.new(deps)
@@ -116,9 +118,7 @@ function CraftingView.detailLines(craft, parts)
 			-- The band colour already tells a loss; without a margin the line still reads low.
 			level = not craft.margin and craft.profit < 0 and 'low' or nil,
 		}
-		for _, line in ipairs(craftedLines(craft)) do
-			lines[#lines + 1] = line
-		end
+		lines[#lines + 1] = craftedLine(craft)
 	end
 	if parts.share and craft.knownShare then
 		lines[#lines + 1] = {
@@ -130,16 +130,17 @@ function CraftingView.detailLines(craft, parts)
 			),
 		}
 	end
+	if craft.usesPriceSource and parts.credit then
+		-- 'high' draws the line muted, like the window footer's credit. It goes before the
+		-- confidence lines: the panel drops what does not fit, and the credit must not be it.
+		lines[#lines + 1] = { text = parts.credit, level = 'high' }
+	end
 	local confidence = craft.confidence or {}
 	if confidence.level and confidence.level ~= 'high' then
 		lines[#lines + 1] = { text = 'Confidence ' .. confidence.level, level = confidence.level }
 		for _, reason in ipairs(confidence.reasons or {}) do
 			lines[#lines + 1] = { text = '  ' .. (reason.text or tostring(reason)), level = confidence.level }
 		end
-	end
-	if craft.usesPriceSource and parts.credit then
-		-- 'high' draws the line muted, like the window footer's credit.
-		lines[#lines + 1] = { text = parts.credit, level = 'high' }
 	end
 	return lines
 end
@@ -151,9 +152,8 @@ function CraftingView.marginToken(margin)
 	if type(margin) ~= 'number' then
 		return nil
 	end
-	local percent = wholePercent(margin)
 	for _, band in ipairs(CraftingView.MARGIN_BANDS) do
-		if percent >= band.atLeast then
+		if margin >= band.atLeast then
 			return band.token
 		end
 	end
@@ -190,15 +190,15 @@ function wholePercent(fraction)
 	return fraction < 0 and -percent or percent
 end
 
-function craftedLines(craft)
-	local lines = {}
+-- One line for every reagent costed by crafting, so a nested recipe costs the panel one row.
+function craftedLine(craft)
+	local parts = {}
 	for _, reagent in ipairs(type(craft.reagents) == 'table' and craft.reagents or {}) do
 		if reagent.source == 'crafted' and reagent.craftedUnits then
-			lines[#lines + 1] =
-				{ text = string.format('%s × %d crafted', itemName(reagent.itemId), reagent.craftedUnits) }
+			parts[#parts + 1] = string.format('%s × %d', itemName(reagent.itemId), reagent.craftedUnits)
 		end
 	end
-	return lines
+	return #parts > 0 and { text = 'Crafted: ' .. table.concat(parts, ', ') } or nil
 end
 
 function itemName(itemId)
@@ -237,8 +237,9 @@ function sourcesFor(view, valuation, crafts)
 	}
 end
 
--- The known recipe that makes an item, from one pass over the known recipes a cache generation.
--- Schematics never change, so they are kept across generations.
+-- The known recipe that makes an item, from one pass over the known recipes a cache generation;
+-- when two make the same item, the first in the client's order wins. Schematics never change,
+-- so they are kept across generations.
 function recipeFinder(view)
 	local knownRecipes = view.deps.knownRecipes
 	if knownRecipes == false then

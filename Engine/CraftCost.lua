@@ -134,7 +134,9 @@ function missingCost(itemId, units, sources, chain)
 		return bought
 	end
 	local crafted = craftedCost(itemId, units, schematic, sources, chain)
-	local isCraftCheaper = crafted.isPriced and (not bought.isPriced or crafted.copper < bought.copper)
+	-- A recipe with no reagents the engine can read would cost nothing and always win.
+	local isCraftable = #crafted.craft.reagents > 0
+	local isCraftCheaper = isCraftable and crafted.isPriced and (not bought.isPriced or crafted.copper < bought.copper)
 	return isCraftCheaper and crafted or bought
 end
 

@@ -169,3 +169,16 @@ t.test('paid valuation reaches into the sub-craft', function()
 	t.eq(craft.cost, 26)
 	t.eq(craft.knownCopper, 6, 'the paid linen stays known')
 end)
+
+t.test('a known recipe with no reagents is not craftable; the reagent is bought', function()
+	local emptyBolt = { recipeId = 201, outputItemId = BOLT, quantity = 1, reagents = {} }
+	local craft = CraftCost.recipe(
+		SHIRT_RECIPE,
+		sources({ buy = { [BOLT] = 50 }, value = 300, recipes = { [BOLT] = emptyBolt } })
+	)
+	t.eq(craft.reagents[1].source, 'buy')
+	t.eq(craft.cost, 100)
+	local unpriced = CraftCost.recipe(SHIRT_RECIPE, sources({ value = 300, recipes = { [BOLT] = emptyBolt } }))
+	t.eq(unpriced.reagents[1].source ~= 'crafted', true, 'no free craft stands in for a missing price')
+	t.eq(unpriced.isComplete, false)
+end)
