@@ -258,6 +258,8 @@ function forecastOf(venture, ctx)
 		valuation = function()
 			return venture.valuation
 		end,
+		-- A venture's queue buys its reagents, so the forecast never costs one by crafting it.
+		knownRecipes = false,
 	})
 	return ns.Ventures.forecast(venture, {
 		valueOf = function(itemId, qty)

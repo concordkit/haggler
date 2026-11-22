@@ -9,6 +9,8 @@ local addAuctionHouseActions, addTrackingApi
 
 -- Widgets ---------------------------------------------------------------------------------
 
+local frameChildrenOf = setmetatable({}, { __mode = 'k' })
+
 --- A region that records what the add-on did to it: points, size, text, texture, colour,
 --- shown state, scripts and children. Only methods the client really has are defined, so a
 --- typo fails the test instead of passing silently.
@@ -27,6 +29,13 @@ function FakeGame.newWidget(kind, parent, template)
 	}
 	-- A real region keeps its C object at [0]; adapters tell a region from a class table by it.
 	widget[0] = newproxy(false)
+	-- Child frames, apart from the regions in children, as GetChildren and GetRegions split them.
+	-- Kept off the widget so a deep compare of a widget never walks a parent cycle.
+	frameChildrenOf[widget] = {}
+	local siblings = frameChildrenOf[parent]
+	if siblings and kind ~= 'Texture' and kind ~= 'FontString' then
+		siblings[#siblings + 1] = widget
+	end
 	function widget:SetPoint(...)
 		self.points[#self.points + 1] = { ... }
 	end
@@ -45,6 +54,16 @@ function FakeGame.newWidget(kind, parent, template)
 	end
 	function widget:GetRight()
 		return self.right
+	end
+	function widget:GetTop()
+		return self.top
+	end
+	function widget:GetBottom()
+		return self.bottom
+	end
+	-- What a test sets in scale, else 1.
+	function widget:GetEffectiveScale()
+		return self.scale or 1
 	end
 	function widget:SetSize(width, height)
 		self.width, self.height = width, height
@@ -85,6 +104,11 @@ function FakeGame.newWidget(kind, parent, template)
 	end
 	function widget:GetAlpha()
 		return self.alpha
+	end
+	-- Like the client, a region's drawn alpha is its own times every parent's.
+	function widget:GetEffectiveAlpha()
+		local parentAlpha = self.parent and self.parent.GetEffectiveAlpha and self.parent:GetEffectiveAlpha() or 1
+		return (self.alpha or 1) * parentAlpha
 	end
 	function widget:IsShown()
 		return self.isShown
@@ -156,6 +180,12 @@ function FakeGame.newWidget(kind, parent, template)
 	end
 	function widget:SetClampedToScreen(isClamped)
 		self.isClampedToScreen = isClamped
+	end
+	function widget:GetChildren()
+		return unpack(frameChildrenOf[self])
+	end
+	function widget:GetRegions()
+		return unpack(self.children)
 	end
 	function widget:GetScript(script)
 		return self.scripts[script]
@@ -409,7 +439,8 @@ end
 --- game.owned = { { auctionID, itemKey, quantity, status } }; game.mail = { { subject, money,
 --- daysLeft, invoice = { type, itemName, bid, deposit, cut, count }, items = { { itemId, count } } } };
 --- game.merchant = { [index] = { itemId, price, stack, hasExtendedCost } }; game.itemCounts;
---- game.schematics = { [recipeId] = schematic }; game.cursorItem; game.isMerchantOpen.
+--- game.schematics = { [recipeId] = schematic }, all learned unless game.unlearned[recipeId];
+--- game.cursorItem; game.isMerchantOpen.
 function addTrackingApi(game, env)
 	--- Hooks other than the tracking module's (Features/Tracking.lua), which every start installs.
 	function game:HookCount()
@@ -521,6 +552,20 @@ function addTrackingApi(game, env)
 	env.C_TradeSkillUI = {
 		GetRecipeSchematic = function(recipeId)
 			return game.schematics[recipeId]
+		end,
+		GetAllRecipeIDs = function()
+			local recipeIds = {}
+			for recipeId in pairs(game.schematics) do
+				recipeIds[#recipeIds + 1] = recipeId
+			end
+			table.sort(recipeIds)
+			return recipeIds
+		end,
+		GetRecipeInfo = function(recipeId)
+			if not game.schematics[recipeId] then
+				return nil
+			end
+			return { recipeID = recipeId, learned = not (game.unlearned and game.unlearned[recipeId]) }
 		end,
 		CraftRecipe = function(...)
 			record('CraftRecipe', ...)
@@ -944,6 +989,7 @@ FakeGame.FEATURE_FILES = {
 	'Features/Tracking.lua',
 	'Features/Sessions.lua',
 	'Features/Crafting/View.lua',
+	'Features/Crafting/Anchor.lua',
 	'Features/Crafting/Crafting.lua',
 	'Features/TopBar/TopBar.lua',
 	'Features/Window/Window.lua',

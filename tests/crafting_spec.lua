@@ -3,6 +3,7 @@ local FakeGame = require('tests.fake_game')
 
 local LINEN, BOLT = 2589, 2996
 local RECIPE_ID = 3275
+local SHIRT, SHIRT_RECIPE_ID = 1000, 3900
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 local AHLEDGER_ROWS = {
@@ -46,6 +47,11 @@ local function start()
 		quantityMin = 1,
 		reagentSlotSchematics = { { reagentType = 1, quantityRequired = 2, reagents = { { itemID = LINEN } } } },
 	}
+	game.schematics[SHIRT_RECIPE_ID] = {
+		outputItemID = SHIRT,
+		quantityMin = 1,
+		reagentSlotSchematics = { { reagentType = 1, quantityRequired = 2, reagents = { { itemID = BOLT } } } },
+	}
 	local frame, form, scrollBox = professionFrame(game)
 	local addon = FakeGame.startAddon(t, game)
 	game:Fire('TRADE_SKILL_SHOW')
@@ -77,6 +83,10 @@ local function rowText(row)
 	return nil
 end
 
+local function withoutColor(text)
+	return (text:gsub('|c%x%x%x%x%x%x%x%x', ''):gsub('|r', ''))
+end
+
 -- The feature files only load with a started add-on.
 local _, ns = start()
 
@@ -88,7 +98,7 @@ t.test('a row shows profit and margin; low confidence gets a mark and its level'
 		margin = 0.3,
 		confidence = { level = 'high', reasons = {} },
 	})
-	t.eq(text, '+1s 20c · 30%')
+	t.eq(text, ns.theme:Wrap('money.gainStrong', '+1s 20c · 30%'))
 	t.eq(level, nil)
 	text, level = ns.CraftingView.rowText({ profit = -5, confidence = { level = 'low', reasons = {} } })
 	t.eq(text, '? -5c')
@@ -117,10 +127,12 @@ t.test('detail parts switch off, but low confidence and its reasons always show'
 	t.truthy(none[2].text:find('no price for the output'))
 	craft.usesPriceSource = true
 	local credited = ns.CraftingView.detailLines(craft, { credit = 'Prices from AHledger' })
-	t.eq(credited[#credited].text, 'Prices from AHledger', 'an AHledger figure is credited')
+	t.eq(credited[1].text, 'Prices from AHledger', 'an AHledger figure is credited, ahead of the confidence')
+	t.eq(#credited, 3)
 	craft.usesPriceSource = false
 	credited = ns.CraftingView.detailLines(craft, { credit = 'Prices from AHledger' })
-	t.eq(credited[#credited].text:find('AHledger'), nil)
+	t.eq(credited[1].text:find('AHledger'), nil)
+	t.eq(#credited, 2)
 end)
 
 t.v2test('the ventures tab shows a low forecast confidence and its reasons', function()
@@ -166,6 +178,174 @@ t.test('a schematic becomes a venture recipe', function()
 	t.eq(ns.CraftingView.ventureRecipe({ recipeId = 1 }), nil, 'no output, no venture')
 end)
 
+t.group('crafting margin bands')
+
+local function craftWithMargin(margin)
+	return { cost = 1000, value = 2000, profit = 1000, made = 1, margin = margin, confidence = { level = 'high' } }
+end
+
+t.test('each band edge takes the band above it; under -25% is a loss', function()
+	local cases = {
+		{ -0.5, 'money.loss' },
+		{ -0.26, 'money.loss' },
+		{ -0.25, 'color.state.caution' },
+		{ -0.11, 'color.state.caution' },
+		{ -0.10, 'money.lossTint' },
+		{ -0.01, 'money.lossTint' },
+		{ 0, 'money.gainTint' },
+		{ 0.09, 'money.gainTint' },
+		{ 0.10, 'money.gain' },
+		{ 0.24, 'money.gain' },
+		{ 0.25, 'money.gainStrong' },
+		{ 3, 'money.gainStrong' },
+	}
+	for _, case in ipairs(cases) do
+		t.eq(ns.CraftingView.marginToken(case[1]), case[2], 'margin ' .. case[1])
+	end
+end)
+
+t.test('the band follows the unrounded margin; a loss never takes a gain band', function()
+	t.eq(ns.CraftingView.marginToken(-0.004), 'money.lossTint', 'a loss shown as 0%')
+	t.eq(ns.CraftingView.marginToken(-0.2504), 'money.loss', 'past -25%, shown as -25%')
+	t.eq(ns.CraftingView.marginToken(0.0996), 'money.gainTint', 'short of 10%, shown as 10%')
+	t.eq(ns.CraftingView.marginToken(-0.0001), 'money.lossTint')
+	t.eq(select(1, ns.CraftingView.rowText(craftWithMargin(-0.10))):find('-10%', 1, true) ~= nil, true)
+end)
+
+t.test('a recipe with no margin stays uncoloured', function()
+	t.eq(ns.CraftingView.marginToken(nil), nil)
+	local text = ns.CraftingView.rowText({ profit = 0, confidence = { level = 'high' } })
+	t.eq(text, '+0c')
+	local lines = ns.CraftingView.detailLines({ cost = 100, value = 0, profit = -100, made = 1 }, { figures = true })
+	t.eq(lines[1].text, 'Cost 1s')
+	t.eq(lines[2].text, 'Value 0c after the cut and deposit risk')
+	t.eq(lines[3].text, 'Profit -1s')
+	t.eq(lines[3].level, 'low', 'a loss with no margin still reads as low')
+end)
+
+t.test('every price of a banded recipe takes its colour, in the row and the detail', function()
+	local wrap = function(text)
+		return ns.theme:Wrap('color.state.caution', text)
+	end
+	local craft = { cost = 1200, value = 1000, profit = -200, made = 2, margin = -0.2, confidence = { level = 'high' } }
+	t.eq(ns.CraftingView.rowText(craft), wrap('-2s · -20%'))
+	local lines = ns.CraftingView.detailLines(craft, { figures = true })
+	t.eq(lines[1].text, 'Cost ' .. wrap('12s') .. ' for 2')
+	t.eq(lines[2].text, 'Value ' .. wrap('10s') .. ' after the cut and deposit risk')
+	t.eq(lines[3].text, 'Profit ' .. wrap('-2s') .. ' · margin ' .. wrap('-20%'))
+	t.eq(lines[3].level, nil, 'the band colour replaces the low level')
+end)
+
+t.test('a loss is red and a low-confidence mark stays outside the colour', function()
+	local craft = { cost = 1000, value = 500, profit = -500, made = 1, margin = -1, confidence = { level = 'low' } }
+	t.eq(ns.CraftingView.rowText(craft), '? ' .. ns.theme:Wrap('money.loss', '-5s · -100%'))
+end)
+
+t.test('every theme defines the margin colours', function()
+	for key in pairs(ns.Tokens.themes) do
+		local theme = ns.Theme.new(ns.Tokens, key)
+		for _, band in ipairs(ns.CraftingView.MARGIN_BANDS) do
+			t.truthy(theme:Color(band.token) ~= ns.Theme.FALLBACK_COLOR, key .. ' ' .. band.token)
+		end
+	end
+end)
+
+t.group('crafting nested reagents')
+
+local BOLT_SCHEMATIC = { recipeId = 200, outputItemId = BOLT, quantity = 1, reagents = { { itemId = LINEN, qty = 2 } } }
+local SHIRT_SCHEMATIC =
+	{ recipeId = 300, outputItemId = SHIRT, quantity = 1, reagents = { { itemId = BOLT, qty = 2 } } }
+
+local function nestedView(knownRecipes)
+	local schematics = { [200] = BOLT_SCHEMATIC, [300] = SHIRT_SCHEMATIC }
+	local buy = { [LINEN] = { copper = 10 }, [BOLT] = { copper = 50 } }
+	return ns.CraftingView.new({
+		schematic = function(recipeId)
+			return schematics[recipeId]
+		end,
+		held = function()
+			return 0
+		end,
+		prices = {
+			Context = function()
+				return {}
+			end,
+			Get = function(_, itemId)
+				return buy[itemId]
+			end,
+		},
+		knownRecipes = knownRecipes,
+	})
+end
+
+t.test('the craft window crafts a known reagent; a view without known recipes buys it', function()
+	local known = nestedView(function()
+		return { 200, 300 }
+	end)
+	t.eq(known:Craft(300).reagents[1].source, 'crafted')
+	t.eq(known:Craft(300).cost, 40)
+	t.eq(nestedView(false):Craft(300).reagents[1].source, 'buy', 'the venture forecast opts out')
+end)
+
+t.test("known recipes are the open profession's learned ones", function()
+	local game, addon = start()
+	t.same(addon.wow:KnownRecipeIds(), { RECIPE_ID, SHIRT_RECIPE_ID })
+	game.unlearned = { [RECIPE_ID] = true }
+	t.same(addon.wow:KnownRecipeIds(), { SHIRT_RECIPE_ID })
+	game.env.C_TradeSkillUI.GetAllRecipeIDs = nil
+	t.same(addon.wow:KnownRecipeIds(), {}, 'a client without the API')
+end)
+
+t.test('the crafted reagents share one detail line', function()
+	local craft = {
+		cost = 40,
+		value = 300,
+		profit = 260,
+		made = 1,
+		margin = 260 / 300,
+		confidence = { level = 'high' },
+		reagents = {
+			{ itemId = BOLT, qty = 2, held = 0, source = 'crafted', craftedUnits = 2 },
+			{ itemId = LINEN, qty = 1, held = 0, source = 'buy' },
+			{ itemId = 77, qty = 1, held = 0, source = 'crafted', craftedUnits = 1 },
+		},
+	}
+	local lines = ns.CraftingView.detailLines(craft, { figures = true })
+	t.eq(lines[4].text, 'Crafted: Bolt of Linen Cloth × 2, item 77 × 1')
+	t.eq(#lines, 4, 'a bought reagent is not named')
+	t.eq(#ns.CraftingView.detailLines(craft, { figures = false }), 0, 'the line is part of the figures')
+end)
+
+t.test('a full panel with crafted reagents still credits AHledger', function()
+	local reasons = {}
+	for index = 1, 3 do
+		reasons[index] = { code = 'r' .. index, text = 'reason ' .. index }
+	end
+	local craft = {
+		cost = 40,
+		value = 300,
+		profit = 260,
+		made = 1,
+		margin = 260 / 300,
+		knownShare = 0.5,
+		knownCopper = 20,
+		estimatedCopper = 20,
+		usesPriceSource = true,
+		confidence = { level = 'low', reasons = reasons },
+		reagents = {
+			{ itemId = BOLT, qty = 2, held = 0, source = 'crafted', craftedUnits = 2 },
+			{ itemId = 77, qty = 1, held = 0, source = 'crafted', craftedUnits = 1 },
+		},
+	}
+	local lines = ns.CraftingView.detailLines(craft, { figures = true, share = true, credit = 'Prices from AHledger' })
+	local PANEL_LINES = 9
+	local shown = {}
+	for index = 1, PANEL_LINES do
+		shown[#shown + 1] = lines[index] and lines[index].text or ''
+	end
+	t.truthy(table.concat(shown, '\n'):find('Prices from AHledger', 1, true), 'the credit fits the 9-line panel')
+end)
+
 t.group('crafting on the profession frame')
 
 t.test('recipe rows get profit text; headers and the setting hide it', function()
@@ -175,7 +355,7 @@ t.test('recipe rows get profit text; headers and the setting hide it', function(
 	game.rowCallback(nil, row, recipeNode(RECIPE_ID))
 	local text = rowText(row)
 	t.truthy(text and text:IsShown())
-	t.truthy(text:GetText():find('^[%+%-?]'))
+	t.truthy(withoutColor(text:GetText()):find('^[%+%-?]'))
 	game.rowCallback(nil, row, recipeNode(nil))
 	t.eq(text:IsShown(), false, 'a recycled row that became a header')
 	addon.host.Module('crafting'):SetSetting('showList', false)
@@ -195,6 +375,9 @@ t.test('the selected recipe gets a panel; Plan venture starts one and opens the 
 	end
 	t.truthy(panel and panel:IsShown())
 	t.truthy(linesText(panel.lines):find('Cost'))
+	parts.form:Init({ recipeID = SHIRT_RECIPE_ID })
+	t.truthy(linesText(panel.lines):find('Crafted: Bolt of Linen Cloth × 2', 1, true), 'a bolt is cheaper to craft')
+	parts.form:Init({ recipeID = RECIPE_ID })
 	t.truthy(linesText(panel.lines):find(addon.window:Credit(), 1, true), 'the panel credits AHledger')
 	if t.isV1Only then
 		t.eq(panel.plan, nil, 'no Plan venture button without the V2 planner')
@@ -218,6 +401,126 @@ t.test('the selected recipe gets a panel; Plan venture starts one and opens the 
 	t.eq(venture.closeReason, 'manual')
 	t.truthy(linesText(ventures.lines):find('closed by hand'))
 	t.same(addon.errors, {})
+end)
+
+-- Screen edges for a fake frame: the client reports them once the frame is laid out.
+local function placeAt(widget, left, right, top, bottom)
+	widget.left, widget.right, widget.top, widget.bottom = left, right, top, bottom
+	return widget
+end
+
+local function craftingPanel(game, hostFrame)
+	for _, frame in ipairs(game.createdFrames) do
+		if frame.parent == hostFrame and frame.lines then
+			return frame
+		end
+	end
+	return nil
+end
+
+-- A profession frame laid out on a 1600-wide screen, its recipe selected; tabs(frame) adds the side column.
+local function panelBeside(frameLeft, frameRight, tabs)
+	local game, addon, parts = start()
+	placeAt(game.env.UIParent, 0, 1600, 900, 0)
+	placeAt(parts.frame, frameLeft, frameRight, 800, 200)
+	if tabs then
+		tabs(parts.frame)
+	end
+	parts.form:Init({ recipeID = RECIPE_ID })
+	return craftingPanel(game, parts.frame), parts.frame, addon, game
+end
+
+-- A point with its relative frame named, so a mismatch never deep-compares two frames.
+local function pointOf(region, relativeName, relativeFrame)
+	local point, relativeTo, relativePoint, x, y = region:GetPoint(1)
+	return { point, relativeTo == relativeFrame and relativeName or tostring(relativeTo), relativePoint, x, y }
+end
+
+local function sideTab(parent, left, right, top)
+	return placeAt(FakeGame.newWidget('CheckButton', parent), left, right, top, top - 44)
+end
+
+t.test('the panel sits right of the side tab column, measured from the frames', function()
+	local panel, frame, addon = panelBeside(400, 1000, function(hostFrame)
+		sideTab(hostFrame, 997, 1040, 760)
+		sideTab(hostFrame, 997, 1040, 710)
+		-- The gamepad hint under the tabs, a region of a holder that spans the whole frame.
+		local holder = placeAt(FakeGame.newWidget('Frame', hostFrame), 400, 1000, 800, 200)
+		placeAt(holder:CreateTexture(nil, 'ARTWORK'), 1000, 1044, 660, 640)
+	end)
+	t.truthy(panel and panel:IsShown())
+	t.same(
+		pointOf(panel, 'frame', frame),
+		{ 'TOPLEFT', 'frame', 'TOPRIGHT', 52, 0 },
+		'tabs end at 1044, then the 8 gap'
+	)
+	t.eq(#panel.points, 1)
+	t.eq(panel.isClampedToScreen, true)
+	t.same(addon.errors, {})
+end)
+
+t.test('without side tabs the panel sits at the frame edge; hidden tabs and wide panels do not count', function()
+	local panel, frame = panelBeside(400, 1000, function(hostFrame)
+		sideTab(hostFrame, 997, 1040, 760):Hide()
+		placeAt(FakeGame.newWidget('Frame', hostFrame), 1004, 1304, 800, 200)
+		placeAt(FakeGame.newWidget('Frame', hostFrame), 1004, 1040, 1200, 1000)
+	end)
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 8, 0 })
+end)
+
+t.test('with no room on the right the panel flips left of the frame', function()
+	local panel, frame = panelBeside(800, 1400, function(hostFrame)
+		sideTab(hostFrame, 1397, 1440, 760)
+	end)
+	t.same(pointOf(panel, 'frame', frame), { 'TOPRIGHT', 'frame', 'TOPLEFT', -8, 0 })
+end)
+
+t.test('with no room on either side the panel stays right of the tabs, clamped to the screen', function()
+	local panel, frame = panelBeside(100, 1500)
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 8, 0 })
+	t.eq(panel.isClampedToScreen, true)
+end)
+
+t.test('a scaled profession frame measures in screen pixels', function()
+	local panel, frame = panelBeside(400, 1000, function(hostFrame)
+		hostFrame.scale = 0.5
+		sideTab(hostFrame, 997, 1040, 760).scale = 0.5
+	end)
+	-- 40 frame units past the edge, at half scale on a screen at scale 1: offsets stay in frame units.
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 })
+end)
+
+t.test('tabs that show or appear after the first paint move the panel', function()
+	local lateTab
+	local panel, frame, addon, game = panelBeside(400, 1000, function(hostFrame)
+		lateTab = sideTab(hostFrame, 997, 1040, 760)
+		lateTab:Hide()
+	end)
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 8, 0 })
+	lateTab:Show()
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 }, 'a hidden tab shows')
+	sideTab(frame, 997, 1060, 700)
+	frame:Hide()
+	frame:Show()
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 68, 0 }, 'the frame shows with a new tab')
+	placeAt(frame, 400, 1020, 800, 200)
+	frame.scripts.OnSizeChanged(frame)
+	game:RunFrames()
+	t.same(pointOf(panel, 'frame', frame), { 'TOPLEFT', 'frame', 'TOPRIGHT', 48, 0 }, 'the frame resizes')
+	t.same(addon.errors, {})
+end)
+
+t.test('the panel keeps to the 8-point grid', function()
+	local panel = panelBeside(400, 1000)
+	t.eq(panel.width % 8, 0, 'width on the grid')
+	t.eq(panel.height % 8, 0, 'height on the grid')
+	if t.isV1Only then
+		t.eq(panel.plan, nil, 'no Plan venture button without the planner')
+		return
+	end
+	t.same(pointOf(panel.plan, 'panel', panel), { 'BOTTOMLEFT', 'panel', 'BOTTOMLEFT', 8, 8 })
 end)
 
 t.group('ledger tab')

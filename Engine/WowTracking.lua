@@ -16,6 +16,7 @@
 	  MerchantItem(index)            { itemId, price, stack, hasExtendedCost } | nil
 	  IsMerchantOpen()
 	  RecipeSchematic(recipeId)      { recipeId, outputItemId, quantity, reagents = { { itemId, qty } } } | nil
+	  KnownRecipeIds()               the open profession's learned recipe ids, {} when it cannot say
 	  CursorItemId()                 the item on the cursor | nil
 	  HookTable(name, method, fn)    post-hooks a method of a global table (C_AuctionHouse...)
 	  ResetTimes(now)                { daily, weekly, localDay, localWeek } unix seconds of the last
@@ -289,6 +290,24 @@ function Methods:RecipeSchematic(recipeId)
 		quantity = isWholePositive(schematic.quantityMin) and schematic.quantityMin or 1,
 		reagents = basicReagents(schematic.reagentSlotSchematics, basic),
 	}
+end
+
+--- The open profession's learned recipes (C_TradeSkillUI.GetAllRecipeIDs and GetRecipeInfo).
+--- @return number[] recipe ids, {} when no profession is open or the client cannot say
+function Methods:KnownRecipeIds()
+	local tradeSkill = self.env.C_TradeSkillUI
+	local recipeIds = tradeSkill and call(tradeSkill.GetAllRecipeIDs)
+	if type(recipeIds) ~= 'table' then
+		return {}
+	end
+	local known = {}
+	for _, recipeId in ipairs(recipeIds) do
+		local info = isWholePositive(recipeId) and call(tradeSkill.GetRecipeInfo, recipeId)
+		if type(info) == 'table' and info.learned == true then
+			known[#known + 1] = recipeId
+		end
+	end
+	return known
 end
 
 --- The item on the cursor, or nil.
