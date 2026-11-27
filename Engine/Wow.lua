@@ -38,7 +38,7 @@ local ITEM_TOOLTIP_NAMES = { 'GameTooltip', 'ItemRefTooltip', 'ShoppingTooltip1'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local dispatchEvent, itemIdFromLink, itemIdFromTooltip, stackCountFromOwner, timeLeftBand, isSecret
-local isInCombat, isBnetFriendGuid
+local isInCombat, isBnetFriendGuid, serverIdFromGuid
 
 local WowMethods = {}
 WowMethods.__index = WowMethods
@@ -102,17 +102,23 @@ function WowMethods:CachedItemInfo(itemId)
 	return self:ItemInfo(itemId)
 end
 
---- The player's realm, faction and region, as the market key needs them.
---- @return table { name, realm, faction, region }
+--- The player's name, realm, faction and region, as the market and character keys need them.
+--- realm is the client's name for it, '' when the client gives none (Forever build 71037 on);
+--- server is the server number in the player's GUID, nil before the client knows the character.
+--- Store:ResolveRealm and Store:CharacterKey make up for a missing realm name.
+--- @return table { name, realm, faction, region, server }
 function WowMethods:Player()
 	local env = self.env
+	local name = env.UnitName('player')
 	return {
-		name = env.UnitName('player'),
+		-- Until the client knows the character it answers UNKNOWNOBJECT ("Unknown").
+		name = name ~= env.UNKNOWNOBJECT and name or nil,
 		-- GetRealmName keeps the spaces the ruleset words need ("Wild Growth RP PvP"); the
 		-- normalized name drops them, as AHledger's realm parsing does not.
 		realm = env.GetRealmName(),
 		faction = env.UnitFactionGroup('player'),
 		region = REGION_SLUGS[env.GetCurrentRegion and env.GetCurrentRegion() or 1] or 'us',
+		server = serverIdFromGuid(env.UnitGUID and env.UnitGUID('player') or nil),
 	}
 end
 
@@ -124,6 +130,20 @@ end
 --- @return any
 function WowMethods:AHledgerAPI()
 	return self.env.AHledgerAPI
+end
+
+--- The market AHledger prices for this character (AHledgerAPI.GetMarket), or nil. AHledger reads
+--- the realm in ways Haggler cannot (its own memory, /ahl realm), so it knows the ruleset when the
+--- client gives no realm name. It is also the market pinned in AHledger's options, which is one
+--- setting for the whole account; callers check its faction and region.
+--- @return string|nil
+function WowMethods:AHledgerMarket()
+	local api = self.env.AHledgerAPI
+	if type(api) ~= 'table' or type(api.GetMarket) ~= 'function' then
+		return nil
+	end
+	local ok, market = pcall(api.GetMarket)
+	return ok and type(market) == 'string' and market or nil
 end
 
 --- AHledger's own settings table (AHledgerDB.settings) for reading only; nil when AHledger has
@@ -1024,6 +1044,12 @@ function isBnetFriendGuid(env, guid)
 		end
 	end
 	return false
+end
+
+-- The server number in a player GUID ("Player-6928-00A1AEB0" -> 6928), or nil.
+function serverIdFromGuid(guid)
+	local id = type(guid) == 'string' and tonumber(guid:match('^Player%-(%d+)%-')) or nil
+	return id and id > 0 and id or nil
 end
 
 return Wow

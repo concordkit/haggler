@@ -255,10 +255,12 @@ t.test('starting with no realm name leaves no module failing', function()
 end)
 
 t.test("a character's points saved under its realm name keep resolving once the name is gone", function()
-	local game = FakeGame.new({ now = MARCH_29 + 15 * 3600 })
-	game.savedDb = { sessions = { ['Eilu-' .. SAVED_REALM] = { resetAt = 123 } } }
-	game.savedDb.settings = { sessions = { mode = 'manual' } }
-	local _, addon = startRealmless(nil, game)
+	local game, addon = startRealmless(function(started)
+		started.store:Settings().sessions = { mode = 'manual' }
+		started.store.db.sessions['Eilu-' .. SAVED_REALM] = { resetAt = 123 }
+	end)
 	t.same(addon.errors, {})
 	t.eq((addon.sessions:Start()), 123)
+	t.eq(game.savedCharDb.realm, SAVED_REALM, 'remembered for this character')
+	t.eq(game.savedDb.sessions['Eilu-'], nil, 'no "Name-" key')
 end)

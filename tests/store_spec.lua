@@ -260,3 +260,73 @@ t.test('rule ids sort without throwing when a saved rule lost its name', functio
 	t.eq(#ids, 5)
 	t.eq(ids[5], 'nameless', 'a nameless rule sorts by its id')
 end)
+
+t.group('realm and character key with no realm name from the client')
+
+local SAVED_REALM = 'CAMWOW EU5 Realm 3 PvE'
+
+local function realmless(fields)
+	local player = { name = 'Eilu', realm = '', faction = 'Horde', region = 'eu', server = 6928 }
+	for key, value in pairs(fields or {}) do
+		player[key] = value
+	end
+	return player
+end
+
+t.test("the client's realm name is the key, and is remembered for this character", function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	t.eq(store:CharacterKey(realmless({ realm = 'Nightslayer' })), 'Eilu-Nightslayer')
+	t.eq(charDb.realm, 'Nightslayer')
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Nightslayer', 'the remembered name, once the client gives none')
+	t.same({ store:ResolveRealm(realmless()) }, { 'Nightslayer', 'remembered' })
+end)
+
+t.test('with no memory, the one realm saved keys name for this character is taken and kept', function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:Session('Eilu-' .. SAVED_REALM).resetAt = 1
+	store:Session('Other-Somewhere').resetAt = 1
+	t.same({ store:ResolveRealm(realmless()) }, { SAVED_REALM, 'saved' })
+	t.eq(store:CharacterKey(realmless()), 'Eilu-' .. SAVED_REALM)
+	t.eq(charDb.realm, SAVED_REALM)
+end)
+
+t.test('the same name saved on two realms names no realm: the server number stands in', function()
+	local store = assert(Store.open({}, {}))
+	store:Session('Eilu-Nightslayer').resetAt = 1
+	store:Character('Eilu-Doomhowl')
+	t.eq((store:ResolveRealm(realmless())), nil)
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Server 6928')
+end)
+
+t.test('a server-number key is not taken for a realm name', function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:Session('Eilu-Server 6928').resetAt = 1
+	t.eq((store:ResolveRealm(realmless())), nil)
+	t.eq(charDb.realm, nil)
+end)
+
+t.test('never "Name-": no name, or no realm and no server, is no key', function()
+	local store = assert(Store.open({}, {}))
+	t.eq(store:CharacterKey(realmless({ server = false })), nil)
+	t.eq(store:CharacterKey(realmless({ name = '' })), nil)
+	t.eq(store:CharacterKey(realmless({ name = false })), nil)
+	t.eq(store:CharacterKey(nil), nil)
+end)
+
+t.test("with no realm name the market's ruleset is AHledger's, when its faction and region match", function()
+	local store = assert(Store.open({}, {}))
+	t.eq(store:MarketKeyFor(realmless(), 'forever/pvp/horde/eu'), 'forever/pvp/horde/eu')
+	t.eq(store:MarketKeyFor(realmless(), 'forever/pvp/alliance/eu'), 'forever/normal/horde/eu', 'other faction')
+	t.eq(store:MarketKeyFor(realmless(), 'forever/rp/horde/us'), 'forever/normal/horde/eu', 'other region')
+	t.eq(store:MarketKeyFor(realmless(), 'forever/odd/horde/eu'), 'forever/normal/horde/eu', 'unknown ruleset')
+	t.eq(store:MarketKeyFor(realmless(), nil), 'forever/normal/horde/eu', 'no AHledger')
+end)
+
+t.test("a realm name, the client's or remembered, outranks AHledger's market", function()
+	local store = assert(Store.open({}, { realm = 'Crusader Strike PvP' }))
+	t.eq(store:MarketKeyFor(realmless(), 'forever/rp/horde/eu'), 'forever/pvp/horde/eu')
+	t.eq(store:MarketKeyFor(realmless({ realm = 'Living Flame RP' }), 'forever/pvp/horde/eu'), 'forever/rp/horde/eu')
+end)

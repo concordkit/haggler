@@ -130,6 +130,41 @@ t.test('the realm keeps its spaces, so RP and RP-PvP realms find their market', 
 	t.eq(ns.Store.marketKeyFor(player), 'forever/rppvp/alliance/eu')
 end)
 
+t.test("the player's server number comes from the GUID; an unknown name is no name", function()
+	local fake = fakeEnv()
+	fake.UnitGUID = function(unit)
+		return unit == 'player' and 'Player-6928-00A1AEB0' or nil
+	end
+	t.eq(ns.Wow.create(fake):Player().server, 6928)
+	fake.UnitGUID = function()
+		return 'Creature-0-1-2-3-4-5'
+	end
+	t.eq(ns.Wow.create(fake):Player().server, nil)
+	fake.UNKNOWNOBJECT = 'Unknown'
+	fake.UnitName = function()
+		return 'Unknown'
+	end
+	t.eq(ns.Wow.create(fake):Player().name, nil)
+end)
+
+t.test("AHledger's market is read safely", function()
+	local fake = fakeEnv()
+	local wow = ns.Wow.create(fake)
+	t.eq(wow:AHledgerMarket(), nil, 'no AHledger')
+	fake.AHledgerAPI = {
+		GetMarket = function()
+			return 'forever/pvp/horde/eu'
+		end,
+	}
+	t.eq(wow:AHledgerMarket(), 'forever/pvp/horde/eu')
+	fake.AHledgerAPI = {
+		GetMarket = function()
+			error('broke')
+		end,
+	}
+	t.eq(wow:AHledgerMarket(), nil, 'a throwing GetMarket')
+end)
+
 t.test('falls back to time() without GetServerTime', function()
 	local wow = ns.Wow.create({
 		time = function()

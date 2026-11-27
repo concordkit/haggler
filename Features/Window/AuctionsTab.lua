@@ -404,9 +404,5 @@ function marketNow()
 end
 
 function charKey()
-	local player = ns.wow:Player()
-	if type(player) ~= 'table' or type(player.name) ~= 'string' or type(player.realm) ~= 'string' then
-		return nil
-	end
-	return player.name .. '-' .. player.realm
+	return ns.store and ns.store:CharacterKey(ns.wow:Player()) or nil
 end

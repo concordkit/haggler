@@ -16,7 +16,8 @@
 	                           login, the resets and local midnight come from the clock)
 	  legacy                   anything an older layout left that no migration claimed
 
-	HagglerCharDB (per character): version, ui (window position, last tab).
+	HagglerCharDB (per character): version, ui (window position, last tab), realm (the last realm
+	name the client gave for this character, for clients that give none; see ResolveRealm).
 
 	marketKey follows AHledger's form, forever/<ruleset>/<faction>/<region>, so the downloaded
 	table and local scans line up.
@@ -34,9 +35,14 @@ local MARKET_KEY_PATTERN = '^forever/[%l%d]+/[%l%d]+/[%l%d]+$'
 local TOP_LEVEL_TABLES =
 	{ 'settings', 'rules', 'shownRules', 'recipes', 'markets', 'characters', 'sessions', 'vendorPrices' }
 local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools', 'ledgerDays' }
+local RULESETS = { normal = true, pvp = true, rp = true, rppvp = true, hardcore = true }
+-- Tables keyed 'Name-Realm' that tell which realm a character was on before the client stopped
+-- naming it.
+local CHARACTER_KEYED_TABLES = { 'sessions', 'characters' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
+local nonEmpty, realmFromSavedKeys, isServerRealm
 
 --- Migration n upgrades a database from version n - 1 to n. Each changes db in place and gets
 --- the context Store.migrate was given ({ now? }).
@@ -132,7 +138,23 @@ function Store.marketKeyFor(where)
 	end
 	local faction = (where.faction or 'unknown'):lower()
 	local region = (where.region or 'us'):lower()
-	return string.format('forever/%s/%s/%s', Store.rulesetFromRealm(where.realm), faction, region)
+	local ruleset = RULESETS[where.ruleset] and where.ruleset or Store.rulesetFromRealm(where.realm)
+	return string.format('forever/%s/%s/%s', ruleset, faction, region)
+end
+
+--- The ruleset of a market key, when that market is this faction's and region's; else nil.
+--- @param marketKey string|nil e.g. 'forever/pvp/horde/eu'
+--- @param where table { faction, region }
+--- @return string|nil ruleset
+function Store.rulesetFromMarket(marketKey, where)
+	if type(marketKey) ~= 'string' or type(where) ~= 'table' then
+		return nil
+	end
+	local ruleset, faction, region = marketKey:match('^forever/([%l%d]+)/([%l%d]+)/([%l%d]+)$')
+	if not RULESETS[ruleset] or faction ~= (where.faction or ''):lower() or region ~= (where.region or ''):lower() then
+		return nil
+	end
+	return ruleset
 end
 
 --- The ruleset a realm name carries: hardcore, rppvp, pvp, rp or normal. European clients use
@@ -177,6 +199,69 @@ function StoreMethods:Market(marketKey)
 		market[name] = market[name] or {}
 	end
 	return market
+end
+
+--- The player's realm name, and where it came from: 'client' (the client gave it; it is remembered
+--- for this character), 'remembered' (the last one the client gave for this character), 'saved'
+--- (the one realm this character's name is saved under, from before the client stopped giving
+--- it; remembered from then on), or nil when nothing names it. Writes HagglerCharDB.realm.
+--- @param player table Wow:Player()
+--- @return string|nil realm
+--- @return string|nil source
+function StoreMethods:ResolveRealm(player)
+	if type(player) ~= 'table' then
+		error('Store:ResolveRealm: player must be a table', 2)
+	end
+	local given = nonEmpty(player.realm)
+	if given then
+		self.charDb.realm = given
+		return given, 'client'
+	end
+	local remembered = nonEmpty(self.charDb.realm)
+	if remembered then
+		return remembered, 'remembered'
+	end
+	local saved = realmFromSavedKeys(self.db, nonEmpty(player.name))
+	if saved then
+		self.charDb.realm = saved
+		return saved, 'saved'
+	end
+	return nil, nil
+end
+
+--- The player's character key, 'Name-Realm', or nil while the client does not know the name.
+--- With no realm name from anywhere (ResolveRealm) the realm part is the server number,
+--- 'Name-Server 6928'; nil when there is none either. Never 'Name-'.
+--- @param player table|nil Wow:Player()
+--- @return string|nil charKey
+function StoreMethods:CharacterKey(player)
+	local name = type(player) == 'table' and nonEmpty(player.name) or nil
+	if not name or name:find('-', 1, true) then
+		return nil
+	end
+	local realm = self:ResolveRealm(player)
+	if not realm and type(player.server) == 'number' then
+		realm = 'Server ' .. player.server
+	end
+	return realm and (name .. '-' .. realm) or nil
+end
+
+--- The player's market key. The ruleset is the realm name's (ResolveRealm); with no realm name it
+--- is the one in AHledger's market when that is this faction's and region's, else normal.
+--- @param player table Wow:Player()
+--- @param sourceMarket string|nil AHledgerAPI.GetMarket()
+--- @return string marketKey
+function StoreMethods:MarketKeyFor(player, sourceMarket)
+	if type(player) ~= 'table' then
+		error('Store:MarketKeyFor: player must be a table', 2)
+	end
+	local realm = self:ResolveRealm(player)
+	return Store.marketKeyFor({
+		realm = realm,
+		ruleset = not realm and Store.rulesetFromMarket(sourceMarket, player) or nil,
+		faction = player.faction,
+		region = player.region,
+	})
 end
 
 --- One character's data, created on first use. charKey is 'Name-Realm'.
@@ -402,6 +487,40 @@ function packSavedScan(scan)
 	end
 	scan.items = packedItems
 	scan.isPacked = true
+end
+
+function nonEmpty(value)
+	if type(value) ~= 'string' then
+		return nil
+	end
+	local trimmed = value:match('^%s*(.-)%s*$')
+	return trimmed ~= '' and trimmed or nil
+end
+
+-- The one realm saved keys name for this character's name; nil when none do or they disagree
+-- (the same name on two realms). A key whose realm is a server number names no realm.
+function realmFromSavedKeys(db, name)
+	if not name then
+		return nil
+	end
+	local prefix = name .. '-'
+	local found
+	for _, tableName in ipairs(CHARACTER_KEYED_TABLES) do
+		for key in pairs(db[tableName] or {}) do
+			local realm = type(key) == 'string' and key:sub(1, #prefix) == prefix and nonEmpty(key:sub(#prefix + 1))
+			if realm and not isServerRealm(realm) then
+				if found and found ~= realm then
+					return nil
+				end
+				found = realm
+			end
+		end
+	end
+	return found
+end
+
+function isServerRealm(realm)
+	return realm:find('^Server %d+$') ~= nil
 end
 
 return Store
