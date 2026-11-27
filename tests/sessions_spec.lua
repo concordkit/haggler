@@ -262,5 +262,7 @@ t.test("a character's points saved under its realm name keep resolving once the 
 	t.same(addon.errors, {})
 	t.eq((addon.sessions:Start()), 123)
 	t.eq(game.savedCharDb.realm, SAVED_REALM, 'remembered for this character')
+	t.eq(game.savedCharDb.server, 6928, "with the server's id")
+	t.eq(game.savedDb.sessions['Eilu-' .. SAVED_REALM].server, 6928, "the session carries the server's id")
 	t.eq(game.savedDb.sessions['Eilu-'], nil, 'no "Name-" key')
 end)

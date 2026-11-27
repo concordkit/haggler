@@ -12,12 +12,13 @@
 	                           ledgerDays
 	  vendorPrices             itemId -> copper a vendor pays, kept once the client has shown it
 	  characters[charKey]      inventory counts, gold, last seen, faction
-	  sessions[charKey]        session start points: { resetAt?, ahLeftAt? } (one per character;
+	  sessions[charKey]        session start points: { resetAt?, ahLeftAt?, server? } (one per character;
 	                           login, the resets and local midnight come from the clock)
 	  legacy                   anything an older layout left that no migration claimed
 
 	HagglerCharDB (per character): version, ui (window position, last tab), realm (the last realm
-	name the client gave for this character, for clients that give none; see ResolveRealm).
+	name the client gave for this character, for clients that give none; see ResolveRealm), server
+	(the GUID's server id that realm was found on).
 
 	marketKey follows AHledger's form, forever/<ruleset>/<faction>/<region>, so the downloaded
 	table and local scans line up.
@@ -42,7 +43,7 @@ local CHARACTER_KEYED_TABLES = { 'sessions', 'characters' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
-local nonEmpty, realmFromSavedRecords, realmOfCharKey, isServerRealm, isPlayersMarket, moveBrokenKeyRecords
+local nonEmpty, realmFromSavedRecords, theOneRealm, isSameServer, realmOfCharKey, isServerRealm, isPlayersMarket, moveBrokenKeyRecords
 
 --- Migration n upgrades a database from version n - 1 to n. Each changes db in place and gets
 --- the context Store.migrate was given ({ now? }).
@@ -205,8 +206,9 @@ end
 --- for this character), 'remembered' (the last one the client gave for this character), 'saved'
 --- (the one realm this character's name is saved under, from before the client stopped giving
 --- it: session and character keys, and the auctions and ledger events of this faction's and
---- region's markets; remembered from then on), or nil when nothing names it. Writes
---- HagglerCharDB.realm.
+--- region's markets; remembered from then on), or nil when nothing names it. A realm remembered
+--- or saved with another server's id is a namesake's, never this character's. Writes
+--- HagglerCharDB.realm and .server. Finding none is remembered for the session.
 --- @param player table Wow:Player()
 --- @return string|nil realm
 --- @return string|nil source
@@ -216,19 +218,31 @@ function StoreMethods:ResolveRealm(player)
 	end
 	local given = nonEmpty(player.realm)
 	if given then
-		self.charDb.realm = given
+		self:rememberRealm(given, player.server)
 		return given, 'client'
 	end
 	local remembered = nonEmpty(self.charDb.realm)
-	if remembered then
+	if remembered and isSameServer(self.charDb.server, player.server) then
 		return remembered, 'remembered'
+	end
+	local lookupKey = tostring(player.name) .. '#' .. tostring(player.server)
+	if self.hasNoSavedRealmFor == lookupKey then
+		return nil, nil
 	end
 	local saved = realmFromSavedRecords(self.db, player)
 	if saved then
-		self.charDb.realm = saved
+		self:rememberRealm(saved, player.server)
 		return saved, 'saved'
 	end
+	self.hasNoSavedRealmFor = lookupKey
 	return nil, nil
+end
+
+function StoreMethods:rememberRealm(realm, server)
+	self.charDb.realm = realm
+	if type(server) == 'number' then
+		self.charDb.server = server
+	end
 end
 
 --- The player's character key, 'Name-Realm', or nil while the client does not know the name.
@@ -291,8 +305,12 @@ function StoreMethods:Character(charKey)
 end
 
 --- One character's session start points, created on first use. charKey is 'Name-Realm'.
---- @return table { loginAt?, resetAt?, ahLeftAt? }
-function StoreMethods:Session(charKey)
+--- server, the GUID's server id, is saved with them, so a namesake on another server does not
+--- take this realm (ResolveRealm).
+--- @param charKey string
+--- @param server number|nil Wow:Player().server
+--- @return table { loginAt?, resetAt?, ahLeftAt?, server? }
+function StoreMethods:Session(charKey, server)
 	if type(charKey) ~= 'string' or not charKey:find('^[^%-]+%-.+$') then
 		error(string.format('Store:Session: bad character key %q', tostring(charKey)), 2)
 	end
@@ -300,6 +318,9 @@ function StoreMethods:Session(charKey)
 	if type(session) ~= 'table' then
 		session = {}
 		self.db.sessions[charKey] = session
+	end
+	if type(server) == 'number' then
+		session.server = server
 	end
 	return session
 end
@@ -511,30 +532,52 @@ function nonEmpty(value)
 end
 
 -- The one realm saved records name for this character's name; nil when none do or they disagree
--- (the same name on two realms). Session and character keys carry no faction, so they count
--- whatever the market; auctions and ledger events count only on this faction's and region's
--- markets, where a namesake on the other side cannot pass for this character.
+-- (the same name on two realms). Sessions saved with this server's id settle it. Otherwise the
+-- records with no server id (saved before it was) count, and only while no other server's
+-- session names a realm: that one is a namesake's, and so may the legacy records be. Session and
+-- character keys carry no faction, so they count whatever the market; auctions and ledger events
+-- count only on this faction's and region's markets, where a namesake on the other side cannot
+-- pass for this character.
 function realmFromSavedRecords(db, player)
 	local name = nonEmpty(player.name)
 	if not name then
 		return nil
 	end
-	local realms = {}
+	local sameServer, legacy, hasOtherServer = {}, {}, false
 	for _, tableName in ipairs(CHARACTER_KEYED_TABLES) do
-		for key in pairs(db[tableName] or {}) do
-			realms[#realms + 1] = realmOfCharKey(key, name)
+		for key, entry in pairs(db[tableName] or {}) do
+			local realm = realmOfCharKey(key, name)
+			local server = type(entry) == 'table' and entry.server or nil
+			if realm and type(server) ~= 'number' then
+				legacy[#legacy + 1] = realm
+			elseif realm and isSameServer(server, player.server) then
+				sameServer[#sameServer + 1] = realm
+			elseif realm then
+				hasOtherServer = true
+			end
 		end
+	end
+	if #sameServer > 0 then
+		return theOneRealm(sameServer)
+	end
+	if hasOtherServer then
+		return nil
 	end
 	for marketKey, market in pairs(db.markets or {}) do
 		if isPlayersMarket(marketKey, player) and type(market) == 'table' then
 			for _, record in pairs(type(market.auctions) == 'table' and market.auctions or {}) do
-				realms[#realms + 1] = type(record) == 'table' and realmOfCharKey(record.char, name) or nil
+				legacy[#legacy + 1] = type(record) == 'table' and realmOfCharKey(record.char, name) or nil
 			end
 			for _, event in ipairs(ns.Ledger.events(market)) do
-				realms[#realms + 1] = realmOfCharKey(event.char, name)
+				legacy[#legacy + 1] = realmOfCharKey(event.char, name)
 			end
 		end
 	end
+	return theOneRealm(legacy)
+end
+
+-- The realm every entry names; nil for none, or for two.
+function theOneRealm(realms)
 	local found
 	for _, realm in ipairs(realms) do
 		if found and found ~= realm then
@@ -543,6 +586,11 @@ function realmFromSavedRecords(db, player)
 		found = realm
 	end
 	return found
+end
+
+-- Two server ids name the same server, or one of them is not known (saved before ids were).
+function isSameServer(saved, current)
+	return type(saved) ~= 'number' or type(current) ~= 'number' or saved == current
 end
 
 -- The realm in a 'Name-Realm' key for this name; nil for another name, 'Name-' or a server number.

@@ -127,8 +127,9 @@ end
 -- Helpers ---------------------------------------------------------------------------------
 
 function sessionPoints()
-	local key = charKey(ns.wow:Player())
-	return key and ns.store:Session(key) or nil
+	local player = ns.wow:Player()
+	local key = charKey(player)
+	return key and ns.store:Session(key, player.server) or nil
 end
 
 function charKey(player)
