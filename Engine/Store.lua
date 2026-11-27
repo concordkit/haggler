@@ -207,7 +207,8 @@ end
 --- (the one realm this character's name is saved under, from before the client stopped giving
 --- it: session and character keys, and the auctions and ledger events of this faction's and
 --- region's markets; remembered from then on), or nil when nothing names it. A realm remembered
---- or saved with another server's id is a namesake's, never this character's. Writes
+--- or saved with another server's id is a namesake's, never this character's, so with no realm
+--- name from the client nothing is answered, kept or cached until the GUID gives the id. Writes
 --- HagglerCharDB.realm and .server. Finding none is remembered for the session.
 --- @param player table Wow:Player()
 --- @return string|nil realm
@@ -221,8 +222,12 @@ function StoreMethods:ResolveRealm(player)
 		self:rememberRealm(given, player.server)
 		return given, 'client'
 	end
+	if type(player.server) ~= 'number' then
+		return nil, nil
+	end
 	local remembered = nonEmpty(self.charDb.realm)
 	if remembered and isSameServer(self.charDb.server, player.server) then
+		self:rememberRealm(remembered, player.server)
 		return remembered, 'remembered'
 	end
 	local lookupKey = tostring(player.name) .. '#' .. tostring(player.server)
@@ -305,7 +310,7 @@ function StoreMethods:Character(charKey)
 end
 
 --- One character's session start points, created on first use. charKey is 'Name-Realm'.
---- server, the GUID's server id, is saved with them, so a namesake on another server does not
+--- server, the GUID's server id, is saved with them (the first one stays), so a namesake on another server does not
 --- take this realm (ResolveRealm).
 --- @param charKey string
 --- @param server number|nil Wow:Player().server
@@ -319,7 +324,7 @@ function StoreMethods:Session(charKey, server)
 		session = {}
 		self.db.sessions[charKey] = session
 	end
-	if type(server) == 'number' then
+	if type(server) == 'number' and type(session.server) ~= 'number' then
 		session.server = server
 	end
 	return session
