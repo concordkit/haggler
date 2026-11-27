@@ -591,3 +591,45 @@ t.test('AHledger on another market with nothing for Haggler: the note comes at P
 	scan(game)
 	t.truthy(reasonOf(addon.prices:Get(LINEN, 'minimum'), 'noMarketTable'))
 end)
+
+t.group('client build 71037: GetRealmName answers ""')
+
+local EU_NORMAL = 'forever/normal/horde/eu'
+local EU_PVP = 'forever/pvp/horde/eu'
+
+local function startRealmlessHorde(api)
+	local game = newGame(api)
+	game.env.GetRealmName = function()
+		return ''
+	end
+	game.env.UnitFactionGroup = function()
+		return 'Horde'
+	end
+	game.env.GetCurrentRegion = function()
+		return 3
+	end
+	game.env.UnitGUID = function(unit)
+		return unit == 'player' and 'Player-6928-00A1AEB0' or nil
+	end
+	return game, FakeGame.startAddon(t, game)
+end
+
+t.test("no realm name on a PvP character: the market is AHledger's, available, nothing said", function()
+	local game, addon =
+		startRealmlessHorde((FakeGame.newAHledgerAPI({ market = EU_PVP, updated = UPDATED, rows = ROWS })))
+	t.eq(addon.prices:MarketKey(), EU_PVP)
+	t.eq(addon.prices:SourceStatus().isAvailable, true)
+	game:Fire('PLAYER_LOGIN')
+	t.same(game.printed, {})
+	t.same(addon.errors, {})
+end)
+
+t.test('no realm name on a Normal character: the Normal market stays available', function()
+	local game, addon =
+		startRealmlessHorde((FakeGame.newAHledgerAPI({ market = EU_NORMAL, updated = UPDATED, rows = ROWS })))
+	t.eq(addon.prices:MarketKey(), EU_NORMAL)
+	t.eq(addon.prices:SourceStatus().isAvailable, true)
+	game:Fire('PLAYER_LOGIN')
+	t.same(game.printed, {})
+	t.same(addon.errors, {})
+end)
