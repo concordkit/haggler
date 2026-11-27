@@ -297,13 +297,13 @@ t.test('the same name saved on two realms names no realm: the server number stan
 	store:Session('Eilu-Nightslayer').resetAt = 1
 	store:Character('Eilu-Doomhowl')
 	t.eq((store:ResolveRealm(realmless())), nil)
-	t.eq(store:CharacterKey(realmless()), 'Eilu-Server 6928')
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Server6928')
 end)
 
 t.test('a server-number key is not taken for a realm name', function()
 	local charDb = {}
 	local store = assert(Store.open({}, charDb))
-	store:Session('Eilu-Server 6928').resetAt = 1
+	store:Session('Eilu-Server6928').resetAt = 1
 	t.eq((store:ResolveRealm(realmless())), nil)
 	t.eq(charDb.realm, nil)
 end)
@@ -389,8 +389,8 @@ end)
 t.test('the server-number key takes them over too, when no realm is known', function()
 	local store = assert(Store.open({}, {}))
 	local market = seedBrokenRecords(store, HORDE_EU, 'Eilu-')
-	t.eq(store:CharacterKey(realmless()), 'Eilu-Server 6928')
-	t.eq(market.auctions[101].char, 'Eilu-Server 6928')
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Server6928')
+	t.eq(market.auctions[101].char, 'Eilu-Server6928')
 end)
 
 t.test('an auction or ledger event under the realm name recovers it', function()

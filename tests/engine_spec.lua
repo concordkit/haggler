@@ -165,7 +165,7 @@ t.test('client 71037 as measured: no realm from either call, the surname is not 
 	t.eq(player.name, 'Aurelius')
 	t.eq(player.realm, '')
 	t.eq(player.server, 6945)
-	t.eq(assert(ns.Store.open({}, {})):CharacterKey(player), 'Aurelius-Server 6945')
+	t.eq(assert(ns.Store.open({}, {})):CharacterKey(player), 'Aurelius-Server6945')
 end)
 
 t.test(
@@ -195,7 +195,7 @@ t.test(
 		market.auctions[1] = { itemId = 2589, qty = 1, state = 'active', char = 'Aurelius-' }
 		ns.Ledger.append(market, { t = 1, kind = 'sale', itemId = 2589, qty = 1, copper = 5, char = 'Aurelius-' })
 		local player = ns.Wow.create(fake):Player()
-		t.eq(store:CharacterKey(player), savedKey, 'not Aurelius-Server 6945')
+		t.eq(store:CharacterKey(player), savedKey, 'not Aurelius-Server6945')
 		t.eq(charDb.realm, 'CAMWOW EU5 Realm 3 PvE')
 		t.eq(market.auctions[1].char, savedKey)
 		t.eq(ns.Ledger.events(market)[1].char, savedKey)

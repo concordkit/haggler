@@ -450,7 +450,7 @@ function realmForKey(env)
 	end
 	local guid = safeCall(env.UnitGUID, 'player')
 	local server = type(guid) == 'string' and tonumber(guid:match('^Player%-(%d+)%-')) or nil
-	return server and server > 0 and ('Server ' .. server) or nil
+	return server and server > 0 and ('Server' .. server) or nil
 end
 
 function nonEmpty(value)

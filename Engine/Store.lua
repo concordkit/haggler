@@ -233,7 +233,7 @@ end
 
 --- The player's character key, 'Name-Realm', or nil while the client does not know the name.
 --- With no realm name from anywhere (ResolveRealm) the realm part is the server number,
---- 'Name-Server 6928'; nil when there is none either. Never 'Name-'.
+--- 'Name-Server6928'; nil when there is none either. Never 'Name-'.
 --- The first time a key is given in a session, the auctions and ledger events this faction's and
 --- region's markets saved under 'Name-' (client 71037 before this fix) move to it.
 --- @param player table|nil Wow:Player()
@@ -245,7 +245,7 @@ function StoreMethods:CharacterKey(player)
 	end
 	local realm = self:ResolveRealm(player)
 	if not realm and type(player.server) == 'number' then
-		realm = 'Server ' .. player.server
+		realm = 'Server' .. player.server
 	end
 	if not realm then
 		return nil
@@ -556,7 +556,7 @@ function realmOfCharKey(key, name)
 end
 
 function isServerRealm(realm)
-	return realm:find('^Server %d+$') ~= nil
+	return realm:find('^Server%d+$') ~= nil
 end
 
 -- Whether a market key is the player's faction's and region's, whatever its ruleset.

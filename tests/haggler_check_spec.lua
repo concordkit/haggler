@@ -1147,7 +1147,7 @@ local function identityEnv(fields)
 end
 
 t.test("the character key is Haggler's: client realm, else remembered realm, else server number", function()
-	t.eq(ns.Check.readIdentity(identityEnv()).charKey, 'Aurelius-Server 6945', 'the surname is not a realm')
+	t.eq(ns.Check.readIdentity(identityEnv()).charKey, 'Aurelius-Server6945', 'the surname is not a realm')
 	t.eq(
 		ns.Check.readIdentity(identityEnv({ HagglerCharDB = { realm = 'CAMWOW EU5 Realm 3 PvE' } })).charKey,
 		'Aurelius-CAMWOW EU5 Realm 3 PvE'
