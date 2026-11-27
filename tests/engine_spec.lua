@@ -147,6 +147,27 @@ t.test("the player's server number comes from the GUID; an unknown name is no na
 	t.eq(ns.Wow.create(fake):Player().name, nil)
 end)
 
+t.test('client 71037 as measured: no realm from either call, the surname is not a realm, the GUID holds', function()
+	local fake = fakeEnv()
+	fake.GetRealmName = function()
+		return ''
+	end
+	fake.GetNormalizedRealmName = function()
+		return ''
+	end
+	fake.UnitName = function()
+		return 'Aurelius', 'Zothari'
+	end
+	fake.UnitGUID = function(unit)
+		return unit == 'player' and 'Player-6945-0052E899' or nil
+	end
+	local player = ns.Wow.create(fake):Player()
+	t.eq(player.name, 'Aurelius')
+	t.eq(player.realm, '')
+	t.eq(player.server, 6945)
+	t.eq(assert(ns.Store.open({}, {})):CharacterKey(player), 'Aurelius-Server 6945')
+end)
+
 t.test("AHledger's market is read safely", function()
 	local fake = fakeEnv()
 	local wow = ns.Wow.create(fake)
