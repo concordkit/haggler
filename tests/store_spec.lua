@@ -357,6 +357,33 @@ t.test("a realm remembered for another server's id is not this character's", fun
 	t.same({ legacy:ResolveRealm(realmless()) }, { 'Nightslayer', 'remembered' }, 'one saved before the id was')
 end)
 
+t.test("before the GUID answers, no realm is taken, kept or cached: a namesake's stays theirs", function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:Session('Eilu-RealmA', 100).resetAt = 1
+	local beforeGuid = realmless({ server = false })
+	t.eq((store:ResolveRealm(beforeGuid)), nil)
+	t.eq(store:CharacterKey(beforeGuid), nil)
+	t.eq(charDb.realm, nil)
+	t.eq(charDb.server, nil)
+	t.eq(store:CharacterKey(realmless({ server = 200 })), 'Eilu-Server200', 'nothing cached blocks the lookup')
+	t.eq(store.db.sessions['Eilu-RealmA'].server, 100)
+end)
+
+t.test("a session's server id is never overwritten with another one", function()
+	local store = assert(Store.open({}, {}))
+	store:Session('Eilu-RealmA', 100)
+	t.eq(store:Session('Eilu-RealmA', 200).server, 100)
+end)
+
+t.test('a remembered realm saved without a server id gets it once known, and waits for the GUID', function()
+	local charDb = { realm = 'Nightslayer' }
+	local store = assert(Store.open({}, charDb))
+	t.eq((store:ResolveRealm(realmless({ server = false }))), nil, 'no GUID yet')
+	t.same({ store:ResolveRealm(realmless()) }, { 'Nightslayer', 'remembered' })
+	t.eq(charDb.server, 6928)
+end)
+
 t.test('no realm anywhere is looked up once a session, not on every key', function()
 	local store = assert(Store.open({}, {}))
 	local market = store:Market('forever/normal/horde/eu')
