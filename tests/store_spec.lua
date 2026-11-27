@@ -316,6 +316,67 @@ t.test('never "Name-": no name, or no realm and no server, is no key', function(
 	t.eq(store:CharacterKey(nil), nil)
 end)
 
+t.test("a realm is remembered with the server's id, and a session saved with it carries it", function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:CharacterKey(realmless({ realm = 'Nightslayer' }))
+	t.eq(charDb.server, 6928)
+	t.eq(store:Session('Eilu-Nightslayer', 6928).server, 6928)
+	t.eq(store:Session('Eilu-Nightslayer').server, 6928, 'kept when a later call gives none')
+end)
+
+t.test("a namesake's session saved with another server's id names no realm for this character", function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:Session('Eilu-Nightslayer', 6945).resetAt = 1
+	t.eq((store:ResolveRealm(realmless())), nil)
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Server6928')
+	t.eq(charDb.realm, nil, 'nothing is kept for good')
+end)
+
+t.test("a session saved with this server's id outranks legacy records that disagree", function()
+	local charDb = {}
+	local store = assert(Store.open({}, charDb))
+	store:Session('Eilu-Nightslayer', 6928).resetAt = 1
+	store:Character('Eilu-Doomhowl')
+	t.same({ store:ResolveRealm(realmless()) }, { 'Nightslayer', 'saved' })
+	t.eq(charDb.server, 6928)
+end)
+
+t.test("legacy records count only while no other server's record names a realm", function()
+	local store = assert(Store.open({}, {}))
+	store:Market('forever/normal/horde/eu').auctions[7] = { state = 'sold', char = 'Eilu-Nightslayer' }
+	store:Session('Eilu-Nightslayer', 6945).resetAt = 1
+	t.eq((store:ResolveRealm(realmless())), nil, "the legacy auction is server 6945's character's")
+end)
+
+t.test("a realm remembered for another server's id is not this character's", function()
+	local store = assert(Store.open({}, { realm = 'Nightslayer', server = 6945 }))
+	t.eq((store:ResolveRealm(realmless())), nil)
+	local legacy = assert(Store.open({}, { realm = 'Nightslayer' }))
+	t.same({ legacy:ResolveRealm(realmless()) }, { 'Nightslayer', 'remembered' }, 'one saved before the id was')
+end)
+
+t.test('no realm anywhere is looked up once a session, not on every key', function()
+	local store = assert(Store.open({}, {}))
+	local market = store:Market('forever/normal/horde/eu')
+	ns.Ledger.append(market, { t = 1, kind = 'sale', itemId = 2589, qty = 1, copper = 1, char = 'Other-Elsewhere' })
+	local events = ns.Ledger.events
+	local scans = 0
+	ns.Ledger.events = function(...)
+		scans = scans + 1
+		return events(...)
+	end
+	local ok, problem = pcall(function()
+		for _ = 1, 3 do
+			t.eq(store:CharacterKey(realmless()), 'Eilu-Server6928')
+		end
+	end)
+	ns.Ledger.events = events
+	assert(ok, problem)
+	t.eq(scans, 1)
+end)
+
 t.test("with no realm name the market's ruleset is AHledger's, when its faction and region match", function()
 	local store = assert(Store.open({}, {}))
 	t.eq(store:MarketKeyFor(realmless(), 'forever/pvp/horde/eu'), 'forever/pvp/horde/eu')
