@@ -168,6 +168,40 @@ t.test('client 71037 as measured: no realm from either call, the surname is not 
 	t.eq(assert(ns.Store.open({}, {})):CharacterKey(player), 'Aurelius-Server 6945')
 end)
 
+t.test(
+	'client 71037 as measured, with a saved realm-named session: that key, and "Name-" records move to it',
+	function()
+		local fake = fakeEnv()
+		fake.GetRealmName = function()
+			return ''
+		end
+		fake.GetNormalizedRealmName = function()
+			return ''
+		end
+		fake.UnitName = function()
+			return 'Aurelius', 'Zothari'
+		end
+		fake.UnitFactionGroup = function()
+			return 'Horde'
+		end
+		fake.UnitGUID = function(unit)
+			return unit == 'player' and 'Player-6945-0052E899' or nil
+		end
+		local savedKey = 'Aurelius-CAMWOW EU5 Realm 3 PvE'
+		local charDb = {}
+		local store = assert(ns.Store.open({}, charDb))
+		store:Session(savedKey).resetAt = 1
+		local market = store:Market('forever/normal/horde/eu')
+		market.auctions[1] = { itemId = 2589, qty = 1, state = 'active', char = 'Aurelius-' }
+		ns.Ledger.append(market, { t = 1, kind = 'sale', itemId = 2589, qty = 1, copper = 5, char = 'Aurelius-' })
+		local player = ns.Wow.create(fake):Player()
+		t.eq(store:CharacterKey(player), savedKey, 'not Aurelius-Server 6945')
+		t.eq(charDb.realm, 'CAMWOW EU5 Realm 3 PvE')
+		t.eq(market.auctions[1].char, savedKey)
+		t.eq(ns.Ledger.events(market)[1].char, savedKey)
+	end
+)
+
 t.test("AHledger's market is read safely", function()
 	local fake = fakeEnv()
 	local wow = ns.Wow.create(fake)
