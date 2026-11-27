@@ -633,3 +633,27 @@ t.test('no realm name on a Normal character: the Normal market stays available',
 	t.same(game.printed, {})
 	t.same(addon.errors, {})
 end)
+
+t.test("no realm name and no GUID yet: the market waits for the character, then takes AHledger's", function()
+	-- AHledger answers the Normal market until it knows the character (its GUID), as 0.15.1 does.
+	local api, apiState = FakeGame.newAHledgerAPI({ market = EU_NORMAL, updated = UPDATED, rows = ROWS })
+	local game = newGame(api)
+	game.env.GetRealmName = function()
+		return ''
+	end
+	game.env.UnitFactionGroup = function()
+		return 'Horde'
+	end
+	game.env.GetCurrentRegion = function()
+		return 3
+	end
+	local addon = FakeGame.startAddon(t, game)
+	t.eq(addon.prices:MarketKey(), nil, 'not cached from a guess')
+	game.env.UnitGUID = function(unit)
+		return unit == 'player' and 'Player-6945-0052E899' or nil
+	end
+	apiState.market = EU_PVP
+	game:Fire('PLAYER_LOGIN')
+	t.eq(addon.prices:MarketKey(), EU_PVP)
+	t.same(addon.errors, {})
+end)

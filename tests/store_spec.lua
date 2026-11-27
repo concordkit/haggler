@@ -330,3 +330,66 @@ t.test("a realm name, the client's or remembered, outranks AHledger's market", f
 	t.eq(store:MarketKeyFor(realmless(), 'forever/rp/horde/eu'), 'forever/pvp/horde/eu')
 	t.eq(store:MarketKeyFor(realmless({ realm = 'Living Flame RP' }), 'forever/pvp/horde/eu'), 'forever/rp/horde/eu')
 end)
+
+t.group('records saved under the broken "Name-" key')
+
+local HORDE_EU = 'forever/normal/horde/eu'
+local ALLIANCE_EU = 'forever/normal/alliance/eu'
+
+local function seedBrokenRecords(store, marketKey, char)
+	local market = store:Market(marketKey)
+	market.auctions[101] = { itemId = 2589, qty = 20, state = 'active', char = char }
+	market.auctions[102] = { itemId = 2589, qty = 20, state = 'sold', char = 'Other-Elsewhere' }
+	ns.Ledger.append(market, { t = 1000, kind = 'sale', itemId = 2589, qty = 20, copper = 500, char = char })
+	ns.Ledger.append(market, { t = 1001, kind = 'sale', itemId = 2589, qty = 1, copper = 5, char = 'Other-Elsewhere' })
+	return market
+end
+
+local function charsOf(market)
+	local chars = {}
+	for _, event in ipairs(ns.Ledger.events(market)) do
+		chars[#chars + 1] = event.char
+	end
+	return chars
+end
+
+t.test('the first key for a character takes over its "Name-" auctions and ledger events', function()
+	local store = assert(Store.open({}, { realm = SAVED_REALM }))
+	local market = seedBrokenRecords(store, HORDE_EU, 'Eilu-')
+	local key = store:CharacterKey(realmless())
+	t.eq(key, 'Eilu-' .. SAVED_REALM)
+	t.eq(market.auctions[101].char, key)
+	t.eq(market.auctions[102].char, 'Other-Elsewhere', "someone else's record stays")
+	t.same(charsOf(market), { key, 'Other-Elsewhere' })
+	t.eq(#ns.AuctionTracker.list(market, { state = 'active', char = key }), 1)
+end)
+
+t.test('"Name-" records on another faction or region are not this character\'s', function()
+	local store = assert(Store.open({}, { realm = SAVED_REALM }))
+	local other = seedBrokenRecords(store, ALLIANCE_EU, 'Eilu-')
+	store:CharacterKey(realmless())
+	t.eq(other.auctions[101].char, 'Eilu-')
+	t.same(charsOf(other), { 'Eilu-', 'Other-Elsewhere' })
+end)
+
+t.test('the server-number key takes them over too, when no realm is known', function()
+	local store = assert(Store.open({}, {}))
+	local market = seedBrokenRecords(store, HORDE_EU, 'Eilu-')
+	t.eq(store:CharacterKey(realmless()), 'Eilu-Server 6928')
+	t.eq(market.auctions[101].char, 'Eilu-Server 6928')
+end)
+
+t.test('an auction or ledger event under the realm name recovers it', function()
+	local fromAuction = assert(Store.open({}, {}))
+	fromAuction:Market(HORDE_EU).auctions[7] = { state = 'sold', char = 'Eilu-' .. SAVED_REALM }
+	t.same({ fromAuction:ResolveRealm(realmless()) }, { SAVED_REALM, 'saved' })
+	local fromLedger = assert(Store.open({}, {}))
+	ns.Ledger.append(
+		fromLedger:Market(HORDE_EU),
+		{ t = 1, kind = 'sale', itemId = 2589, qty = 1, copper = 1, char = 'Eilu-' .. SAVED_REALM }
+	)
+	t.same({ fromLedger:ResolveRealm(realmless()) }, { SAVED_REALM, 'saved' })
+	local otherFaction = assert(Store.open({}, {}))
+	otherFaction:Market(ALLIANCE_EU).auctions[7] = { state = 'sold', char = 'Eilu-Nightslayer' }
+	t.eq((otherFaction:ResolveRealm(realmless())), nil, "another faction's namesake is not evidence")
+end)
