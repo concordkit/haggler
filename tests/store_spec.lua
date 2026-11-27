@@ -338,7 +338,21 @@ local ALLIANCE_EU = 'forever/normal/alliance/eu'
 
 local function seedBrokenRecords(store, marketKey, char)
 	local market = store:Market(marketKey)
-	market.auctions[101] = { itemId = 2589, qty = 20, state = 'active', char = char }
+	market.auctions[101] = {
+		itemId = 2589,
+		qty = 20,
+		remaining = 20,
+		listed = 20,
+		unitPrice = 25,
+		deposit = 60,
+		postedAt = 900,
+		hours = 48,
+		state = 'active',
+		changedAt = 900,
+		char = char,
+		knownUnits = 0,
+		knownCopper = 0,
+	}
 	market.auctions[102] = { itemId = 2589, qty = 20, state = 'sold', char = 'Other-Elsewhere' }
 	ns.Ledger.append(market, { t = 1000, kind = 'sale', itemId = 2589, qty = 20, copper = 500, char = char })
 	ns.Ledger.append(market, { t = 1001, kind = 'sale', itemId = 2589, qty = 1, copper = 5, char = 'Other-Elsewhere' })

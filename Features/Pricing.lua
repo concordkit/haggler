@@ -92,6 +92,11 @@ function newMarketKeyResolver(wow)
 		if player.faction ~= 'Alliance' and player.faction ~= 'Horde' then
 			return nil
 		end
+		-- With no realm name, AHledger tells the ruleset from the GUID's server number, and answers
+		-- the Normal market until the client knows it: a market taken then would stick.
+		if ns.store and not ns.store:ResolveRealm(player) and not player.server then
+			return nil
+		end
 		marketKey = ns.store and ns.store:MarketKeyFor(player, wow:AHledgerMarket()) or ns.Store.marketKeyFor(player)
 		return marketKey
 	end

@@ -37,12 +37,12 @@ local TOP_LEVEL_TABLES =
 local MARKET_TABLES = { 'scanDays', 'ventures', 'auctions', 'ledger', 'costPools', 'ledgerDays' }
 local RULESETS = { normal = true, pvp = true, rp = true, rppvp = true, hardcore = true }
 -- Tables keyed 'Name-Realm' that tell which realm a character was on before the client stopped
--- naming it.
+-- naming it. Auctions and ledger events carry the same key in their char field.
 local CHARACTER_KEYED_TABLES = { 'sessions', 'characters' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local ensureLayout, ensureCharLayout, seedBuiltInRules, hasWord, collectLegacyKeys, packSavedScan
-local nonEmpty, realmFromSavedKeys, isServerRealm
+local nonEmpty, realmFromSavedRecords, realmOfCharKey, isServerRealm, isPlayersMarket, moveBrokenKeyRecords
 
 --- Migration n upgrades a database from version n - 1 to n. Each changes db in place and gets
 --- the context Store.migrate was given ({ now? }).
@@ -204,7 +204,9 @@ end
 --- The player's realm name, and where it came from: 'client' (the client gave it; it is remembered
 --- for this character), 'remembered' (the last one the client gave for this character), 'saved'
 --- (the one realm this character's name is saved under, from before the client stopped giving
---- it; remembered from then on), or nil when nothing names it. Writes HagglerCharDB.realm.
+--- it: session and character keys, and the auctions and ledger events of this faction's and
+--- region's markets; remembered from then on), or nil when nothing names it. Writes
+--- HagglerCharDB.realm.
 --- @param player table Wow:Player()
 --- @return string|nil realm
 --- @return string|nil source
@@ -221,7 +223,7 @@ function StoreMethods:ResolveRealm(player)
 	if remembered then
 		return remembered, 'remembered'
 	end
-	local saved = realmFromSavedKeys(self.db, nonEmpty(player.name))
+	local saved = realmFromSavedRecords(self.db, player)
 	if saved then
 		self.charDb.realm = saved
 		return saved, 'saved'
@@ -232,6 +234,8 @@ end
 --- The player's character key, 'Name-Realm', or nil while the client does not know the name.
 --- With no realm name from anywhere (ResolveRealm) the realm part is the server number,
 --- 'Name-Server 6928'; nil when there is none either. Never 'Name-'.
+--- The first time a key is given in a session, the auctions and ledger events this faction's and
+--- region's markets saved under 'Name-' (client 71037 before this fix) move to it.
 --- @param player table|nil Wow:Player()
 --- @return string|nil charKey
 function StoreMethods:CharacterKey(player)
@@ -243,7 +247,16 @@ function StoreMethods:CharacterKey(player)
 	if not realm and type(player.server) == 'number' then
 		realm = 'Server ' .. player.server
 	end
-	return realm and (name .. '-' .. realm) or nil
+	if not realm then
+		return nil
+	end
+	local charKey = name .. '-' .. realm
+	self.movedBrokenKeyTo = self.movedBrokenKeyTo or {}
+	if not self.movedBrokenKeyTo[charKey] then
+		self.movedBrokenKeyTo[charKey] = true
+		moveBrokenKeyRecords(self.db, player, name .. '-', charKey)
+	end
+	return charKey
 end
 
 --- The player's market key. The ruleset is the realm name's (ResolveRealm); with no realm name it
@@ -497,30 +510,87 @@ function nonEmpty(value)
 	return trimmed ~= '' and trimmed or nil
 end
 
--- The one realm saved keys name for this character's name; nil when none do or they disagree
--- (the same name on two realms). A key whose realm is a server number names no realm.
-function realmFromSavedKeys(db, name)
+-- The one realm saved records name for this character's name; nil when none do or they disagree
+-- (the same name on two realms). Session and character keys carry no faction, so they count
+-- whatever the market; auctions and ledger events count only on this faction's and region's
+-- markets, where a namesake on the other side cannot pass for this character.
+function realmFromSavedRecords(db, player)
+	local name = nonEmpty(player.name)
 	if not name then
 		return nil
 	end
-	local prefix = name .. '-'
-	local found
+	local realms = {}
 	for _, tableName in ipairs(CHARACTER_KEYED_TABLES) do
 		for key in pairs(db[tableName] or {}) do
-			local realm = type(key) == 'string' and key:sub(1, #prefix) == prefix and nonEmpty(key:sub(#prefix + 1))
-			if realm and not isServerRealm(realm) then
-				if found and found ~= realm then
-					return nil
-				end
-				found = realm
+			realms[#realms + 1] = realmOfCharKey(key, name)
+		end
+	end
+	for marketKey, market in pairs(db.markets or {}) do
+		if isPlayersMarket(marketKey, player) and type(market) == 'table' then
+			for _, record in pairs(type(market.auctions) == 'table' and market.auctions or {}) do
+				realms[#realms + 1] = type(record) == 'table' and realmOfCharKey(record.char, name) or nil
+			end
+			for _, event in ipairs(ns.Ledger.events(market)) do
+				realms[#realms + 1] = realmOfCharKey(event.char, name)
 			end
 		end
+	end
+	local found
+	for _, realm in ipairs(realms) do
+		if found and found ~= realm then
+			return nil
+		end
+		found = realm
 	end
 	return found
 end
 
+-- The realm in a 'Name-Realm' key for this name; nil for another name, 'Name-' or a server number.
+function realmOfCharKey(key, name)
+	local prefix = name .. '-'
+	if type(key) ~= 'string' or key:sub(1, #prefix) ~= prefix then
+		return nil
+	end
+	local realm = nonEmpty(key:sub(#prefix + 1))
+	return realm and not isServerRealm(realm) and realm or nil
+end
+
 function isServerRealm(realm)
 	return realm:find('^Server %d+$') ~= nil
+end
+
+-- Whether a market key is the player's faction's and region's, whatever its ruleset.
+function isPlayersMarket(marketKey, player)
+	if type(marketKey) ~= 'string' then
+		return false
+	end
+	local faction, region = marketKey:match('^forever/[%l%d]+/([%l%d]+)/([%l%d]+)$')
+	return faction ~= nil and faction == (player.faction or ''):lower() and region == (player.region or ''):lower()
+end
+
+-- Client 71037 made every character key 'Name-' until this fix; Store:Session refused it, but
+-- auctions and ledger events were saved under it. They move to the character's real key, on
+-- this faction's and region's markets only. A namesake there on another ruleset cannot be told
+-- apart; the first of them to log in takes them.
+function moveBrokenKeyRecords(db, player, brokenKey, charKey)
+	for marketKey, market in pairs(db.markets or {}) do
+		if isPlayersMarket(marketKey, player) and type(market) == 'table' then
+			for _, record in pairs(type(market.auctions) == 'table' and market.auctions or {}) do
+				if type(record) == 'table' and record.char == brokenKey then
+					record.char = charKey
+				end
+			end
+			if type(market.ledger) == 'table' then
+				ns.Ledger.rewrite(market, function(event)
+					if event.char ~= brokenKey then
+						return nil
+					end
+					event.char = charKey
+					return event
+				end)
+			end
+		end
+	end
 end
 
 return Store
