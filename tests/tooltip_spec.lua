@@ -9,6 +9,12 @@ local NOW = 1000000
 local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 } }
 
 local theme = Theme.new(ns.Tokens)
+local icons = ns.IconSet.new({ theme = theme })
+local COIN_ICONS = FakeGame.COIN_ICONS
+local coins = FakeGame.coins
+local LOW_ICON = icons:Inline('alert-triangle', 0, 'color.state.caution')
+local MEDIUM_ICON = icons:Inline('alert-triangle', 0, 'color.state.warning')
+local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
 
 local function price(copper, level, reasons, trace)
 	return {
@@ -42,6 +48,7 @@ end
 
 local function build(input)
 	input.theme = input.theme or theme
+	input.icons = input.icons or icons
 	input.quote = input.quote or quote()
 	return TooltipLines.build(input)
 end
@@ -68,14 +75,14 @@ t.group('tooltip lines')
 t.test('compact: the age header, then one line per rule with the stack price', function()
 	t.same(texts(build({ stackCount = 20 })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic ×20 | 18s 80c',
-		'Median ×20 | 24s',
+		'Realistic ×20 | ' .. coins('18s 80c'),
+		'Median ×20 | ' .. coins('24s'),
 	})
 end)
 
 t.test('a single item shows no count; the unit view shows the price each', function()
-	t.same(texts(build({ stackCount = 1 }))[2], 'Realistic | 94c')
-	t.same(texts(build({ stackCount = 20, isUnitView = true }))[2], 'Realistic (each) | 94c')
+	t.same(texts(build({ stackCount = 1 }))[2], 'Realistic | ' .. coins('94c'))
+	t.same(texts(build({ stackCount = 20, isUnitView = true }))[2], 'Realistic (each) | ' .. coins('94c'))
 end)
 
 t.test('low confidence is marked on the line itself; medium is not', function()
@@ -87,9 +94,26 @@ t.test('low confidence is marked on the line itself; medium is not', function()
 			},
 		}),
 	})
-	t.truthy(lines[2].right:find('(!) low', 1, true))
-	t.truthy(lines[2].right:find('|c' .. theme:Hex('color.state.danger'), 1, true), 'in the danger colour')
-	t.eq(lines[3].right:find('(!)', 1, true), nil)
+	t.eq(lines[2].right, coins('94c') .. ' ' .. LOW_ICON, 'the caution triangle, no text mark')
+	t.eq(lines[3].left, 'Low confidence', 'the word goes on its own line below')
+	t.eq(lines[4].right, coins('1s 20c'), 'medium is not marked')
+end)
+
+t.test('with the detail off, the top low reason wraps on its own line under the price', function()
+	local reasons = {
+		{ code = 'trollBuys', level = 'low', text = '81% of vanished units were troll buys and are left out' },
+	}
+	local lowQuote = quote({
+		prices = { { ruleId = 'minimum', name = 'Minimum', isDefault = true, price = price(24, 'low', reasons) } },
+	})
+	local lines = build({ quote = lowQuote, stackCount = 2 })
+	t.same(texts(lines), {
+		'Haggler | scan 12 min · table 3 h',
+		'Minimum ×2 | ' .. coins('48c') .. ' ' .. LOW_ICON,
+		'Low confidence, 81% of vanished units were troll buys and are left out',
+	})
+	t.eq(lines[3].wrap, true, 'wraps at the tooltip width instead of widening it')
+	t.same(lines[3].color, theme:Color('color.state.caution'))
 end)
 
 t.test('with the detail off, a low line names its top reason inline', function()
@@ -100,14 +124,13 @@ t.test('with the detail off, a low line names its top reason inline', function()
 	local lowQuote = quote({
 		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) } },
 	})
-	t.eq(
-		texts(build({ quote = lowQuote }))[2],
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low: few sales')
-	)
-	t.eq(
-		texts(build({ quote = lowQuote, isDetail = true }))[2],
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low')
-	)
+	t.same({ unpack(texts(build({ quote = lowQuote })), 2, 3) }, {
+		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
+		'Low confidence, few sales',
+	})
+	local detailed = texts(build({ quote = lowQuote, isDetail = true, options = { detailTrace = false } }))
+	t.eq(detailed[2], 'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON)
+	t.eq(detailed[3], MEDIUM_ICON .. ' Medium confidence, scan is 3 h old', 'the detail block lists every reason')
 end)
 
 t.test('a rule without a price says so', function()
@@ -156,18 +179,18 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 	})
 	t.same(texts(build({ quote = detailed, stackCount = 20, isDetail = true })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic ×20 | 19s 60c',
-		'Median ×20 | 24s ' .. theme:Wrap('color.state.danger', '(!) low'),
+		'Realistic ×20 | ' .. coins('19s 60c'),
+		'Median ×20 | ' .. coins('24s') .. ' ' .. LOW_ICON,
 		'Realistic, each:',
-		'  scan first price with 5 units | 99c',
+		'  scan first price with 5 units | ' .. coins('99c'),
 		'  cap skipped: no median',
-		'  undercut by 1c | 98c',
-		'  price step 1c | 98c',
-		'(?) AHledger data is 30 hours old',
-		'(!) Median: under 1 sale a day',
+		'  undercut by 1c | ' .. coins('98c'),
+		'  price step 1c | ' .. coins('98c'),
+		MEDIUM_ICON .. ' Medium confidence, AHledger data is 30 hours old',
+		LOW_ICON .. ' Median: low confidence, under 1 sale a day',
 		'Sold a day | 45',
 		'Listed | 60 units · 2 prices',
-		'Vendor | 2s 60c',
+		'Vendor | ' .. coins('2s 60c'),
 		'Sell time | ~21 h', -- (20 listed under 98c + 20) / 45 a day
 		'  ' .. TooltipLines.SELL_TIME_NOTE,
 	})
@@ -187,9 +210,32 @@ t.test('detail lines follow their settings; the reasons always show', function()
 	}
 	t.same(texts(build({ quote = lowQuote, isDetail = true, options = options })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low'),
-		'(!) old data',
+		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
+		LOW_ICON .. ' Low confidence, old data',
 	})
+end)
+
+t.test('detail lines that can grow long wrap at the tooltip width', function()
+	local reasons = { { code = 'stale', level = 'low', text = 'old data' } }
+	local lowQuote = quote({
+		prices = {
+			{ ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) },
+			{ ruleId = 'median', name = 'Median', isDefault = false, reason = 'too few sales in the window' },
+		},
+		facts = { salesPerDay = 0.2, levels = {} },
+	})
+	local lines = build({ quote = lowQuote, isDetail = true, options = { detailTrace = false } })
+	for _, text in ipairs({ 'old data', 'no price, too few sales', 'under 1 sale a day', TooltipLines.SELL_TIME_NOTE }) do
+		local isFound = false
+		for _, line in ipairs(lines) do
+			if line.left:find(text, 1, true) then
+				isFound = true
+				t.eq(line.wrap, true, text)
+				t.eq(line.right, nil, text)
+			end
+		end
+		t.truthy(isFound, text)
+	end
 end)
 
 t.test('an informational reason gets its own marker, never a bare leading space', function()
@@ -198,7 +244,7 @@ t.test('an informational reason gets its own marker, never a bare leading space'
 		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'high', reasons) } },
 	})
 	local lines = build({ quote = infoQuote, isDetail = true, options = { detailTrace = false } })
-	t.truthy(find(lines, '(i) sold a day from AHledger'))
+	t.truthy(find(lines, INFO_ICON .. ' Sold a day from AHledger'))
 end)
 
 t.test('the sales line says when sales a day is the own count', function()
@@ -237,18 +283,25 @@ t.test('sell time counts the units at or under the price plus the stack', functi
 	t.eq(TooltipLines.sellTimeDays({ levels = { 'junk', { price = '1', qty = 2 } }, salesPerDay = 1 }, 94, 1), 1)
 end)
 
-t.test('a slow sell time is marked low', function()
+t.test('a slow sell time is marked low, with the reason wrapped below', function()
 	local lines = build({ isDetail = true, quote = quote({ facts = { salesPerDay = 0.2, levels = {} } }) })
-	t.truthy(find(lines, 'Sell time | ~5.0 days ' .. theme:Wrap('color.state.danger', '(!) low')))
+	local texted = texts(lines)
+	for index, text in ipairs(texted) do
+		if text:find('Sell time', 1, true) then
+			t.eq(text, 'Sell time | ~5.0 days ' .. LOW_ICON)
+			t.eq(texted[index + 1], 'Low confidence, under 1 sale a day')
+		end
+	end
+	t.truthy(find(lines, 'Sell time'))
 end)
 
 t.test('money and ages read short', function()
-	t.eq(TooltipLines.money(0), '0c')
-	t.eq(TooltipLines.money(5), '5c')
-	t.eq(TooltipLines.money(100), '1s')
-	t.eq(TooltipLines.money(10000), '1g')
-	t.eq(TooltipLines.money(12005), '1g 20s 5c')
-	t.eq(TooltipLines.money(1230000), '123g')
+	t.eq(TooltipLines.money(0), '0' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(48), '48' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(100), '1' .. COIN_ICONS.s)
+	t.eq(TooltipLines.money(10000), '1' .. COIN_ICONS.g, 'zero parts are left out, as the game does')
+	t.eq(TooltipLines.money(12005), '1' .. COIN_ICONS.g .. ' 20' .. COIN_ICONS.s .. ' 5' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(1230000), '123' .. COIN_ICONS.g)
 	t.eq(TooltipLines.age(5), 'just now')
 	t.eq(TooltipLines.age(150), '2 min')
 	t.eq(TooltipLines.age(7300), '2 h')
@@ -314,6 +367,7 @@ local function newRegistry(options)
 	local wow = ns.Wow.create(game.env)
 	local tooltips = ns.Tooltip.new({
 		wow = wow,
+		theme = theme,
 		onError = function(owner, err)
 			errors[#errors + 1] = owner .. ': ' .. tostring(err)
 		end,
@@ -346,7 +400,7 @@ t.test('one failing provider is reported; the others still draw', function()
 		return { 'not a line', { right = 'no left' }, { left = 'kept' } }
 	end)
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(#lines, 1)
+	t.eq(#lines, 2, 'the kept line and the collapsed closing separator')
 	t.eq(lines[1].left, 'kept')
 	t.eq(#errors, 1)
 	t.truthy(errors[1]:find('broken'))
@@ -368,12 +422,12 @@ t.test('removing the last provider stops drawing; adding again reuses the one ho
 	end
 	tooltips:AddProvider('a', provider)
 	tooltips:AddProvider('a', provider)
-	t.eq(#game:ShowItemTooltip(LINEN), 1, 'adding again replaces')
+	t.eq(#game:ShowItemTooltip(LINEN), 2, 'adding again replaces: one line and the closing separator')
 	tooltips:RemoveProvider('a')
 	t.eq(tooltips:HasProviders(), false)
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
 	tooltips:AddProvider('a', provider)
-	t.eq(#game:ShowItemTooltip(LINEN), 1)
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
 	t.eq(#game.postCalls, 1, 'the client hook cannot be undone, so it goes in once')
 end)
 
@@ -383,7 +437,7 @@ t.test('without the data processor the tooltip scripts are hooked instead', func
 		return { { left = 'line' } }
 	end)
 	t.truthy(game.env.GameTooltip.scripts.OnTooltipSetItem)
-	t.eq(#game:ShowItemTooltip(LINEN), 1)
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
 end)
 
 t.test('the stack count comes from the bag slot under the cursor, when it holds the item', function()
@@ -422,6 +476,278 @@ t.test('modifiers reach the providers; a forbidden tooltip is skipped', function
 	t.same(seen, { shift = true, ctrl = false, alt = false })
 	game.env.GameTooltip.isForbidden = true
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
+end)
+
+t.group('tooltip separators')
+
+local SEPARATOR_ALPHA = 0.6
+
+-- Another add-on's (or the game's) lines, added by a post-call like Haggler's own. A line is
+-- its text, { left, right } for a double line, or { money = copper } for the sell-price line.
+local function addOtherLines(game, otherLines, shouldShowAfter)
+	game.env.TooltipDataProcessor.AddTooltipPostCall(game.env.Enum.TooltipDataType.Item, function(tooltip)
+		for _, line in ipairs(otherLines) do
+			if type(line) == 'string' then
+				tooltip:AddLine(line)
+			elseif line.money then
+				tooltip:AddMoneyLine(line.money)
+			else
+				tooltip:AddDoubleLine(line[1], line[2])
+			end
+		end
+		if shouldShowAfter then
+			tooltip:Show()
+		end
+	end)
+end
+
+local function withHagglerBlock(tooltips)
+	tooltips:AddProvider('haggler', function()
+		return { { left = 'Haggler', right = '12 min' }, { left = 'Realistic', right = '94c' } }
+	end)
+end
+
+local function leftTexts(tooltip)
+	local result = {}
+	for index, line in ipairs(tooltip.lines) do
+		result[index] = line.left
+	end
+	return result
+end
+
+-- The rules shown, as the line index each sits on.
+local function shownRuleLines(game, tooltip)
+	local result = {}
+	for _, texture in ipairs(tooltip.children) do
+		if texture.isShown and texture.colorTexture then
+			local _, relativeTo = texture:GetPoint(1)
+			for index = 1, #tooltip.lines do
+				if game.env[tooltip.name .. 'TextLeft' .. index] == relativeTo then
+					result[#result + 1] = index
+				end
+			end
+		end
+	end
+	table.sort(result)
+	return result
+end
+
+t.test('a separator goes above the block: a blank line with a 1px rule in the tooltip border colour at 60%', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 2 })
+	local rule = tooltip.children[1]
+	local border = theme:Color('color.border.tooltip')
+	t.same(rule.colorTexture, { border.r, border.g, border.b, SEPARATOR_ALPHA })
+	t.eq(rule.height, 1, 'border.hairline, a whole pixel')
+	t.eq(rule.width, 220, 'the tooltip width less the line inset on both sides')
+end)
+
+t.test('no doubled separator: a blank line above the block gets the rule, its text untouched', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', ' ' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 2 })
+end)
+
+t.test('the sell-price money line above is not blank: the block gets its own separator', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', { money = 13 } })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 3 })
+end)
+
+t.test('a double line with only right text above is not blank either', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', { ' ', '5 charges' } })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 3 })
+end)
+
+t.test('a money line after the block gets the separator below', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { { money = 13 } }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', ' ' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('Haggler last: no separator at the end of the tooltip', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:Show()
+	t.eq(tooltip.lines[#tooltip.lines].left, '', 'the closing separator collapses to an empty line')
+	t.same(shownRuleLines(game, tooltip), { 2 }, 'only the one above shows')
+end)
+
+t.test('lines another add-on adds after the block get the separator below', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', 'Other add-on' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('the separator below waits for the next Show when the later add-on does not show', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' })
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:Show()
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('no doubled separator below: a blank line after the block gets the rule, the closing stays collapsed', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { ' ', 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '', ' ', 'Other add-on' })
+	t.same(shownRuleLines(game, tooltip), { 2, 6 })
+end)
+
+t.test('a tooltip without OnTooltipCleared gets the lines but no separators', function()
+	local game, tooltips = newRegistry()
+	game.env.GameTooltip.scriptNames.OnTooltipCleared = nil
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', 'Haggler', 'Realistic' })
+	t.eq(#tooltip.children, 0)
+end)
+
+t.test('a closing line that no longer holds the separator is never touched', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	game.env.GameTooltipTextLeft5:SetText('Someone else')
+	tooltip:AddLine('Later line')
+	tooltip:Show()
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', 'Someone else', 'Later line' })
+	t.same(shownRuleLines(game, tooltip), { 2 })
+end)
+
+t.test("a collapsed closing line the client reads back as nil is still Haggler's", function()
+	local game, tooltips = newRegistry()
+	game.env.GameTooltip.isEmptyTextNil = true
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:AddLine('Later line')
+	tooltip:Show()
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', 'Later line' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('rules snap to the pixel grid where the client can', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	game:ShowItemTooltip(LINEN)
+	local rule = game.env.GameTooltip.children[1]
+	t.eq(rule.isSnappedToPixelGrid, true)
+	t.eq(rule.texelSnappingBias, 0)
+	local older, olderTooltips = newRegistry()
+	older.env.GameTooltip.hasPixelSnapping = false
+	addOtherLines(older, { 'Linen Cloth' })
+	withHagglerBlock(olderTooltips)
+	older:ShowItemTooltip(LINEN)
+	t.eq(#shownRuleLines(older, older.env.GameTooltip), 1, 'a client without them still draws the rule')
+end)
+
+t.test('rules are whole physical pixels: one pixel high, width and offset snapped', function()
+	local game, tooltips = newRegistry()
+	game.env.GetPhysicalScreenSize = function()
+		return 2560, 1440
+	end
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip.width = 241
+	game:ShowItemTooltip(LINEN)
+	local pixel = 768 / 1440
+	local rule = tooltip.children[1]
+	t.eq(rule.height, pixel, 'one physical pixel')
+	local function isWholePixels(value)
+		local count = value / pixel
+		return math.abs(count - math.floor(count + 0.5)) < 1e-9
+	end
+	t.truthy(isWholePixels(rule.width) and rule.width <= 221 and rule.width > 221 - pixel, 'width snapped down')
+	local point, relativeTo, relativePoint, x, y = rule:GetPoint(1)
+	t.eq(point, 'TOPLEFT')
+	t.eq(relativeTo, game.env.GameTooltipTextLeft2)
+	t.eq(relativePoint, 'TOPLEFT')
+	t.eq(x, 0)
+	t.truthy(y < 0 and isWholePixels(y), 'a pixel-snapped offset from the line top')
+end)
+
+t.test('a later line that widens the tooltip resizes the rules on the next Show', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip.width = 300
+	tooltip:AddLine('A much wider line from another add-on')
+	tooltip:Show()
+	t.eq(tooltip.children[1].width, 280)
+	t.eq(tooltip.children[2].width, 280)
+end)
+
+t.test('clearing the tooltip hides the rules; a rebuild reuses them', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:ClearLines()
+	t.eq(#tooltip.children, 2)
+	t.eq(tooltip.children[1].isShown or tooltip.children[2].isShown, false)
+	game:ShowItemTooltip(WOOL)
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+	t.eq(#tooltip.children, 2, 'no new textures')
+end)
+
+t.test('no Haggler lines: no separators either', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	tooltips:AddProvider('quiet', function()
+		return {}
+	end)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth' })
 end)
 
 t.group('wow events')
@@ -515,7 +841,8 @@ t.test('item tooltips get the header and the default rule; a modifier change red
 	t.eq(lines[1].right, 'no scan · table 2 h')
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Prices from AHledger (ahledger.com)', 'the credit closes the block')
-	t.eq(#lines, 3)
+	t.eq(lines[4].left, '', 'then the closing separator, collapsed as the last line')
+	t.eq(#lines, 4)
 	game.modifiers.shift = true
 	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
 	t.eq(game.env.GameTooltip.refreshed, 1)
@@ -531,7 +858,7 @@ t.test('shown rules come from the store, default first', function()
 	local lines = game:ShowItemTooltip(LINEN)
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Median')
-	t.eq(lines[3].right, '1s 20c')
+	t.eq(lines[3].right, FakeGame.coins('1s 20c'))
 end)
 
 t.test('detail mode and modifier are settings', function()
@@ -545,7 +872,7 @@ t.test('detail mode and modifier are settings', function()
 	t.truthy(#lines > 4)
 	t.eq(lines[2].left, 'Realistic', 'Alt shows the detail but not the unit view')
 	addon.host.RunCommand('set tooltip.detailMode off')
-	t.eq(#game:ShowItemTooltip(LINEN), 3)
+	t.eq(#game:ShowItemTooltip(LINEN), 4)
 end)
 
 t.test('items without data get no lines', function()
@@ -559,7 +886,7 @@ t.test('switching the module off removes its lines and its event, and back on re
 	t.same(game:ShowItemTooltip(LINEN), {})
 	t.eq(game.frame.events.MODIFIER_STATE_CHANGED, nil)
 	addon.host.Enable('tooltip')
-	t.eq(#game:ShowItemTooltip(LINEN), 3)
+	t.eq(#game:ShowItemTooltip(LINEN), 4)
 	t.eq(#game.postCalls, 1)
 end)
 

@@ -148,7 +148,7 @@ t.test('the bag total sits above the money frame, flagged low when a stack is a 
 	game.containerItems['0:2'] = nil
 	game:Fire('BAG_UPDATE_DELAYED')
 	game:RunTimers()
-	t.eq(total.text:find('|T', 1, true), nil, 'no guess left')
+	t.eq(total.text:find('Haggler\\media\\icons', 1, true), nil, 'no guess left')
 end)
 
 t.test('the value setting adds a short value; the total setting hides the total', function()

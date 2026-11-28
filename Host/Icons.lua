@@ -26,9 +26,10 @@ IconSet.EXTENSION = '.png'
 -- is accepted.
 IconSet.WEIGHT_PATTERN = '^%d+%.?%d*$'
 IconSet.DEFAULT_WEIGHT = '2'
---- The low-confidence marker on frames (tooltips keep the text marker).
+--- The low-confidence marker, on frames and in tooltips alike: a caution, so the triangle in
+--- the caution colour (circle-alert is for danger only).
 IconSet.LOW_CONFIDENCE = 'alert-triangle'
-IconSet.LOW_CONFIDENCE_COLOR = 'color.state.danger'
+IconSet.LOW_CONFIDENCE_COLOR = 'color.state.caution'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local hasWeight, isSafeWeight, isTexcoords

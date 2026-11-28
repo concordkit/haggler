@@ -4,6 +4,21 @@
 -- and its partner.
 local FakeGame = {}
 
+-- The client's coin textures as Haggler writes money (TooltipLines.money).
+FakeGame.COIN_ICONS = {
+	g = '|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t',
+	s = '|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t',
+	c = '|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t',
+}
+
+--- Money as Haggler writes it, from the short letters: '18s 80c' reads 18 and the silver coin,
+--- 80 and the copper coin. Keeps a spec's expected text readable.
+function FakeGame.coins(text)
+	return (text:gsub('(%d+)([gsc])', function(amount, unit)
+		return amount .. FakeGame.COIN_ICONS[unit]
+	end))
+end
+
 -- Helpers live further down; declared here so they stay local.
 local addAuctionHouseActions, addTrackingApi
 
@@ -156,6 +171,15 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:CreateTexture(_, layer)
 		local texture = FakeGame.newWidget('Texture', self)
 		texture.layer = layer
+		-- Pixel snapping as the modern client has it; a test sets hasPixelSnapping = false without it.
+		if self.hasPixelSnapping ~= false then
+			function texture:SetSnapToPixelGrid(isSnapped)
+				self.isSnappedToPixelGrid = isSnapped
+			end
+			function texture:SetTexelSnappingBias(bias)
+				self.texelSnappingBias = bias
+			end
+		end
 		self.children[#self.children + 1] = texture
 		return texture
 	end
@@ -288,24 +312,121 @@ local function newFrame(unknownEvents)
 	return frame
 end
 
+-- A line's font string, as the client names it (<tooltip>TextLeft<n> / TextRight<n>) and
+-- reuses it from one build to the next. Its text is the line's left or right, so a test reads
+-- both the same way; a right font string shows only on a double line, as in the client.
+local LINE_HEIGHT = 12
+
+local function lineFontString(game, tooltip, index, side)
+	local globalName = tooltip.name .. 'Text' .. (side == 'right' and 'Right' or 'Left') .. index
+	local fontString = game.env[globalName]
+	if fontString then
+		return fontString
+	end
+	local key = side == 'right' and 'right' or 'left'
+	fontString = { index = index, left = tooltip.left + 10 }
+	-- The client can return nil for a line set to ''; a test sets tooltip.isEmptyTextNil for that.
+	function fontString:GetText()
+		local line = tooltip.lines[self.index]
+		local text = line and line[key]
+		if text == '' and tooltip.isEmptyTextNil then
+			return nil
+		end
+		return text
+	end
+	function fontString:SetText(text)
+		local line = tooltip.lines[self.index]
+		if line then
+			line[key] = text
+		end
+	end
+	function fontString:IsShown()
+		local line = tooltip.lines[self.index]
+		return line ~= nil and (key == 'left' or line.right ~= nil)
+	end
+	function fontString:GetLeft()
+		return self.left
+	end
+	function fontString:GetHeight()
+		return LINE_HEIGHT
+	end
+	game.env[globalName] = fontString
+	return fontString
+end
+
 local function newTooltip(game, name)
-	local tooltip = { name = name, lines = {}, shownCount = 0, isShown = true, scripts = {} }
+	local tooltip = {
+		name = name,
+		lines = {},
+		shownCount = 0,
+		isShown = true,
+		scripts = {},
+		children = {},
+		left = 100,
+		width = 240,
+		scriptNames = { OnTooltipSetItem = true, OnTooltipCleared = true, OnShow = true, OnHide = true },
+	}
+	local function addLine(line)
+		tooltip.lines[#tooltip.lines + 1] = line
+		lineFontString(game, tooltip, #tooltip.lines, 'left')
+		lineFontString(game, tooltip, #tooltip.lines, 'right')
+	end
 	function tooltip:SetOwner(owner, anchor)
 		self.owner, self.anchor = owner, anchor
 	end
+	-- Like the client, clearing runs OnTooltipCleared and hides the money frames.
 	function tooltip:ClearLines()
 		self.lines = {}
+		for index = 1, self.numMoneyFrames or 0 do
+			game.env[self.name .. 'MoneyFrame' .. index]:Hide()
+		end
+		self.shownMoneyFrames = nil
+		if self.scripts.OnTooltipCleared then
+			self.scripts.OnTooltipCleared(self)
+		end
 	end
 	function tooltip:Hide()
 		self.isShown = false
 		self.hiddenCount = (self.hiddenCount or 0) + 1
 	end
 	function tooltip:AddLine(text, r, g, b, wrap)
-		self.lines[#self.lines + 1] = { left = text, r = r, g = g, b = b, wrap = wrap }
+		addLine({ left = text, r = r, g = g, b = b, wrap = wrap })
 	end
 	function tooltip:AddDoubleLine(left, right, lr, lg, lb, rr, rg, rb)
-		self.lines[#self.lines + 1] =
-			{ left = left, right = right, lr = lr, lg = lg, lb = lb, rr = rr, rg = rg, rb = rb }
+		addLine({ left = left, right = right, lr = lr, lg = lg, lb = lb, rr = rr, rg = rg, rb = rb })
+	end
+	function tooltip:NumLines()
+		return #self.lines
+	end
+	function tooltip:GetName()
+		return self.name
+	end
+	function tooltip:GetLeft()
+		return self.left
+	end
+	function tooltip:GetWidth()
+		return self.width
+	end
+	function tooltip:GetEffectiveScale()
+		return self.scale or 1
+	end
+	-- What the client's tooltip template has; a test clears scriptNames to model one without.
+	function tooltip:HasScript(script)
+		return self.scriptNames[script] == true
+	end
+	function tooltip:CreateTexture(_, layer)
+		local texture = FakeGame.newWidget('Texture', self)
+		texture.layer = layer
+		if self.hasPixelSnapping ~= false then
+			function texture:SetSnapToPixelGrid(isSnapped)
+				self.isSnappedToPixelGrid = isSnapped
+			end
+			function texture:SetTexelSnappingBias(bias)
+				self.texelSnappingBias = bias
+			end
+		end
+		self.children[#self.children + 1] = texture
+		return texture
 	end
 	function tooltip:Show()
 		self.shownCount = self.shownCount + 1
@@ -322,12 +443,35 @@ local function newTooltip(game, name)
 	function tooltip:GetOwner()
 		return self.owner
 	end
+	-- Runs after the script already set, as the client chains hooks.
 	function tooltip:HookScript(script, handler)
-		self.scripts[script] = handler
+		local previous = self.scripts[script]
+		self.scripts[script] = function(...)
+			if previous then
+				previous(...)
+			end
+			handler(...)
+		end
+	end
+	-- The client's SetTooltipMoney: a ' ' line with a money frame anchored to it by name.
+	function tooltip:AddMoneyLine(copper)
+		self:AddLine(' ')
+		local index = (self.shownMoneyFrames or 0) + 1
+		local frameName = self.name .. 'MoneyFrame' .. index
+		local moneyFrame = game.env[frameName]
+		if not moneyFrame then
+			moneyFrame = FakeGame.newWidget('Frame', self)
+			game.env[frameName] = moneyFrame
+			self.numMoneyFrames = index
+		end
+		moneyFrame.copper = copper
+		moneyFrame:ClearAllPoints()
+		moneyFrame:SetPoint('LEFT', self.name .. 'TextLeft' .. #self.lines, 'LEFT', 4, 0)
+		moneyFrame:Show()
+		self.shownMoneyFrames = index
 	end
 	function tooltip:RefreshData()
 		self.refreshed = (self.refreshed or 0) + 1
-		self.lines = {}
 		game:ShowItemTooltip(self.shownItemId, self)
 	end
 	return tooltip
@@ -963,7 +1107,7 @@ function FakeGame.new(options)
 	--- Builds an item tooltip: clears it and runs the post-calls (or the script hook).
 	function game:ShowItemTooltip(itemId, tooltip)
 		tooltip = tooltip or self.env.GameTooltip
-		tooltip.lines = {}
+		tooltip:ClearLines()
 		tooltip.shownItemId = itemId
 		tooltip.itemLink = '|cffffffff|Hitem:' .. itemId .. '::::|h[Item]|h|r'
 		for _, postCall in ipairs(self.postCalls) do
