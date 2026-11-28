@@ -3,12 +3,17 @@
 	one line per shown rule and the data age; the unit price while Shift is held. The detail
 	block shows always, on a modifier, or never. A gamepad modifier works through the client's
 	GamePadEmulateShift / Ctrl / Alt mapping. Holding or letting go of a modifier redraws the
-	tooltip at once. Switching the module off removes its lines and its event.
+	tooltip at once. Over a bag slot it also names Haggler's decision for the item
+	(Advice.forItem) with the decision glyph. The line stands on its own: it shows where the
+	badge does not (its setting off, the client's junk coin in that corner, junk the type badge
+	already marks). Switching the module off removes its lines and its event.
 ]]
 local _, ns = ...
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local buildLines, isDetailShown, detailOptions
+local buildLines, isDetailShown, detailOptions, bagDecision, tooltipIcons
+-- The icon set the decision glyph comes from, made on first use.
+local icons
 
 local MODULE_KEY = 'tooltip'
 local UNIT_VIEW_MODIFIER = 'shift'
@@ -81,7 +86,32 @@ function buildLines(module, itemId, info)
 		isDetail = isDetailShown(module, modifiers),
 		options = detailOptions(module),
 		theme = ns.theme,
+		decision = bagDecision(itemId, info),
+		icons = tooltipIcons(),
 	})
+end
+
+-- Advice.forItem's decision for the bag slot under the tooltip; nil elsewhere.
+function bagDecision(itemId, info)
+	local location = info.location
+	if type(location) ~= 'table' or not ns.values then
+		return nil
+	end
+	local item = ns.wow:ContainerItem(location.bag, location.slot)
+	if not item or item.itemId ~= itemId then
+		return nil
+	end
+	local value = ns.values:Stack(itemId, item.count, { isBound = item.isBound })
+	local advice = ns.Advice.forItem(value, {
+		isBound = item.isBound,
+		isQuest = ns.wow:IsQuestSlot(location.bag, location.slot, itemId),
+	})
+	return advice and advice.decision or nil
+end
+
+function tooltipIcons()
+	icons = icons or ns.IconSet.new({ theme = ns.theme })
+	return icons
 end
 
 function isDetailShown(module, modifiers)

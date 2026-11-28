@@ -3,12 +3,13 @@
 	no game calls, so every line is tested in luajit.
 
 	  build(input) -> Line[]
-	  input = { quote, stackCount, isUnitView, isDetail, options, theme, icons? }
+	  input = { quote, stackCount, isUnitView, isDetail, options, theme, decision?, icons? }
 	  options = { detailTrace, detailSales, detailListings, detailVendor, detailSellTime,
 	              sellTimeNote }
 
 	Compact view: a header with the data age, then one line per shown rule (default first) with
-	the stack price, or the unit price in the unit view. A low-confidence price carries the
+	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
+	with the decision (Advice.forItem's) as its glyph and word. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
 	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
 	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
@@ -29,6 +30,7 @@ ns.TooltipLines = TooltipLines
 TooltipLines.TITLE = 'Haggler'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
+TooltipLines.DECISION_LABEL = 'Decision'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
@@ -42,8 +44,9 @@ local COIN_ICONS = {
 }
 -- Low confidence is a caution (triangle-alert); circle-alert is for danger only. A high-level
 -- reason informs and does not lower confidence (e.g. where sales a day comes from).
-local LEVEL_COLORS = { low = 'color.state.caution', medium = 'color.state.warning', high = 'color.text.muted' }
-local LEVEL_ICONS = { low = 'alert-triangle', medium = 'alert-triangle', high = 'info' }
+local LEVEL_COLORS =
+	{ low = ns.IconSet.LOW_CONFIDENCE_COLOR, medium = 'color.state.warning', high = 'color.text.muted' }
+local LEVEL_ICONS = { low = ns.IconSet.LOW_CONFIDENCE, medium = ns.IconSet.LOW_CONFIDENCE, high = 'info' }
 local LEVEL_WORDS = { low = 'low confidence', medium = 'medium confidence' }
 -- Text marks for a client or build without the icon atlas.
 local LEVEL_MARKERS = { low = '(!)', medium = '(?)', high = '(i)' }
@@ -53,7 +56,7 @@ local LINE_HEIGHT_ICON = 0
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local withCredit, lowReasonLine, capitalized, iconSetFor
+local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -80,6 +83,7 @@ function TooltipLines.build(input)
 			lines[#lines + 1] = lowReasonLine(topLowReason(entry.price.confidence.reasons), view)
 		end
 	end
+	lines[#lines + 1] = decisionLine(input.decision, view)
 	if not input.isDetail then
 		return withCredit(lines, quote.credit, view)
 	end
@@ -161,6 +165,20 @@ function TooltipLines.sellTimeDays(facts, unitPrice, stack)
 end
 
 -- Helpers ---------------------------------------------------------------------------------
+
+-- The bag decision in the badge's own glyph and word; nil (no line) without one.
+function decisionLine(decision, view)
+	local label = type(decision) == 'string' and view.icons and ns.Badges.decisionLabel(decision, view.icons) or nil
+	if not label then
+		return nil
+	end
+	return {
+		left = TooltipLines.DECISION_LABEL,
+		right = label,
+		color = color(view, 'color.text.secondary'),
+		rightColor = color(view, 'color.text.primary'),
+	}
+end
 
 function withCredit(lines, credit, view)
 	if type(credit) == 'string' and credit ~= '' then

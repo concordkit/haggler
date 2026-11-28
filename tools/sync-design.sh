@@ -36,7 +36,7 @@ if command -v luajit >/dev/null; then
 		assert(type(ns.Tokens) == 'table' and ns.Tokens.version, 'no tokens')
 		assert(loadfile('$ICONS_SOURCE/Icons.lua'))('Haggler', ns)
 		assert(type(ns.Icons) == 'table' and type(ns.Icons.texcoords) == 'table', 'no icon texcoords')
-		assert(ns.Icons.texcoords['alert-triangle'], 'no alert-triangle icon')
+		assert(ns.Icons.texcoords['triangle-alert'], 'no triangle-alert icon')
 		assert(rawget(_G, 'Concord_Tokens') == nil and rawget(_G, 'Concord_Icons') == nil, 'global leaked')
 	"
 fi

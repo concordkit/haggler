@@ -160,3 +160,172 @@ t.test('untracked: skipped ids, and an unrecorded auction a pending venture post
 	local expiredVenture = { [1] = { ventureId = 5, state = 'expired' } }
 	t.eq(#Advice.untracked({ owned[1] }, expiredVenture), 0)
 end)
+
+t.group('advice: a bag item')
+
+local HIGH = { level = 'high', reasons = {} }
+
+-- An ItemValue as Value:Stack returns it: an AH item at 1g, market at its 30-day median.
+local function itemValue(fields)
+	local result = {
+		count = 1,
+		copper = 9500,
+		source = 'ah',
+		isPriced = true,
+		vendorNet = 100,
+		lowestListed = 10000,
+		typicalPrice = 10000,
+		typicalAhNet = 9500,
+		confidence = HIGH,
+	}
+	for key, field in pairs(fields or {}) do
+		result[key] = field
+	end
+	return result
+end
+
+local function decisionOf(value, item)
+	local advice = Advice.forItem(value, item)
+	return advice and advice.decision or 'none'
+end
+
+-- The lowest listing that many whole percent under a typical price of 10000.
+local function lowestUnder(percent)
+	return 10000 - percent * 100
+end
+
+t.test('forItem: the AH nets more, the market is normal: post', function()
+	local advice = Advice.forItem(itemValue())
+	t.eq(advice.decision, 'post')
+	t.eq(advice.code, 'ah')
+end)
+
+t.test('forItem: the vendor pays more: sell', function()
+	local advice = Advice.forItem(itemValue({ source = 'vendor', copper = 100, typicalPrice = 90, lowestListed = 90 }))
+	t.eq(advice.decision, 'sell')
+	t.eq(advice.code, 'vendor')
+end)
+
+t.test('forItem: a vendor-only item (no AH price) is sell', function()
+	local vendorOnly = itemValue({
+		source = 'vendor',
+		isPriced = false,
+		lowestListed = false,
+		typicalPrice = false,
+		confidence = { level = 'medium', reasons = {} },
+	})
+	t.eq(decisionOf(vendorOnly), 'sell')
+end)
+
+t.test('forItem: the lowest listing unusually far under the 30-day median: wait', function()
+	local threshold = Advice.WAIT_UNDER_TYPICAL_PERCENT
+	local advice = Advice.forItem(itemValue({ lowestListed = lowestUnder(threshold) }))
+	t.eq(advice.decision, 'wait')
+	t.eq(advice.code, 'marketLow')
+end)
+
+t.test('forItem: the post/wait edge sits exactly on WAIT_UNDER_TYPICAL_PERCENT', function()
+	local threshold = Advice.WAIT_UNDER_TYPICAL_PERCENT
+	t.eq(decisionOf(itemValue({ lowestListed = lowestUnder(threshold - 1) })), 'post', 'one percent short')
+	t.eq(decisionOf(itemValue({ lowestListed = lowestUnder(threshold) })), 'wait', 'on the threshold')
+	t.eq(decisionOf(itemValue({ lowestListed = lowestUnder(threshold + 1) })), 'wait', 'past it')
+	t.eq(decisionOf(itemValue({ lowestListed = lowestUnder(threshold) + 1 })), 'post', 'a copper short')
+end)
+
+t.test('forItem: the threshold is a named constant, wider than a relist nudge', function()
+	t.eq(type(Advice.WAIT_UNDER_TYPICAL_PERCENT), 'number')
+	t.truthy(Advice.WAIT_UNDER_TYPICAL_PERCENT > Advice.THRESHOLD_PERCENT)
+end)
+
+t.test('forItem: a dip under the vendor waits when the usual price beats the vendor', function()
+	-- Today the vendor wins (the dip), but a normal market nets more than the vendor: wait, never sell.
+	local dip = itemValue({ source = 'vendor', copper = 5000, vendorNet = 5000, lowestListed = 4000 })
+	t.eq(decisionOf(dip), 'wait')
+end)
+
+t.test('forItem: the sell/wait edge is the vendor against the usual price after the cut', function()
+	-- A sale at the typical 10000 nets 9500 after the 5% cut.
+	local atCut = itemValue({ source = 'vendor', copper = 9500, vendorNet = 9500, lowestListed = 4000 })
+	t.eq(decisionOf(atCut), 'sell', 'the usual price nets no more than the vendor')
+	local underCut = itemValue({ source = 'vendor', copper = 9499, vendorNet = 9499, lowestListed = 4000 })
+	t.eq(decisionOf(underCut), 'wait', 'the usual price nets a copper more')
+end)
+
+t.test('forItem: the usual price counts for the whole stack', function()
+	local stack = itemValue({
+		count = 20,
+		source = 'vendor',
+		vendorNet = 20 * 9000,
+		lowestListed = 4000,
+		typicalAhNet = 20 * 9500,
+	})
+	t.eq(decisionOf(stack), 'wait', '20 x 9500 beats 20 x 9000')
+	stack.vendorNet = 20 * 9600
+	t.eq(decisionOf(stack), 'sell')
+end)
+
+t.test('forItem: wait measures the usual price as Post does, deposit risk included', function()
+	-- At the typical 10000 the sale nets 9500 after the cut, a copper over the vendor's 9499;
+	-- but the deposit lost to unsold listings at that price brings the expected net to 9300.
+	local value = itemValue({ source = 'vendor', copper = 9499, vendorNet = 9499, lowestListed = 4000 })
+	value.typicalAhNet = 9300
+	t.eq(decisionOf(value), 'sell', 'the deposit tips the usual price under the vendor')
+	value.typicalAhNet = 9500
+	t.eq(decisionOf(value), 'wait')
+	value.typicalAhNet = nil
+	t.eq(decisionOf(value), 'sell', 'no measured net at the usual price: no wait')
+	value.typicalAhNet = 0 / 0
+	t.eq(decisionOf(value), 'sell', 'NaN')
+end)
+
+t.test('forItem: low confidence is undecided, whatever else it would be', function()
+	local low = { level = 'low', reasons = { { code = 'stale', level = 'low', text = 'old' } } }
+	t.eq(decisionOf(itemValue({ confidence = low })), 'undecided')
+	t.eq(decisionOf(itemValue({ confidence = low, source = 'vendor' })), 'undecided')
+	t.eq(decisionOf(itemValue({ confidence = low, lowestListed = 1000 })), 'undecided', 'over wait')
+	t.eq(Advice.forItem(itemValue({ confidence = low })).code, 'lowConfidence')
+end)
+
+t.test('forItem: the undecided edge is the confidence level, not its reasons', function()
+	local medium = { level = 'medium', reasons = { { code = 'fewSales', level = 'medium', text = 'thin' } } }
+	t.eq(decisionOf(itemValue({ confidence = medium })), 'post')
+	t.eq(decisionOf(itemValue({ confidence = false })), 'undecided', 'no confidence at all')
+end)
+
+t.test('forItem: nothing pays (no AH price, no vendor price): undecided', function()
+	local advice = Advice.forItem(itemValue({
+		source = 'none',
+		isPriced = false,
+		copper = 0,
+		vendorNet = false,
+		confidence = { level = 'medium', reasons = {} },
+	}))
+	t.eq(advice.decision, 'undecided')
+	t.eq(advice.code, 'noPrice')
+	local worthless = itemValue({ source = 'vendor', isPriced = false, copper = 0, vendorNet = 0 })
+	worthless.confidence = { level = 'medium', reasons = {} }
+	t.eq(decisionOf(worthless), 'undecided', 'a vendor price of nothing is no sale')
+end)
+
+t.test('forItem: wait needs both the lowest listing and the usual price', function()
+	t.eq(decisionOf(itemValue({ lowestListed = false })), 'post')
+	t.eq(decisionOf(itemValue({ typicalPrice = false, lowestListed = 1 })), 'post')
+	t.eq(decisionOf(itemValue({ typicalPrice = 0 / 0, lowestListed = 1 })), 'post', 'NaN')
+	t.eq(decisionOf(itemValue({ typicalPrice = math.huge, lowestListed = 1 })), 'post', 'infinity')
+end)
+
+t.test('forItem: bound and quest items get no decision; no value gets none', function()
+	t.eq(Advice.forItem(itemValue(), { isBound = true }), nil)
+	t.eq(Advice.forItem(itemValue(), { isQuest = true }), nil)
+	t.eq(Advice.forItem(nil), nil)
+	t.eq(Advice.forItem('junk'), nil)
+end)
+
+t.test('isMarketLow: whole percent under the usual price', function()
+	t.eq(Advice.isMarketLow(7500, 10000), true)
+	t.eq(Advice.isMarketLow(7501, 10000), false)
+	t.eq(Advice.isMarketLow(10000, 10000), false)
+	t.eq(Advice.isMarketLow(12000, 10000), false, 'over the usual price')
+	t.eq(Advice.isMarketLow(nil, 10000), false)
+	t.eq(Advice.isMarketLow(0, 10000), false, 'no listing price')
+end)

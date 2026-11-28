@@ -12,8 +12,8 @@ local theme = Theme.new(ns.Tokens)
 local icons = ns.IconSet.new({ theme = theme })
 local COIN_ICONS = FakeGame.COIN_ICONS
 local coins = FakeGame.coins
-local LOW_ICON = icons:Inline('alert-triangle', 0, 'color.state.caution')
-local MEDIUM_ICON = icons:Inline('alert-triangle', 0, 'color.state.warning')
+local LOW_ICON = icons:Inline('triangle-alert', 0, 'color.state.caution')
+local MEDIUM_ICON = icons:Inline('triangle-alert', 0, 'color.state.warning')
 local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
 
 local function price(copper, level, reasons, trace)
@@ -946,5 +946,54 @@ t.test('secret values on a tooltip are skipped', function()
 	tooltip.lines, tooltip.itemLink = {}, nil
 	game.postCalls[1].handler(tooltip, { id = LINEN })
 	t.same(tooltip.lines, {})
+	t.same(addon.errors, {})
+end)
+
+t.group('tooltip: the bag decision')
+
+local GAVEL_PIXELS
+do
+	local coords, width, height = ns.Icons.texcoords.gavel, ns.Icons.atlasWidth, ns.Icons.atlasHeight
+	GAVEL_PIXELS = string.format(
+		':%d:%d:%d:%d:',
+		math.floor(coords[1] * width + 0.5),
+		math.floor(coords[2] * width + 0.5),
+		math.floor(coords[3] * height + 0.5),
+		math.floor(coords[4] * height + 0.5)
+	)
+end
+
+local function bagSlot(bag, slot)
+	return {
+		GetBagID = function()
+			return bag
+		end,
+		GetID = function()
+			return slot
+		end,
+	}
+end
+
+t.test('lines: the decision reads as the badge glyph next to its word, after the prices', function()
+	local lines = build({ stackCount = 20, decision = 'post', icons = icons })
+	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
+	t.eq(lines[4].right, ns.Badges.decisionLabel('post', icons))
+	t.truthy(lines[4].right:find(GAVEL_PIXELS, 1, true), lines[4].right)
+	t.truthy(lines[4].right:find('Post$'), 'the word stays next to the icon')
+	t.eq(find(build({ stackCount = 20 }), TooltipLines.DECISION_LABEL), nil, 'no decision, no line')
+	t.eq(find(build({ decision = 'nonsense', icons = icons }), TooltipLines.DECISION_LABEL), nil)
+end)
+
+t.test('module: a bag slot tooltip names the decision its badge shows', function()
+	local game, addon = startWithTable()
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 20 }
+	game.env.GameTooltip.owner = bagSlot(0, 3)
+	local line = find(game:ShowItemTooltip(LINEN), TooltipLines.DECISION_LABEL)
+	t.truthy(line and line:find(GAVEL_PIXELS, 1, true), tostring(line))
+	t.truthy(line and line:find('Post', 1, true), tostring(line))
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 20, isBound = true }
+	t.eq(find(game:ShowItemTooltip(LINEN), TooltipLines.DECISION_LABEL), nil, 'bound: no decision')
+	game.env.GameTooltip.owner = nil
+	t.eq(find(game:ShowItemTooltip(LINEN), TooltipLines.DECISION_LABEL), nil, 'not in the bags: no decision')
 	t.same(addon.errors, {})
 end)
