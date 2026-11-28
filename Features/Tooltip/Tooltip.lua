@@ -3,8 +3,10 @@
 	one line per shown rule and the data age; the unit price while Shift is held. The detail
 	block shows always, on a modifier, or never. A gamepad modifier works through the client's
 	GamePadEmulateShift / Ctrl / Alt mapping. Holding or letting go of a modifier redraws the
-	tooltip at once. Over a bag slot it also names the decision the slot's badge shows, with the
-	same glyph. Switching the module off removes its lines and its event.
+	tooltip at once. Over a bag slot it also names Haggler's decision for the item
+	(Advice.forItem) with the decision glyph. The line stands on its own: it shows where the
+	badge does not (its setting off, the client's junk coin in that corner, junk the type badge
+	already marks). Switching the module off removes its lines and its event.
 ]]
 local _, ns = ...
 
@@ -89,7 +91,7 @@ function buildLines(module, itemId, info)
 	})
 end
 
--- The decision of the bag slot under the tooltip, as its badge decides it; nil elsewhere.
+-- Advice.forItem's decision for the bag slot under the tooltip; nil elsewhere.
 function bagDecision(itemId, info)
 	local location = info.location
 	if type(location) ~= 'table' or not ns.values then

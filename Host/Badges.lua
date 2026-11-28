@@ -27,8 +27,11 @@
 	its own text too, so no setting or hidden widget can show a guessed value bare.
 
 	Both slots sit on the top edge, clear of the stack count (bottom right) and the value text
-	(bottom left). Each glyph sits over eight copies of itself in the outline colour, offset by
-	the outline width: a dark edge that keeps it readable on any item icon.
+	(bottom left). Each glyph sits over four copies of itself in the outline colour, offset by
+	the outline width left, right, up and down (the DS glyph outline): a dark edge that keeps it
+	readable on any item icon. While the client shows its junk coin or upgrade arrow on a button
+	(both top left), the decision badge stays off it; the tooltip's Decision line still names it.
+	A badge is retextured only when its icon or colour changes.
 
 	Taint: overlay textures and font strings are created on the host's button (allowed in and out
 	of combat, never protected) and kept in a weak table keyed by the button. Nothing is written
@@ -49,6 +52,9 @@ Badges.TYPES = {
 	quest = { icon = 'flag', color = 'color.text.accent', label = 'Quest' },
 	junk = { icon = 'recycle', color = 'color.text.muted', label = 'Junk' },
 }
+-- Off the 8px grid by design: the item icon art fills the 37px button nearly to its edge, so a
+-- grid step (8) would sink the badge well into the art; 2 is the smallest whole inset that keeps
+-- the outline inside the button.
 Badges.INSET = 2
 Badges.SLOTS = {
 	decision = { point = 'TOPLEFT', x = Badges.INSET, y = -Badges.INSET },
@@ -59,7 +65,9 @@ Badges.SLOT_ORDER = { 'decision', 'type' }
 Badges.ICON_SIZE = 16
 Badges.OUTLINE_COLOR = 'color.text.shadow'
 Badges.OUTLINE_WIDTH = 'border.hairline'
-Badges.OUTLINE_OFFSETS = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }, { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 } }
+Badges.OUTLINE_OFFSETS = { { -1, 0 }, { 1, 0 }, { 0, 1 }, { 0, -1 } }
+-- The client's own top-left marks on a Blizzard-style item button; the decision badge yields to them.
+Badges.CLIENT_TOP_LEFT_MARKS = { 'JunkIcon', 'UpgradeIcon' }
 -- Above the client's own junk coin (OVERLAY 5) and quest border (OVERLAY 2).
 Badges.OUTLINE_SUBLEVEL = 6
 Badges.GLYPH_SUBLEVEL = 7
@@ -67,13 +75,13 @@ Badges.GLYPH_SUBLEVEL = 7
 Badges.TOOLTIP_ICON_SIZE = 0
 Badges.VALUE_FONT = 'NumberFontNormalSmall'
 Badges.VALUE_ICON_SIZE = 10
---- The marker when the icon atlas has no alert-triangle.
+--- The marker when the icon atlas has no triangle-alert.
 Badges.LOW_TEXT_MARKER = '!'
 local COPPER_PER_SILVER = 100
 local COPPER_PER_GOLD = 10000
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local decisionBadge, typeBadge, newBadge, newOverlay, newGroup, paintGroup, hideGroup
+local decisionBadge, typeBadge, newBadge, newOverlay, newGroup, paintGroup, hideGroup, isClientMarkingTopLeft
 
 local PainterMethods = {}
 PainterMethods.__index = PainterMethods
@@ -184,6 +192,9 @@ function PainterMethods:Paint(button, decision)
 	for _, badge in ipairs(decision.badges) do
 		bySlot[badge.slot] = badge
 	end
+	if isClientMarkingTopLeft(button) then
+		bySlot.decision = nil
+	end
 	for _, slot in ipairs(Badges.SLOT_ORDER) do
 		paintGroup(overlay.groups[slot], bySlot[slot], self.icons)
 	end
@@ -283,11 +294,21 @@ function newGroup(parent, point, x, y, outlineWidth)
 	return group
 end
 
+-- The textures keep what they were last given, so the same icon and colour only need showing.
 function paintGroup(group, badge, icons)
 	if not badge then
 		hideGroup(group)
 		return false
 	end
+	local paintedKey = badge.icon .. '|' .. badge.color
+	if group.paintedKey == paintedKey then
+		group.glyph:Show()
+		for _, outline in ipairs(group.outlines) do
+			outline:Show()
+		end
+		return true
+	end
+	group.paintedKey = nil
 	if not icons:Apply(group.glyph, badge.icon, badge.color) then
 		hideGroup(group)
 		return false
@@ -295,6 +316,7 @@ function paintGroup(group, badge, icons)
 	for _, outline in ipairs(group.outlines) do
 		icons:Apply(outline, badge.icon, Badges.OUTLINE_COLOR)
 	end
+	group.paintedKey = paintedKey
 	return true
 end
 
@@ -303,6 +325,17 @@ function hideGroup(group)
 	for _, outline in ipairs(group.outlines) do
 		outline:Hide()
 	end
+end
+
+-- Reads the button's own regions only (never writes): reading a Blizzard field taints nothing.
+function isClientMarkingTopLeft(button)
+	for _, key in ipairs(Badges.CLIENT_TOP_LEFT_MARKS) do
+		local mark = rawget(button, key)
+		if type(mark) == 'table' and type(mark.IsShown) == 'function' and mark:IsShown() then
+			return true
+		end
+	end
+	return false
 end
 
 return Badges

@@ -44,8 +44,9 @@ local COIN_ICONS = {
 }
 -- Low confidence is a caution (triangle-alert); circle-alert is for danger only. A high-level
 -- reason informs and does not lower confidence (e.g. where sales a day comes from).
-local LEVEL_COLORS = { low = 'color.state.caution', medium = 'color.state.warning', high = 'color.text.muted' }
-local LEVEL_ICONS = { low = 'alert-triangle', medium = 'alert-triangle', high = 'info' }
+local LEVEL_COLORS =
+	{ low = ns.IconSet.LOW_CONFIDENCE_COLOR, medium = 'color.state.warning', high = 'color.text.muted' }
+local LEVEL_ICONS = { low = ns.IconSet.LOW_CONFIDENCE, medium = ns.IconSet.LOW_CONFIDENCE, high = 'info' }
 local LEVEL_WORDS = { low = 'low confidence', medium = 'medium confidence' }
 -- Text marks for a client or build without the icon atlas.
 local LEVEL_MARKERS = { low = '(!)', medium = '(?)', high = '(i)' }

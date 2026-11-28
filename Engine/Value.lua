@@ -17,9 +17,11 @@
 
 	ItemValue = { itemId, count, copper, perUnit, source = 'ah'|'vendor'|'none', ruleId,
 	              rulePrice?, reason?, sellChance?, depositLoss?, deposit?, ahNet?, vendorNet?,
-	              lowestListed?, typicalPrice?, isPriced, confidence }
+	              lowestListed?, typicalPrice?, typicalAhNet?, isPriced, confidence }
 	lowestListed and typicalPrice (the 30-day median) are unit prices from PriceContext.facts;
-	Advice.forItem reads them for the bag decision.
+	typicalAhNet is the AH net of listing the stack at typicalPrice, worked out as ahNet is (cut,
+	deposit, sell chance), and only while the lowest listing is under it. Advice.forItem reads
+	them for the bag decision.
 	Total     = { copper, count, unpriced, confidence, items = { ItemValue... } }
 
 	Confidence follows the weakest input: the rule price's reasons plus the value's own (no
@@ -34,7 +36,7 @@ ns.Value = Value
 Value.MAX_TOTAL_REASONS = 8
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local isWholePositive, safeCall, levelsOf
+local isWholePositive, isFinitePositive, safeCall, levelsOf
 
 local ValueMethods = {}
 ValueMethods.__index = ValueMethods
@@ -139,6 +141,24 @@ function ValueMethods:Stack(itemId, count, options)
 		deposit = deposit,
 		isBound = options.isBound == true,
 	})
+	local typicalAhNet
+	if
+		not options.isBound
+		and isFinitePositive(facts.typicalPrice)
+		and isFinitePositive(facts.lowestListed)
+		and facts.lowestListed < facts.typicalPrice
+	then
+		typicalAhNet = ns.Guardrail.opportunity({
+			price = facts.typicalPrice,
+			units = count,
+			vendor = facts.vendor,
+			salesPerDay = facts.salesPerDay,
+			levels = levelsOf(facts.levels),
+			antiBait = rule.antiBait,
+			durationHours = hours,
+			deposit = deposit,
+		}).ahNet
+	end
 	return {
 		itemId = itemId,
 		count = count,
@@ -155,6 +175,7 @@ function ValueMethods:Stack(itemId, count, options)
 		vendorNet = opportunity.vendorNet,
 		lowestListed = facts.lowestListed,
 		typicalPrice = facts.typicalPrice,
+		typicalAhNet = typicalAhNet,
 		isPriced = price ~= nil,
 		confidence = Value.mergeConfidence({ price and price.confidence, { reasons = opportunity.reasons } }),
 	}
@@ -198,6 +219,10 @@ end
 
 function isWholePositive(value)
 	return type(value) == 'number' and value > 0 and value < math.huge and value % 1 == 0
+end
+
+function isFinitePositive(value)
+	return type(value) == 'number' and value > 0 and value < math.huge
 end
 
 -- A source that throws or returns junk reads as unknown.

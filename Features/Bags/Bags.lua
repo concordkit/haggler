@@ -13,7 +13,7 @@ local EVENT_OWNER = 'bags'
 local REPAINT_EVENTS = { 'BAG_UPDATE_DELAYED', 'PLAYER_REGEN_ENABLED', 'ADDON_LOADED' }
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local ensureView, repaint, scheduleRepaint, attachHosts, reportHostError
+local ensureView, repaint, scheduleRepaint, attachHosts, reportHostError, migrateVendorBadge
 
 -- isOn is the module's own flag: the host still reports it enabled while onDisable runs.
 local state = { attached = {}, isRepaintQueued = false, isOn = false }
@@ -31,6 +31,9 @@ local bags = ns.host.AddModule({
 		toggle('decisionBadge', 'Decision badge, top left: post, sell, wait or undecided', true),
 		toggle('typeBadge', 'Item type badge, top right: quest or junk', true),
 	},
+	onLoad = function(module)
+		migrateVendorBadge(module)
+	end,
 	onEnable = function(module)
 		state.isOn = true
 		local view = ensureView(module)
@@ -72,6 +75,15 @@ local bags = ns.host.AddModule({
 ns.bags = bags
 
 -- Helpers ---------------------------------------------------------------------------------
+
+-- vendorBadge (the old top-left vendor badge) became decisionBadge: a player who had switched it
+-- off keeps the top left empty, unless they already chose a decision badge setting.
+function migrateVendorBadge(module)
+	local wasVendorBadgeOff = module.host.Settings:TakeRetired(MODULE_KEY, 'vendorBadge') == false
+	if wasVendorBadgeOff and not module:IsSettingSet('decisionBadge') then
+		module:SetSetting('decisionBadge', false)
+	end
+end
 
 function ensureView(module)
 	if state.view then

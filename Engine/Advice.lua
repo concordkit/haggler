@@ -13,7 +13,9 @@
 	  undecided  the value is a guess (low or no confidence: lowConfidence) or nothing pays
 	             (noPrice)
 	  wait       the lowest listing is WAIT_UNDER_TYPICAL_PERCENT or more under the 30-day median
-	             and a sale at that median would net more than the vendor (marketLow)
+	             and listing at that median would net more than the vendor, measured as Post
+	             measures the AH (Value's typicalAhNet: the cut, the deposit and the sell chance)
+	             (marketLow)
 	  post       the AH nets more than the vendor (ah), as Value's opportunity picks it
 	  sell       the vendor pays at least as much (vendor)
 	A bound or quest item gets none: it cannot go to the AH.
@@ -258,11 +260,15 @@ function percentApart(high, low)
 	return math.floor((high - low) * 100 / high)
 end
 
--- Waiting pays only when a sale at the usual price, after the cut, nets more than the vendor.
+-- Waiting pays only when listing at the usual price nets more than the vendor, with the cut,
+-- the deposit and the sell chance counted as Post counts them (typicalAhNet). No such net: no wait.
 function isWorthWaiting(value)
-	local count = isFinitePositive(value.count) and value.count or 1
+	local typicalAhNet = value.typicalAhNet
+	if type(typicalAhNet) ~= 'number' or typicalAhNet ~= typicalAhNet or math.abs(typicalAhNet) == math.huge then
+		return false
+	end
 	local vendorNet = isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
-	return ns.Guardrail.saleNet(value.typicalPrice, count) > vendorNet
+	return typicalAhNet > vendorNet
 end
 
 -- Takes the first pending venture post that matches an owned entry; true when one did.

@@ -14,6 +14,9 @@
 	changed default reaches everyone who never touched the setting. The /hag command tree is
 	generated from the same schemas, so a window drawn from them later always matches.
 
+	A setting a module drops can be carried over once with TakeRetired, which hands back its stored
+	value and removes it.
+
 	A bad schema is a programmer error and throws. A bad value from the player is an expected
 	outcome: Set and Parse return nil and a reason.
 ]]
@@ -178,6 +181,24 @@ function SettingsMethods:Entry(moduleKey, key)
 		error(string.format('Settings: unknown setting %s.%s', tostring(moduleKey), tostring(key)), 2)
 	end
 	return entry
+end
+
+--- Removes a stored value whose key is no longer in the module's schema and returns it, so a
+--- module can carry an old setting over to its new one. Throws for a key the schema still has.
+--- @return any|nil the stored value, nil when none was stored
+function SettingsMethods:TakeRetired(moduleKey, key)
+	local schema = self.schemas[moduleKey]
+	if schema and schema.byKey[key] then
+		error(string.format('Settings:TakeRetired: %s.%s is still a setting', tostring(moduleKey), tostring(key)), 2)
+	end
+	local moduleValues = self.stored[moduleKey]
+	if type(moduleValues) ~= 'table' then
+		return nil
+	end
+	local value = moduleValues[key]
+	moduleValues[key] = nil
+	self.stored[moduleKey] = next(moduleValues) and moduleValues or nil
+	return value
 end
 
 --- Text for a value, as the command tree prints it.

@@ -28,7 +28,7 @@ IconSet.WEIGHT_PATTERN = '^%d+%.?%d*$'
 IconSet.DEFAULT_WEIGHT = '2'
 --- The low-confidence marker, on frames and in tooltips alike: a caution, so the triangle in
 --- the caution colour (circle-alert is for danger only).
-IconSet.LOW_CONFIDENCE = 'alert-triangle'
+IconSet.LOW_CONFIDENCE = 'triangle-alert'
 IconSet.LOW_CONFIDENCE_COLOR = 'color.state.caution'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
@@ -51,7 +51,7 @@ function IconSet.new(options)
 end
 
 --- The texture and texcoords of one icon.
---- @param name string icon name, e.g. 'alert-triangle'
+--- @param name string icon name, e.g. 'triangle-alert'
 --- @param weight string|nil stroke weight; the set's default when nil
 --- @return table|nil { texture, texcoords = { left, right, top, bottom }, size }
 function IconSetMethods:Lookup(name, weight)
