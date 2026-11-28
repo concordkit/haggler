@@ -153,9 +153,9 @@ function FakeGame.newWidget(kind, parent, template)
 		end
 		return widget
 	end
-	function widget:CreateTexture(_, layer)
+	function widget:CreateTexture(_, layer, _, sublevel)
 		local texture = FakeGame.newWidget('Texture', self)
-		texture.layer = layer
+		texture.layer, texture.sublevel = layer, sublevel
 		self.children[#self.children + 1] = texture
 		return texture
 	end
@@ -343,8 +343,9 @@ end
 --- game.inCombat drives InCombatLockdown; game.secretValues[value] marks a secret value;
 --- RequestLoadItemDataByID calls are recorded in game.itemDataRequests; GetItemInfo of an item
 --- not in itemInfo (the client then asks the server for it) in game.itemInfoMisses.
---- Bags: game.containerItems['bag:slot'] = { itemID?, stackCount, isBound, hyperlink } (itemID
---- nil models an item the client has not loaded), game.bagSlots[bag] = slots.
+--- Bags: game.containerItems['bag:slot'] = { itemID?, stackCount, isBound, hyperlink, quality?,
+--- hasNoValue? } (itemID nil models an item the client has not loaded), game.bagSlots[bag] =
+--- slots, game.questItems['bag:slot'] = { isQuestItem, questID?, isActive } (quest info).
 --- Trade: game.trade.player / .target = { money, slots = { [slot] = { name?, count, link? } } }
 --- (a slot with a name and no link is an item not loaded yet); game.partner = { name, guid,
 --- isGuild }; game.friendGuids[guid] marks a friend, game.bnetFriends lists Battle.net friends'
@@ -636,6 +637,7 @@ function FakeGame.new(options)
 		frame = newFrame(unknownEvents),
 		postCalls = {},
 		containerItems = {},
+		questItems = {},
 		itemInfo = options.itemInfo or {},
 		itemDataRequests = {},
 		itemInfoMisses = {},
@@ -794,6 +796,13 @@ function FakeGame.new(options)
 			IsItemDataCachedByID = function(itemId)
 				return game.itemInfo[itemId] ~= nil
 			end,
+			-- Instant info needs no cache; classID comes from itemInfo (12 = quest item).
+			GetItemInfoInstant = function(itemId)
+				local info = game.itemInfo[itemId]
+				if info then
+					return itemId, 'Type', 'Sub', '', 0, info.classID or 0, 0
+				end
+			end,
 			RequestLoadItemDataByID = function(itemId)
 				game.itemDataRequests[#game.itemDataRequests + 1] = itemId
 			end,
@@ -882,6 +891,9 @@ function FakeGame.new(options)
 			end,
 			GetContainerNumSlots = function(bag)
 				return game.bagSlots[bag] or 0
+			end,
+			GetContainerItemQuestInfo = function(bag, slot)
+				return game.questItems[bag .. ':' .. slot] or { isQuestItem = false, isActive = false }
 			end,
 		},
 	}
