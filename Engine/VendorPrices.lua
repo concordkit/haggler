@@ -9,13 +9,17 @@
 	               cheapestVendor?, ageSeconds?, isLimited, isBasePrice?, isVendorConfirmed? }
 
 	price is copper for one unit (stackPrice / stack, so a fraction for items sold in stacks of
-	many, like arrows). With several vendors the cheapest one with unlimited stock wins, or the
-	cheapest limited one when none is unlimited; vendorCount says how many vendors sell it now
+	many, like arrows). Reads at base price (isBasePrice) beat discounted ones from any vendor,
+	so a read by an exalted character never becomes the price another character sees. Among
+	them the cheapest one with unlimited stock wins, or the cheapest limited one when none is
+	unlimited. Only when every read is discounted (or of unknown standing) does a discounted
+	price come back, with isBasePrice false. vendorCount says how many vendors sell it now
 	(seen offers only; 0 from the seed). An offer that is gone or asks a currency or item
 	beside copper is not a copper price and is left out. cheapestVendor = { npcId, name?, zone?,
 	mapId?, faction?, reaction? }; ageSeconds is how long ago that offer was seen. isBasePrice
-	is true when the player was neutral or below with the vendor (no discount possible), always
-	true from the seed. isVendorConfirmed is true when Questie's item data lists a vendor, nil
+	is true when the character that made the read was neutral or below with the vendor (no
+	discount possible), always true from the seed. Consumers must check isBasePrice: false means
+	the price may be below what a character without that standing pays. isVendorConfirmed is true when Questie's item data lists a vendor, nil
 	when it cannot say.
 ]]
 local _, ns = ...
@@ -102,14 +106,21 @@ function isUsableOffer(offer)
 	return offer.goneAt == nil and not offer.hasExtendedCost and offer.price > 0
 end
 
--- Offers come cheapest first; the first unlimited one wins, else the cheapest limited one.
+-- Offers come cheapest first. Base-price reads go before discounted ones; within the chosen
+-- group the first unlimited one wins, else the cheapest limited one.
 function cheapestOffer(offers)
+	local baseOffers, discountedOffers = {}, {}
 	for _, offer in ipairs(offers) do
+		local group = offer.isBasePrice and baseOffers or discountedOffers
+		group[#group + 1] = offer
+	end
+	local preferred = #baseOffers > 0 and baseOffers or discountedOffers
+	for _, offer in ipairs(preferred) do
 		if not offer.isLimited then
 			return offer
 		end
 	end
-	return offers[1]
+	return preferred[1]
 end
 
 -- A seed row: copper, or { copper, units }. Anything else reads as none.

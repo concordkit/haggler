@@ -33,7 +33,7 @@ ns.host.AddModule({
 		{
 			key = 'maxKB',
 			type = 'slider',
-			label = 'Kilobytes the merchant record may use; the vendors seen longest ago go first',
+			label = 'Kilobytes the merchant record may use. The vendors seen longest ago go first.',
 			default = ns.VendorStore.DEFAULT_MAX_KB,
 			min = 64,
 			max = 4096,
@@ -120,13 +120,22 @@ function statusLines()
 	for _ in pairs(ns.VendorSeed and ns.VendorSeed.items or {}) do
 		seedCount = seedCount + 1
 	end
+	local maxKB = state.module and state.module:Setting('maxKB')
 	return {
 		string.format(
-			'Merchant record: %d vendors, %d items, %.1f KB.',
+			'Merchant record: %d vendor%s, %d item%s, %.1f of %d KB',
 			summary.vendors,
+			summary.vendors == 1 and '' or 's',
 			summary.items,
-			summary.bytes / ns.VendorStore.BYTES_PER_KB
+			summary.items == 1 and '' or 's',
+			summary.bytes / ns.VendorStore.BYTES_PER_KB,
+			maxKB or ns.VendorStore.DEFAULT_MAX_KB
 		),
-		string.format('Seed: %d items from build %s.', seedCount, ns.VendorSeed and ns.VendorSeed.build or 'none'),
+		string.format(
+			'Seed: %d item%s from build %s',
+			seedCount,
+			seedCount == 1 and '' or 's',
+			ns.VendorSeed and ns.VendorSeed.build or 'none'
+		),
 	}
 end

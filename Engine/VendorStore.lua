@@ -18,7 +18,8 @@
 	numbers); the unit price is price / stack. available is the stock left (-1 unlimited).
 	seenAt is unix seconds of the last read that listed the item; goneAt, when set, the first
 	complete read that did not: the item is kept, marked unavailable, never deleted for it.
-	A read that missed a slot or ran under a merchant filter marks nothing gone. Currency id 0
+	A read that missed a slot, held a slot that is no record (price 0 with no other cost reads
+	as a slot not filled yet) or ran under a merchant filter marks nothing gone. Currency id 0
 	is a currency the client named but gave no link for.
 
 	reaction is the player's standing with the vendor's faction at that read (UnitReaction: 4
@@ -127,15 +128,20 @@ function VendorStore.record(db, observation, now)
 	local slots = type(observation.slots) == 'table' and observation.slots or {}
 	local reaction = isWholePositive(seller.reaction) and seller.reaction or nil
 	local listed = {}
+	-- A slot that does not read as a record could be any item, so the read marks nothing gone.
+	local isComplete = observation.isComplete == true
 	for _, slot in ipairs(slots) do
 		local record = recordFromSlot(slot, now, reaction)
+		if not record then
+			isComplete = false
+		end
 		local previous = record and listed[record.itemId]
 		-- One item in two slots (two stack sizes): keep the cheaper unit price.
 		if record and (not previous or record.price / record.stack < previous.price / previous.stack) then
 			listed[record.itemId] = record
 		end
 	end
-	if next(listed) == nil and not observation.isComplete then
+	if next(listed) == nil and not isComplete then
 		return false, 'no items'
 	end
 	local vendor = db.byNpc[seller.npcId]
@@ -154,7 +160,7 @@ function VendorStore.record(db, observation, now)
 		end
 		items[itemId] = record
 	end
-	if observation.isComplete == true then
+	if isComplete then
 		for itemId, record in pairs(items) do
 			if not listed[itemId] and not record.goneAt then
 				record.goneAt = now
@@ -389,6 +395,11 @@ function recordFromSlot(slot, now, reaction)
 	-- A slot flagged with an extended cost the client did not detail still costs more than copper.
 	if #costs == 0 and slot.hasExtendedCost == true then
 		costs[1] = { kind = 'currency', id = 0, count = 1 }
+	end
+	-- Price 0 with no other cost is a slot the client has not filled yet, not a free item; it
+	-- must never overwrite a price kept from an earlier read.
+	if slot.price == 0 and #costs == 0 then
+		return nil
 	end
 	return {
 		itemId = slot.itemId,

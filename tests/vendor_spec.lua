@@ -151,6 +151,35 @@ t.test('an incomplete read marks nothing gone', function()
 	t.eq(select(2, VendorStore.record(db, observation(ALICE, {}, { isComplete = false }), NOW)), 'no items')
 end)
 
+t.test('a slot that makes no record makes the read incomplete', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 }, { itemId = FLUX, price = 9 } }), NOW)
+	local _, summary =
+		VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 }, { itemId = 'junk' } }), NOW + 60)
+	t.eq(summary.gone, 0)
+	t.eq(VendorStore.vendorItems(db, ALICE)[FLUX].goneAt, nil)
+	-- Only junk on a list that says it is complete still saves nothing.
+	t.eq(select(2, VendorStore.record(db, observation(BOB, { 'x' }), NOW)), 'no items')
+end)
+
+t.test('price 0 without an extended cost is a failed slot and never overwrites a price', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 }, { itemId = FLUX, price = 9 } }), NOW)
+	local _, summary = VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 0 }, { itemId = FLUX, price = 9 } }),
+		NOW + 60
+	)
+	t.same(summary, { added = 0, changed = 0, gone = 0 })
+	local items = VendorStore.vendorItems(db, ALICE)
+	t.eq(items[THREAD].price, 10)
+	t.eq(items[THREAD].seenAt, NOW)
+	t.eq(items[THREAD].goneAt, nil)
+	-- Price 0 beside a currency or item cost is a real offer.
+	VendorStore.record(db, observation(ALICE, { { itemId = TOKEN_ITEM, price = 0, hasExtendedCost = true } }), NOW + 61)
+	t.eq(VendorStore.vendorItems(db, ALICE)[TOKEN_ITEM].price, 0)
+end)
+
 t.test('record refuses a missing vendor and skips junk slots', function()
 	local db = openStore()
 	t.eq(select(2, VendorStore.record(db, { vendor = {} }, NOW)), 'no vendor')
@@ -249,6 +278,57 @@ t.test('buyPrice falls to the cheapest limited vendor when none is unlimited', f
 	local price = pricesOf(db):BuyPrice(THREAD)
 	t.eq(price.price, 8)
 	t.eq(price.isLimited, true)
+	t.eq(price.isBasePrice, false)
+end)
+
+t.test('each read keeps the standing of the character that made it', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 8 } }, { reaction = 8 }), NOW)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, 8)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }, { reaction = 4 }), NOW + 1)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, 4)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }), NOW + 2)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, nil)
+end)
+
+t.test('a base-price read beats a cheaper discounted read from any vendor', function()
+	local db = openStore()
+	-- An exalted main at Alice, a neutral alt at Bob.
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 8 } }, { name = 'Alice', reaction = 8 }),
+		NOW
+	)
+	VendorStore.record(db, observation(BOB, { { itemId = THREAD, price = 10 } }, { name = 'Bob', reaction = 4 }), NOW)
+	local price = pricesOf(db):BuyPrice(THREAD)
+	t.eq(price.price, 10)
+	t.eq(price.cheapestVendor.name, 'Bob')
+	t.eq(price.isBasePrice, true)
+	t.eq(price.vendorCount, 2)
+	-- A limited base-price offer still beats an unlimited discounted one.
+	VendorStore.record(
+		db,
+		observation(BOB, { { itemId = THREAD, price = 12, available = 3 } }, { name = 'Bob', reaction = 3 }),
+		NOW + 1
+	)
+	local limited = pricesOf(db):BuyPrice(THREAD)
+	t.eq(limited.price, 12)
+	t.eq(limited.isLimited, true)
+	t.eq(limited.isBasePrice, true)
+end)
+
+t.test('with only discounted reads the discounted price comes back, flagged', function()
+	local db = openStore()
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 8 } }, { name = 'Alice', reaction = 8 }),
+		NOW
+	)
+	VendorStore.record(db, observation(BOB, { { itemId = THREAD, price = 9 } }, { name = 'Bob' }), NOW)
+	local price = pricesOf(db, { build = 'test', items = { [THREAD] = 10 } }):BuyPrice(THREAD)
+	t.eq(price.source, 'seen')
+	t.eq(price.price, 8)
+	t.eq(price.cheapestVendor.reaction, 8)
 	t.eq(price.isBasePrice, false)
 end)
 
@@ -444,6 +524,34 @@ t.test('a slot the client fails on makes the read incomplete', function()
 	t.same(addon.errors, {})
 end)
 
+t.test('a slot priced 0 with no extended cost makes the read incomplete', function()
+	local game = merchantGame()
+	local addon = FakeGame.startAddon(t, game)
+	game:Fire('MERCHANT_SHOW')
+	game:NextFrame()
+	game.merchant[1] = { itemId = THREAD, price = 0 }
+	game.merchant[2] = nil
+	game:Advance(30)
+	game:Fire('MERCHANT_UPDATE')
+	game:NextFrame()
+	local items = addon.VendorStore.vendorItems(addon.vendorDb, 66)
+	t.eq(items[THREAD].price, 10)
+	t.eq(items[ARROW].goneAt, nil)
+	t.same(addon.errors, {})
+end)
+
+t.test('the standing is read under a guard', function()
+	local game = merchantGame()
+	local wow = ns.Wow.create(game.env)
+	t.eq(wow:MerchantVendor().reaction, 5)
+	game.env.UnitReaction = function()
+		error('client error')
+	end
+	local vendor = wow:MerchantVendor()
+	t.eq(vendor.npcId, 66)
+	t.eq(vendor.reaction, nil)
+end)
+
 t.test('nothing is recorded with the setting off, for a player or without a store', function()
 	local game = merchantGame()
 	local addon = FakeGame.startAddon(t, game)
@@ -465,8 +573,11 @@ t.test('/hag vendors reports the record and the seed', function()
 	game:Fire('MERCHANT_SHOW')
 	game:NextFrame()
 	local lines = addon.host.RunCommand('vendors')
-	t.truthy(lines[1]:find('1 vendors, 3 items', 1, true), lines[1])
-	t.truthy(lines[2]:find('build ' .. addon.VendorSeed.build, 1, true), lines[2])
+	t.truthy(lines[1]:match('^Merchant record: 1 vendor, 3 items, %d+%.%d of 512 KB$'), lines[1])
+	t.truthy(
+		lines[2]:match('^Seed: %d+ items from build ' .. addon.VendorSeed.build:gsub('%.', '%%.') .. '$'),
+		lines[2]
+	)
 end)
 
 t.test('Questie is read only to confirm, guarded', function()
@@ -508,6 +619,20 @@ end)
 -- The generator ------------------------------------------------------------------------------
 
 local Gen = dofile('tools/gen-vendor-seed.lua')
+
+t.test('a bare LibPeriodicTable id never clears a CMaNGOS limited flag', function()
+	local prices = { [2515] = { price = 10, stack = 200 }, [2320] = { price = 10, stack = 1 } }
+	local lpt = { [2515] = true, [2320] = true }
+	local cmangos = { [2515] = { isLimited = true }, [2320] = { isLimited = false } }
+	for _, lists in ipairs({ { lpt, cmangos }, { cmangos, lpt } }) do
+		local seed = Gen.buildSeed(prices, lists)
+		t.eq(seed[2515].isLimited, true)
+		t.eq(seed[2320].isLimited, false)
+	end
+	t.eq(Gen.buildSeed(prices, { lpt })[2515].isLimited, false)
+	-- Two lists that know disagree: unlimited wins.
+	t.eq(Gen.buildSeed(prices, { cmangos, { [2515] = { isLimited = false } } })[2515].isLimited, false)
+end)
 
 t.test('the generator parses quoted CSV', function()
 	local rows = Gen.parseCsv('a,b,c\n1,"x, ""y""\nz",3\r\n')

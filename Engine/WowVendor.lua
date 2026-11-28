@@ -13,8 +13,8 @@
 	  Cost         = { kind = 'currency'|'item', id?, count }
 
 	price is copper for stack units (C_MerchantFrame.GetItemInfo, or GetMerchantItemInfo on an
-	older client); available is numAvailable, -1 for unlimited stock. isComplete is false when a
-	slot could not be read, the list is empty (not loaded yet) or the merchant's filter hides items (GetMerchantFilter is not "all"),
+	older client); available is numAvailable, -1 for unlimited stock. A slot priced 0 with no
+	extended cost counts as not read. isComplete is false when a slot could not be read, the list is empty (not loaded yet) or the merchant's filter hides items (GetMerchantFilter is not "all"),
 	so a caller does not take an unread item for one the vendor stopped selling.
 ]]
 local _, ns = ...
@@ -147,6 +147,10 @@ function slotInfo(env, index)
 		return nil
 	end
 	local costs = hasExtendedCost and slotCosts(env, index) or {}
+	-- Price 0 with no other cost is a slot the client has not filled yet, not a free item.
+	if price == 0 and hasExtendedCost ~= true and #costs == 0 then
+		return nil
+	end
 	return {
 		index = index,
 		itemId = itemId,

@@ -168,18 +168,20 @@ end
 --- @return table { [itemId] = { price, stack, isLimited } }
 function Gen.buildSeed(prices, lists)
 	local seed = {}
+	-- Per item: nil while no list knew about its stock, else whether every list that knew said limited.
+	local knownLimits = {}
 	for _, list in ipairs(lists) do
 		for itemId, info in pairs(list) do
 			local price = prices[itemId]
 			if price then
-				local isLimited = type(info) == 'table' and info.isLimited == true
-				local previous = seed[itemId]
-				-- Limited only when every list that says so agrees; a plain id list knows nothing.
-				local wasLimited = previous == nil or previous.isLimited
+				-- A plain id list knows nothing about stock, so it never clears another list's flag.
+				if type(info) == 'table' then
+					knownLimits[itemId] = knownLimits[itemId] ~= false and info.isLimited == true
+				end
 				seed[itemId] = {
 					price = price.price,
 					stack = price.stack,
-					isLimited = wasLimited and isLimited,
+					isLimited = knownLimits[itemId] == true,
 				}
 			end
 		end
