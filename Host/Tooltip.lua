@@ -14,7 +14,7 @@
 	(Wow:HookItemTooltips) and its handler removed with the last.
 
 	Separators: the block stands between two separators, each a 1px rule on a blank line (the
-	DS surface hairline: color.border.tooltip at 60%, border.hairline physical pixels high). A
+	DS strong border: color.border.strong at its own alpha, border.hairline physical pixels high). A
 	line is blank when its left and right text are blank and no shown money frame sits on it.
 	When the line next to the block is already blank, the rule goes on that line and its text is
 	left alone; otherwise Haggler adds a ' ' line for it. Haggler cannot know whether a later
@@ -32,10 +32,10 @@ Tooltip.HOOK_OWNER = 'host'
 local WHITE = { r = 1, g = 1, b = 1 }
 local SEPARATOR_TEXT = ' '
 local COLLAPSED_TEXT = ''
-local SEPARATOR_COLOR_TOKEN = 'color.border.tooltip'
+-- The strongest DS border: a 1px rule needs 3:1 on the game's near-black tooltip, which the
+-- quieter tooltip border (about 1.8:1 at 60%) did not reach.
+local SEPARATOR_COLOR_TOKEN = 'color.border.strong'
 local SEPARATOR_HEIGHT_TOKEN = 'border.hairline'
--- The DS surface hairline is a quiet frame at 60% of its colour.
-local SEPARATOR_ALPHA = 0.6
 -- The client's left inset of tooltip lines, used when the edges cannot be read yet.
 local LINE_INSET = 10
 -- The UI's reference height: one physical pixel is 768 / screen height units at scale 1.
@@ -206,7 +206,7 @@ function TooltipMethods:AcquireRule(tooltip, separators)
 	if not rule then
 		rule = tooltip:CreateTexture(nil, 'ARTWORK')
 		local color = self.theme:Color(SEPARATOR_COLOR_TOKEN)
-		rule:SetColorTexture(color.r, color.g, color.b, SEPARATOR_ALPHA)
+		rule:SetColorTexture(color.r, color.g, color.b, color.a)
 		-- Older clients lack these; the snapped size and offset keep the rule whole without them.
 		if rule.SetSnapToPixelGrid then
 			rule:SetSnapToPixelGrid(true)
