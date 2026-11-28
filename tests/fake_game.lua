@@ -417,6 +417,14 @@ local function newTooltip(game, name)
 	function tooltip:CreateTexture(_, layer)
 		local texture = FakeGame.newWidget('Texture', self)
 		texture.layer = layer
+		if self.hasPixelSnapping ~= false then
+			function texture:SetSnapToPixelGrid(isSnapped)
+				self.isSnappedToPixelGrid = isSnapped
+			end
+			function texture:SetTexelSnappingBias(bias)
+				self.texelSnappingBias = bias
+			end
+		end
 		self.children[#self.children + 1] = texture
 		return texture
 	end

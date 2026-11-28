@@ -447,7 +447,7 @@ function ownSalesReason(stats, minScans, minHours)
 		code = 'ownSalesThin',
 		level = 'high',
 		text = string.format(
-			'sold a day from AHledger; own count has %d of %d scans, %d of %d hours',
+			'sold a day from AHledger, as your own count has %d of %d scans and %d of %d hours',
 			stats.scans,
 			minScans,
 			math.floor(stats.hours),

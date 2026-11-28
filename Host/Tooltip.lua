@@ -207,6 +207,13 @@ function TooltipMethods:AcquireRule(tooltip, separators)
 		rule = tooltip:CreateTexture(nil, 'ARTWORK')
 		local color = self.theme:Color(SEPARATOR_COLOR_TOKEN)
 		rule:SetColorTexture(color.r, color.g, color.b, SEPARATOR_ALPHA)
+		-- Older clients lack these; the snapped size and offset keep the rule whole without them.
+		if rule.SetSnapToPixelGrid then
+			rule:SetSnapToPixelGrid(true)
+		end
+		if rule.SetTexelSnappingBias then
+			rule:SetTexelSnappingBias(0)
+		end
 		separators.rules[#separators.rules + 1] = rule
 	end
 	separators.used[#separators.used + 1] = rule
@@ -230,7 +237,8 @@ end
 --- change of its text shows the tooltip again to resize it; that Show settles to no change.
 function TooltipMethods:SettleClosingSeparator(tooltip, separators)
 	local closing = separators.closing
-	if closing and not (closing.fontString and closing.fontString:GetText() == closing.text) then
+	-- The client can read a line set to '' back as nil.
+	if closing and not (closing.fontString and (closing.fontString:GetText() or '') == closing.text) then
 		-- Cleared or reused without OnTooltipCleared: the line is no longer Haggler's.
 		closing.rule:Hide()
 		separators.closing = nil

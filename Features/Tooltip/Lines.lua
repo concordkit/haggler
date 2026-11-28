@@ -11,8 +11,8 @@
 	the stack price, or the unit price in the unit view. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
 	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
-	and anything that can grow long goes on a wrapped line of its own, so Haggler never widens
-	the tooltip. Money reads with the game's coin icons, by texture path, as GetCoinTextureString
+	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
+	keep the tooltip narrow (an item name or another add-on may still widen it). Money reads with the game's coin icons, by texture path, as GetCoinTextureString
 	writes it. The detail block adds how the default rule got its price, every
 	confidence reason, sales a day, listings, vendor price and an estimated sell time with its
 	note. The last line is the price source's credit (quote.credit, "Prices from AHledger"),
@@ -53,7 +53,9 @@ local LINE_HEIGHT_ICON = 0
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local withCredit, lowReasonLine, capitalized
+local withCredit, lowReasonLine, capitalized, iconSetFor
+-- One icon set per theme, built on first use instead of on every hover.
+local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
 --- Builds the lines for one item; an item Haggler knows nothing about gets none.
 --- @param input table see the file header
@@ -67,7 +69,7 @@ function TooltipLines.build(input)
 	local view = {
 		stack = input.isUnitView and 1 or stack,
 		theme = input.theme,
-		icons = input.icons or ns.IconSet.new({ theme = input.theme }),
+		icons = input.icons or iconSetFor(input.theme),
 		isUnitView = input.isUnitView,
 		isDetail = input.isDetail,
 	}
@@ -369,6 +371,15 @@ end
 
 function color(view, name)
 	return view.theme:Color(name)
+end
+
+function iconSetFor(theme)
+	local icons = iconSetsByTheme[theme]
+	if not icons then
+		icons = ns.IconSet.new({ theme = theme })
+		iconSetsByTheme[theme] = icons
+	end
+	return icons
 end
 
 function capitalized(text)

@@ -13,7 +13,7 @@
 
 	Badge kinds:
 	  vendor          the vendor pays more than the AH would net (after cut and deposit risk)
-	  lowConfidence   the value is a guess; the alert-triangle icon (tooltips keep the text marker).
+	  lowConfidence   the value is a guess; the alert-triangle icon in the caution colour, as in tooltips.
 	                It has no setting, and a shown value carries it inside its own text too, so
 	                no corner priority or hidden widget can show a guessed value bare.
 	  belowVendorFlip reserved for the flip step: a listing under the vendor price
@@ -33,7 +33,7 @@ ns.Badges = Badges
 
 Badges.KINDS = {
 	vendor = { icon = 'coins', color = 'color.state.warning', point = 'TOPLEFT' },
-	lowConfidence = { icon = 'alert-triangle', color = 'color.state.danger', point = 'TOPRIGHT' },
+	lowConfidence = { icon = ns.IconSet.LOW_CONFIDENCE, color = ns.IconSet.LOW_CONFIDENCE_COLOR, point = 'TOPRIGHT' },
 }
 Badges.ORDER = { 'vendor', 'lowConfidence' }
 Badges.ICON_SIZE = 14

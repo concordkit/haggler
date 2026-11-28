@@ -356,7 +356,7 @@ t.test('no synced table but AHledger answers from your own scan: no "no prices" 
 	t.same(reasonOf(price, 'ownScanOverlay'), {
 		code = 'ownScanOverlay',
 		level = 'medium',
-		text = 'AHledger has no synced table for this market; its figures come from your own scan',
+		text = 'AHledger has no synced table for this market, so its figures come from your own scan',
 	})
 	local vendor = Rules.evaluate(VENDOR_RULE, LINEN, contextWith(source))
 	t.same(vendor.confidence.reasons, {}, 'no AHledger figure, no overlay reason')
@@ -400,7 +400,7 @@ t.test('AHledger set to another market: Haggler keeps its own and says so', func
 	t.same(reasonOf(price, 'marketMismatch'), {
 		code = 'marketMismatch',
 		level = 'high',
-		text = 'AHledger uses forever/pvp/horde/us; Haggler prices forever/normal/alliance/us',
+		text = 'AHledger uses forever/pvp/horde/us while Haggler prices forever/normal/alliance/us',
 	})
 	t.eq(price.confidence.level, 'high', 'an info reason does not lower confidence')
 	local vendor = Rules.evaluate(VENDOR_RULE, LINEN, contextWith(source))
