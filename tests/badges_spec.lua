@@ -43,6 +43,7 @@ local function value(fields)
 		vendorNet = 13,
 		lowestListed = 520,
 		typicalPrice = 520,
+		recentPrice = 520,
 		typicalAhNet = 494,
 		confidence = { level = 'high', reasons = {} },
 	}
@@ -191,7 +192,8 @@ t.test('decide: the post/wait edge follows Advice', function()
 	local threshold = ns.Advice.WAIT_UNDER_TYPICAL_PERCENT
 	local typical = 10000
 	local function at(percent)
-		return kinds(Badges.decide(value({ typicalPrice = typical, lowestListed = typical - percent * 100 }), ALL))
+		local market = { typicalPrice = typical, recentPrice = typical, lowestListed = typical - percent * 100 }
+		return kinds(Badges.decide(value(market), ALL))
 	end
 	t.eq(at(threshold - 1), 'decision:post')
 	t.eq(at(threshold), 'decision:wait')

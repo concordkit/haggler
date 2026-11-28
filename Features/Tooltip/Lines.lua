@@ -12,7 +12,8 @@
 	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
 	with the decision (Advice.forItem's) as its glyph and word. A Wait says why on a wrapped line
 	below it, in the compact and the detail view alike: how far under the usual price the lowest
-	listing is and what posting at the usual price nets over the vendor. A low-confidence price carries the
+	listing is, that the market holds steady, and what posting at the usual price nets over the
+	vendor. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
 	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
 	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
@@ -36,7 +37,7 @@ TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
 TooltipLines.DECISION_LABEL = 'Decision'
 -- The lowest listing's percent under the usual price, then the stack's gain over the vendor.
 TooltipLines.WAIT_REASON =
-	'Wait, the lowest listing is %d%% under the usual price, and posting at the usual price nets %s more than the vendor'
+	'Wait, the lowest listing is %d%% under the usual price while the market holds steady, and posting at the usual price nets %s more than the vendor'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
