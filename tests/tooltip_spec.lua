@@ -16,6 +16,17 @@ local LOW_ICON = icons:Inline('triangle-alert', 0, 'color.state.caution')
 local MEDIUM_ICON = icons:Inline('triangle-alert', 0, 'color.state.warning')
 local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
 
+-- The module icon the TOC's IconTexture names, inline at the line's own text height (0).
+local function tocIconTexture()
+	for line in io.lines('Haggler.toc') do
+		local path = line:match('^## IconTexture:%s*(.-)%s*$')
+		if path then
+			return path
+		end
+	end
+end
+local HEADER_ICON = '|T' .. tocIconTexture() .. ':0|t'
+
 local function price(copper, level, reasons, trace)
 	return {
 		copper = copper,
@@ -74,7 +85,7 @@ t.group('tooltip lines')
 
 t.test('compact: the age header, then one line per rule with the stack price', function()
 	t.same(texts(build({ stackCount = 20 })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic ×20 | ' .. coins('18s 80c'),
 		'Median ×20 | ' .. coins('24s'),
 	})
@@ -108,7 +119,7 @@ t.test('with the detail off, the top low reason wraps on its own line under the 
 	})
 	local lines = build({ quote = lowQuote, stackCount = 2 })
 	t.same(texts(lines), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Minimum ×2 | ' .. coins('48c') .. ' ' .. LOW_ICON,
 		'Low confidence, 81% of vanished units were troll buys and are left out',
 	})
@@ -178,7 +189,7 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 		},
 	})
 	t.same(texts(build({ quote = detailed, stackCount = 20, isDetail = true })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic ×20 | ' .. coins('19s 60c'),
 		'Median ×20 | ' .. coins('24s') .. ' ' .. LOW_ICON,
 		'Realistic, each:',
@@ -209,7 +220,7 @@ t.test('detail lines follow their settings; the reasons always show', function()
 		detailSellTime = false,
 	}
 	t.same(texts(build({ quote = lowQuote, isDetail = true, options = options })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
 		LOW_ICON .. ' Low confidence, old data',
 	})
@@ -476,6 +487,165 @@ t.test('modifiers reach the providers; a forbidden tooltip is skipped', function
 	t.same(seen, { shift = true, ctrl = false, alt = false })
 	game.env.GameTooltip.isForbidden = true
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
+end)
+
+local SPACER_16 = '|TInterface\\AddOns\\Haggler\\media\\spacer.png:1:16|t'
+
+local function lineFonts(game, tooltip, index)
+	local left = game.env[tooltip.name .. 'TextLeft' .. index]
+	local right = game.env[tooltip.name .. 'TextRight' .. index]
+	return left:GetFontObject(), right:GetFontObject()
+end
+
+local function lineColors(game, tooltip, index)
+	local left = game.env[tooltip.name .. 'TextLeft' .. index]
+	local right = game.env[tooltip.name .. 'TextRight' .. index]
+	return { left:GetTextColor() }, { right:GetTextColor() }
+end
+
+local function runPostCall(game, tooltip)
+	game.postCalls[1].handler(tooltip, { id = LINEN })
+end
+
+local function withSupportingRow(tooltips)
+	tooltips:AddProvider('haggler', function()
+		return {
+			{ left = 'Decision', right = 'Wait' },
+			{
+				left = 'Market',
+				right = 'Steady',
+				color = { r = 0.5, g = 0.5, b = 0.5 },
+				rightColor = { r = 0.4, g = 0.4, b = 0.4 },
+				textSize = 'small',
+				indent = 16,
+			},
+			{ left = 'Vendor', right = '13c' },
+		}
+	end)
+end
+
+t.test('a small line draws in the client small tooltip font, both columns, indented by a spacer', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local lines = game:ShowItemTooltip(LINEN)
+	local small, normal, header =
+		game.env.GameTooltipTextSmall, game.env.GameTooltipText, game.env.GameTooltipHeaderText
+	t.eq(lines[2].left, SPACER_16 .. 'Market', 'the spacer is the indent')
+	t.eq(lines[2].right, 'Steady', 'the value keeps its right edge')
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small })
+	t.same(
+		{ lineColors(game, tooltip, 2) },
+		{ { 0.5, 0.5, 0.5, 1 }, { 0.4, 0.4, 0.4, 1 } },
+		'the small font keeps the line colours'
+	)
+	t.same({ lineFonts(game, tooltip, 1) }, { header, header }, 'the line above keeps its font')
+	t.same({ lineFonts(game, tooltip, 3) }, { normal, normal }, 'the line below keeps its font')
+	t.eq(lines[3].left, 'Vendor', 'no indent on other lines')
+end)
+
+t.test('the spacer texture ships with the add-on and the release keeps it', function()
+	local file = io.open('media/spacer.png', 'rb')
+	t.truthy(file, 'media/spacer.png')
+	if file then
+		file:close()
+	end
+	for line in io.lines('.pkgmeta') do
+		t.eq(line:match('^%s*%-%s*media/?$'), nil, 'media is not ignored')
+		t.eq(line:match('^%s*%-%s*media/spacer'), nil, 'the spacer is not ignored')
+	end
+end)
+
+t.test('a reused line gets its own font back: on clear, on hide and for the next item', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local normal, small = game.env.GameTooltipText, game.env.GameTooltipTextSmall
+	game:ShowItemTooltip(LINEN)
+	tooltip:ClearLines()
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'cleared')
+	tooltip:AddDoubleLine('Other add-on', 'value')
+	tooltip:AddDoubleLine('Other add-on', 'value')
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'another add-on line on the reused index')
+	game:ShowItemTooltip(LINEN)
+	t.eq(tooltip.isShown, true, 'shown again')
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small }, 'small before the hide')
+	tooltip:Hide()
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'hidden')
+	tooltips:RemoveProvider('haggler')
+	tooltips:AddProvider('other', function()
+		return { { left = 'a' }, { left = 'b', right = 'c' } }
+	end)
+	game:ShowItemTooltip(LINEN)
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'the next item')
+end)
+
+t.test('the next render restores a line reused without a clear, keeping its new colour', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local normal = game.env.GameTooltipText
+	game:ShowItemTooltip(LINEN)
+	-- Lines dropped and reused with no OnTooltipCleared.
+	tooltip.lines = {}
+	tooltip:AddLine('x', 1, 0, 0)
+	tooltip:AddDoubleLine('Other add-on', 'value', 0, 1, 0, 0, 0, 1)
+	runPostCall(game, tooltip)
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'restored before drawing')
+	t.same({ lineColors(game, tooltip, 2) }, { { 0, 1, 0, 1 }, { 0, 0, 1, 1 } }, 'its owner colours stay')
+end)
+
+t.test('a duplicate post-call leaves the small rows still on screen small', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local small = game.env.GameTooltipTextSmall
+	game:ShowItemTooltip(LINEN)
+	runPostCall(game, tooltip)
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small }, 'the first block')
+	t.same({ lineColors(game, tooltip, 2) }, { { 0.5, 0.5, 0.5, 1 }, { 0.4, 0.4, 0.4, 1 } })
+end)
+
+t.test('a line that was not normal before keeps its own font after the small row', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local custom = { name = 'SomeAddonFont', path = 'Fonts\\ARIALN.TTF', size = 11 }
+	tooltip:AddLine('x')
+	tooltip:AddLine('y')
+	game.env.GameTooltipTextLeft2:SetFontObject(custom)
+	game:ShowItemTooltip(LINEN)
+	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), game.env.GameTooltipTextSmall)
+	tooltip:ClearLines()
+	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), custom, 'restored to what it had')
+end)
+
+t.test('a skin font set with SetFont comes back, with or without a font object behind it', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip:AddLine('x')
+	tooltip:AddDoubleLine('y', 'z')
+	local left, right = game.env.GameTooltipTextLeft2, game.env.GameTooltipTextRight2
+	left:SetFont('Interface\\AddOns\\Skin\\font.ttf', 13, 'OUTLINE')
+	right.fontObject = nil
+	right:SetFont('Interface\\AddOns\\Skin\\font.ttf', 11, '')
+	game:ShowItemTooltip(LINEN)
+	t.eq(left:GetFontObject(), game.env.GameTooltipTextSmall)
+	tooltip:ClearLines()
+	t.same({ left:GetFont() }, { 'Interface\\AddOns\\Skin\\font.ttf', 13, 'OUTLINE' }, 'object and SetFont')
+	t.eq(left:GetFontObject(), game.env.GameTooltipText)
+	t.same({ right:GetFont() }, { 'Interface\\AddOns\\Skin\\font.ttf', 11, '' }, 'SetFont alone')
+end)
+
+t.test('a tooltip without OnTooltipCleared gets the indent but keeps its font', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip.scriptNames = {}
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(lines[2].left, SPACER_16 .. 'Market')
+	t.same({ lineFonts(game, tooltip, 2) }, { game.env.GameTooltipText, game.env.GameTooltipText })
 end)
 
 t.group('tooltip separators')
@@ -861,7 +1031,7 @@ end
 t.test('item tooltips get the header and the default rule; a modifier change redraws', function()
 	local game, addon = startWithTable()
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(lines[1].left, 'Haggler')
+	t.eq(lines[1].left, HEADER_ICON)
 	t.eq(lines[1].right, 'no scan · table 2 h')
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Prices from AHledger (ahledger.com)', 'the credit closes the block')
@@ -1037,6 +1207,29 @@ t.test('lines: the wait reason rows are dimmer than the other rows, labels and v
 	t.same(lines[4].rightColor, theme:Color('color.text.primary'))
 end)
 
+t.test('lines: the wait reason rows hang off the decision, small and indented a grid step', function()
+	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
+	for index = 5, 7 do
+		t.eq(lines[index].textSize, 'small', lines[index].left)
+		t.eq(lines[index].indent, theme:Number('space.3'), lines[index].left)
+	end
+	t.eq(theme:Number('space.3'), 16, 'a whole grid step')
+	for index = 1, 4 do
+		t.eq(lines[index].textSize, nil, lines[index].left)
+		t.eq(lines[index].indent, nil, lines[index].left)
+	end
+end)
+
+t.test('lines: the header shows the module icon in place of the word, its right column as before', function()
+	local lines = build({ stackCount = 20 })
+	t.eq(tocIconTexture(), 'Interface\\AddOns\\Haggler\\media\\icon.png', 'the plain module icon')
+	t.eq(lines[1].left, HEADER_ICON, 'only the icon, at the line text height')
+	t.eq(lines[1].left:find('Haggler', 1, true) ~= nil, true, 'the path names the add-on folder')
+	t.eq(lines[1].left:gsub('|T.-|t', ''), '', 'no word left beside it')
+	t.eq(lines[1].right, 'scan 12 min · table 3 h')
+	t.same(lines[1].rightColor, theme:Color('color.text.muted'))
+end)
+
 t.test('lines: the wait gain follows the view, a unit in the unit view as the prices do', function()
 	local each = build({ stackCount = 20, advice = WAIT, icons = icons, isUnitView = true })
 	t.same(reasonRows(each)[3], { 'Over vendor' .. TooltipLines.EACH_SUFFIX, '+' .. TooltipLines.money(617) })
@@ -1095,5 +1288,50 @@ t.test('module: a bag slot tooltip says why its item waits', function()
 	addon.Advice.forItem = forItem
 	t.truthy(find(lines, 'Wait'), 'the decision')
 	t.truthy(find(lines, '32% under usual'), 'and why')
+	t.same(addon.errors, {})
+end)
+
+t.test('module: the wait reason rows reach the tooltip small, indented and muted', function()
+	local game, addon = startWithTable()
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 20 }
+	local tooltip = game.env.GameTooltip
+	tooltip.owner = bagSlot(0, 3)
+	local forItem = addon.Advice.forItem
+	addon.Advice.forItem = function()
+		return WAIT
+	end
+	local lines = game:ShowItemTooltip(LINEN)
+	addon.Advice.forItem = forItem
+	local muted, secondary = theme:Color('color.text.muted'), theme:Color('color.text.secondary')
+	local small, normal = game.env.GameTooltipTextSmall, game.env.GameTooltipText
+	local decisionIndex
+	for index, line in ipairs(lines) do
+		if line.left == TooltipLines.DECISION_LABEL then
+			decisionIndex = index
+		end
+	end
+	t.truthy(decisionIndex, 'a Decision line')
+	t.same(
+		{ lines[decisionIndex].lr, lines[decisionIndex].lg, lines[decisionIndex].lb },
+		{ secondary.r, secondary.g, secondary.b }
+	)
+	t.same({ lineFonts(game, tooltip, decisionIndex) }, { normal, normal })
+	t.same({ lineFonts(game, tooltip, decisionIndex - 1) }, { normal, normal }, 'the price row above')
+	for index = decisionIndex + 1, decisionIndex + 3 do
+		local line = lines[index]
+		t.eq(line.left:sub(1, #SPACER_16), SPACER_16, line.left)
+		t.same(
+			{ line.lr, line.lg, line.lb, line.rr, line.rg, line.rb },
+			{ muted.r, muted.g, muted.b, muted.r, muted.g, muted.b },
+			line.left
+		)
+		t.same({ lineFonts(game, tooltip, index) }, { small, small }, line.left)
+		t.same(
+			{ lineColors(game, tooltip, index) },
+			{ { muted.r, muted.g, muted.b, 1 }, { muted.r, muted.g, muted.b, 1 } },
+			'the muted colour reaches the font strings'
+		)
+	end
+	t.same({ lineFonts(game, tooltip, decisionIndex + 4) }, { normal, normal }, 'the credit below')
 	t.same(addon.errors, {})
 end)

@@ -8,10 +8,10 @@
 	  options = { detailTrace, detailSales, detailListings, detailVendor, detailSellTime,
 	              sellTimeNote }
 
-	Compact view: a header with the data age, then one line per shown rule (default first) with
+	Compact view: a header (the module icon) with the data age, then one line per shown rule (default first) with
 	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
 	with the decision (Advice.forItem's) as its glyph and word. A Wait says why in short label and
-	value rows right below it, dimmed as supporting detail, in the compact and the detail view
+	value rows right below it, as supporting detail (small, indented, muted), in the compact and the detail view
 	alike: how far under the usual price the lowest listing is, that the market holds steady, and
 	what posting at the usual price nets over the vendor. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
@@ -31,7 +31,10 @@ local _, ns = ...
 local TooltipLines = {}
 ns.TooltipLines = TooltipLines
 
-TooltipLines.TITLE = 'Haggler'
+-- The header shows the module icon (the TOC's IconTexture, never a banner) in place of the word,
+-- inline at height 0: the client sizes it to the line's own text height and keeps it on the
+-- line as it does the decision glyph.
+TooltipLines.TITLE_ICON_TEXTURE = 'Interface\\AddOns\\Haggler\\media\\icon.png'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
 TooltipLines.DECISION_LABEL = 'Decision'
@@ -42,6 +45,8 @@ TooltipLines.WAIT_LOWEST_VALUE = '%d%% under usual'
 TooltipLines.WAIT_MARKET_LABEL = 'Market'
 TooltipLines.WAIT_MARKET_VALUE = 'Steady'
 TooltipLines.WAIT_GAIN_LABEL = 'Over vendor'
+-- The reason rows hang off the Decision line by one grid step.
+local REASON_INDENT_TOKEN = 'space.3'
 -- Marks a unit price or gain in the unit view.
 TooltipLines.EACH_SUFFIX = ' (each)'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
@@ -222,11 +227,18 @@ function waitReasonRows(advice, view)
 	}
 end
 
--- A supporting row under the Decision line: label and value both muted, so it reads below the
--- rows above it.
+-- A supporting row under the Decision line: small text, indented a grid step, label and value
+-- both muted, so it reads as detail of the Decision and not as another row.
 function reasonRow(label, value, view)
 	local muted = color(view, 'color.text.muted')
-	return { left = label, right = value, color = muted, rightColor = muted }
+	return {
+		left = label,
+		right = value,
+		color = muted,
+		rightColor = muted,
+		textSize = 'small',
+		indent = view.theme:Number(REASON_INDENT_TOKEN),
+	}
 end
 
 -- The stack view's label mark, as the price lines carry it: ' ×20', nothing for a single item.
@@ -245,7 +257,7 @@ function headerLine(ages, view)
 	local scanText = ages.scanAge and ('scan ' .. TooltipLines.age(ages.scanAge)) or 'no scan'
 	local tableText = ages.tableAge and ('table ' .. TooltipLines.age(ages.tableAge)) or 'no table'
 	return {
-		left = TooltipLines.TITLE,
+		left = '|T' .. TooltipLines.TITLE_ICON_TEXTURE .. ':' .. LINE_HEIGHT_ICON .. '|t',
 		right = scanText .. ' · ' .. tableText,
 		color = color(view, 'color.text.accent'),
 		rightColor = color(view, 'color.text.muted'),
