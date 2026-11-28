@@ -33,24 +33,28 @@
 	means one undercut stack moves min but not q10; and min, q10, q25 and the median are what
 	market-value methods take (the cheap end, without outliers), while q75 shows the spread. Exact depth stays with ScanStore's latest scan.
 
-	A record that does not parse strictly (whole numbers, item id and units positive, min from 1
-	to MAX_COPPER, no known step after an unknown one) reads as nothing and counts in the read's
+	A record that does not parse strictly (whole numbers without leading zeros, item id from 1 to
+	MAX_ITEM_ID, units from 1 to MAX_UNITS, min and every quantile from 1 to MAX_COPPER, no known
+	step after an unknown one) reads as nothing and counts in the read's
 	skipped; a broken entry reads as none; never an error.
 
-	Retention (prune, after each save): within recentDays the fullest scan of each six-hour slot
-	is kept, older ones the fullest scan of each day (ties go to the later scan), then the oldest
-	entries go first until the archive fits maxBytes. The newest entry of each market always
-	stays. Days and slots are UTC, as Sales counts days. At the default 32 MB one market holds
+	Retention (prune, after each save): an entry dated more than FUTURE_TOLERANCE_SECONDS after
+	now (a clock that ran ahead) is dropped. Each market's newest entry always stays: it wins its
+	slot or day whatever its count, and the size cap never takes it. Of the rest, within
+	recentDays the fullest scan of each six-hour slot is kept, older ones the fullest scan of
+	each day (ties go to the later scan), then the oldest entries go first until the archive
+	fits maxBytes. Days and slots are UTC, as Sales counts days. At the default 32 MB one market holds
 	the 12 slot scans of the last 3 days (about 9.4 MB) and about 29 days before that, daily.
 
-	  ScanArchive.open(db)                          -> db | nil, 'newer schema'
+	  ScanArchive.open(db)                          -> db | nil, 'newer schema' | 'not a table'
 	  ScanArchive.newEntryBuilder(snapshot)         -> builder | nil, reason; :Step, :Result
 	  ScanArchive.record(db, marketKey, entry)      -> saved, reason
 	  ScanArchive.prune(db, now, { recentDays?, maxBytes? }) -> entries dropped
 	  ScanArchive.export(db, marketKey, fromAt?, toAt?)      -> { schema, market, records, skipped }
 	  ScanArchive.bytes(db), ScanArchive.entryBytes(entry), ScanArchive.summary(db)
 
-	export is the entry point a network would call: pure, nothing leaves the machine.
+	export is the entry point a network would call: pure, records oldest scan first, nothing
+	leaves the machine.
 ]]
 local _, ns = ...
 
@@ -68,12 +72,18 @@ ScanArchive.DEFAULT_MAX_MB = 32
 ScanArchive.BYTES_PER_MB = 1024 * 1024
 -- What an entry's other fields and its SavedVariables lines cost beside the packed items.
 ScanArchive.ENTRY_OVERHEAD_BYTES = 128
+-- An entry dated further ahead than this is a clock that ran ahead, not a scan.
+ScanArchive.FUTURE_TOLERANCE_SECONDS = 86400
+-- No item id comes near this; a bigger one is a broken record.
+ScanArchive.MAX_ITEM_ID = 10000000
+-- ScanStore.MAX_STACK units in each of 100,000 listings of one item.
+ScanArchive.MAX_UNITS = 1000000000
 
 local DAY_SECONDS = 86400
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local isFinitePositive, isPositiveInteger, isUsableEntry, recordFromItem, packRecord, parseRecord
-local downsample, bucketOf, isBetterEntry, enforceBudget, isOpened
+local downsample, newestOf, bucketOf, isBetterEntry, enforceBudget, isOpened, wholeNumber, usableEntriesByTime
 
 local BuilderMethods = {}
 BuilderMethods.__index = BuilderMethods
@@ -81,10 +91,10 @@ BuilderMethods.__index = BuilderMethods
 --- Opens the archive's saved table: fills the layout, refuses a newer schema untouched.
 --- @param db table HagglerArchiveDB
 --- @return table|nil db
---- @return string|nil reason 'newer schema'
+--- @return string|nil reason 'newer schema' | 'not a table' (saved data; never an error)
 function ScanArchive.open(db)
 	if type(db) ~= 'table' then
-		error('ScanArchive.open: db must be a table', 2)
+		return nil, 'not a table'
 	end
 	local schema = tonumber(db.schema)
 	if schema and schema > ScanArchive.SCHEMA then
@@ -222,7 +232,7 @@ function ScanArchive.prune(db, now, options)
 		or ScanArchive.DEFAULT_MAX_MB * ScanArchive.BYTES_PER_MB
 	local dropped = 0
 	for marketKey, entries in pairs(db.markets) do
-		local kept, droppedHere = downsample(entries, now - recentDays * DAY_SECONDS)
+		local kept, droppedHere = downsample(entries, now, now - recentDays * DAY_SECONDS)
 		db.markets[marketKey] = #kept > 0 and kept or nil
 		dropped = dropped + droppedHere
 	end
@@ -243,9 +253,8 @@ function ScanArchive.export(db, marketKey, fromAt, toAt)
 	if type(entries) ~= 'table' then
 		return export
 	end
-	for _, entry in ipairs(entries) do
-		local isInRange = isUsableEntry(entry)
-			and (type(fromAt) ~= 'number' or entry.at >= fromAt)
+	for _, entry in ipairs(usableEntriesByTime(entries)) do
+		local isInRange = (type(fromAt) ~= 'number' or entry.at >= fromAt)
 			and (type(toAt) ~= 'number' or entry.at <= toAt)
 		if isInRange then
 			for text in entry.items:gmatch('[^;]+') do
@@ -358,11 +367,13 @@ end
 
 function parseRecord(text)
 	local idText, minText, unitsText, d10, d25, d50, d75 = text:match('^(%d+),(%d+),(%d+),(%d*),(%d*),(%d*),(%d*)$')
-	local itemId, min, units = tonumber(idText), tonumber(minText), tonumber(unitsText)
+	local itemId, min, units = wholeNumber(idText), wholeNumber(minText), wholeNumber(unitsText)
 	local isHeaderValid = isPositiveInteger(itemId)
+		and itemId <= ScanArchive.MAX_ITEM_ID
 		and isPositiveInteger(min)
 		and min <= ns.PriceData.MAX_COPPER
 		and isPositiveInteger(units)
+		and units <= ScanArchive.MAX_UNITS
 	if not isHeaderValid then
 		return nil
 	end
@@ -374,7 +385,11 @@ function parseRecord(text)
 		elseif isUnknown then
 			return nil
 		else
-			previous = previous + tonumber(stepText)
+			local step = wholeNumber(stepText)
+			if not step then
+				return nil
+			end
+			previous = previous + step
 			if previous > ns.PriceData.MAX_COPPER then
 				return nil
 			end
@@ -384,17 +399,21 @@ function parseRecord(text)
 	return record
 end
 
--- The entries worth keeping, oldest first, and how many went.
-function downsample(entries, recentFrom)
+-- The entries worth keeping, oldest first, and how many went. The newest entry wins its
+-- bucket, so the scan just recorded is never the one dropped.
+function downsample(entries, now, recentFrom)
 	if type(entries) ~= 'table' then
 		return {}, 0
 	end
+	local latestAllowed = now + ScanArchive.FUTURE_TOLERANCE_SECONDS
+	local newest = newestOf(entries, latestAllowed)
 	local bestByBucket, total = {}, 0
 	for _, entry in ipairs(entries) do
 		total = total + 1
-		if isUsableEntry(entry) then
+		if isUsableEntry(entry) and entry.at <= latestAllowed then
 			local bucket = bucketOf(entry.at, recentFrom)
-			if isBetterEntry(entry, bestByBucket[bucket]) then
+			local best = bestByBucket[bucket]
+			if entry == newest or (best ~= newest and isBetterEntry(entry, best)) then
 				bestByBucket[bucket] = entry
 			end
 		end
@@ -407,6 +426,39 @@ function downsample(entries, recentFrom)
 		return a.at < b.at
 	end)
 	return kept, total - #kept
+end
+
+function newestOf(entries, latestAllowed)
+	local newest
+	for _, entry in ipairs(entries) do
+		local isCandidate = isUsableEntry(entry) and entry.at <= latestAllowed
+		if isCandidate and (newest == nil or entry.at >= newest.at) then
+			newest = entry
+		end
+	end
+	return newest
+end
+
+-- A market's usable entries sorted by time (saved data may be out of order); a new list.
+function usableEntriesByTime(entries)
+	local usable = {}
+	for _, entry in ipairs(entries) do
+		if isUsableEntry(entry) then
+			usable[#usable + 1] = entry
+		end
+	end
+	table.sort(usable, function(a, b)
+		return a.at < b.at
+	end)
+	return usable
+end
+
+-- A whole number written without leading zeros ('0' itself is fine), else nil.
+function wholeNumber(text)
+	if type(text) ~= 'string' or not text:find('^%d+$') or (#text > 1 and text:sub(1, 1) == '0') then
+		return nil
+	end
+	return tonumber(text)
 end
 
 function bucketOf(at, recentFrom)

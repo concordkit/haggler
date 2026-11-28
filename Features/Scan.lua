@@ -8,7 +8,8 @@
 	the scans of markets not scanned for keepMarketDays.
 	Each saved scan also goes into the scan history (Engine/ScanArchive.lua, HagglerArchiveDB),
 	built in the same follow-up and kept to its own size budget; the stale-market drop does not
-	touch it. Nothing in it leaves the machine.
+	touch it. Nothing in it leaves the machine. A failing history never fails the scan: its
+	problem shows in /hag scan status as a scan history problem.
 	Switching it off stops listening and drops a read in progress.
 
 	Every C_AuctionHouse.ReplicateItems call, by any add-on, is recorded through a post-hook and
@@ -32,6 +33,8 @@ local tidySavedScans, installRequestHook, recordRequest, lastRequestedAt, savedR
 local REQUEST_CLOCK_TOLERANCE = 60
 
 local scanner, scanModule
+-- The newest scan history problem this session; nil when the last archive step worked.
+local archiveState = { lastError = nil }
 -- requestedAt: the newest request seen this session, kept while the market is not known yet.
 local requests = { isHooked = false, requestedAt = nil }
 
@@ -216,8 +219,10 @@ function newArchiveBuilder(snapshot)
 	return ns.ScanArchive.newEntryBuilder(snapshot)
 end
 
--- Runs the sales diff, then the archive builder, a slice at a time. A failing archive costs
--- only the archive entry; the sales diff still counts (its failure is the scanner's to report).
+-- Runs the sales diff, then the archive builder, a slice at a time. A failing archive builder
+-- costs only the archive entry (kept in archiveState), and the sales diff still counts. A
+-- failing sales diff fails the whole follow-up, so it costs the archive entry too; the scanner
+-- reports it and the scan is still saved.
 function newCombinedFollowUp(salesDiff, archiveBuilder)
 	local combined = { salesDiff = salesDiff, archiveBuilder = archiveBuilder }
 	function combined:Step(shouldContinue)
@@ -228,22 +233,28 @@ function newCombinedFollowUp(salesDiff, archiveBuilder)
 			end
 		end
 		if self.archiveBuilder then
-			local ok, isDone = pcall(self.archiveBuilder.Step, self.archiveBuilder, shouldContinue)
+			local ok, isDoneOrError = pcall(self.archiveBuilder.Step, self.archiveBuilder, shouldContinue)
 			if not ok then
 				self.archiveBuilder = nil
+				self.archiveError = isDoneOrError
 				return true
 			end
-			return isDone
+			return isDoneOrError
 		end
 		return true
 	end
 	function combined:Result()
 		local archiveEntry = nil
 		if self.archiveBuilder then
-			local ok, entry = pcall(self.archiveBuilder.Result, self.archiveBuilder)
-			archiveEntry = ok and entry or nil
+			local ok, entryOrError = pcall(self.archiveBuilder.Result, self.archiveBuilder)
+			archiveEntry = ok and entryOrError or nil
+			self.archiveError = not ok and entryOrError or self.archiveError
 		end
-		return { salesDiff = self.salesDiff and self.salesDiff:Result() or nil, archiveEntry = archiveEntry }
+		return {
+			salesDiff = self.salesDiff and self.salesDiff:Result() or nil,
+			archiveEntry = archiveEntry,
+			archiveError = self.archiveError,
+		}
 	end
 	return combined
 end
@@ -265,7 +276,14 @@ function saveSnapshot(module, snapshot, followUpResult)
 		ns.Sales.record(market.scanDays, salesDiff)
 	end
 	tidySavedScans(module, market, snapshot.at)
-	archiveSnapshot(module, marketKey, followUpResult and followUpResult.archiveEntry, snapshot.at)
+	local archiveError = followUpResult and followUpResult.archiveError
+	if archiveError ~= nil then
+		archiveState.lastError = 'building the entry failed: ' .. tostring(archiveError)
+	else
+		local ok, err =
+			pcall(archiveSnapshot, module, marketKey, followUpResult and followUpResult.archiveEntry, snapshot.at)
+		archiveState.lastError = not ok and ('saving failed: ' .. tostring(err)) or nil
+	end
 	module:Send('SCAN_READY', marketKey, { at = snapshot.at, source = snapshot.source, count = snapshot.count })
 end
 
@@ -323,6 +341,9 @@ function statusLines(status)
 		lines[#lines + 1] = 'Last problem: ' .. status.lastError
 	end
 	lines[#lines + 1] = archiveLine()
+	if archiveState.lastError then
+		lines[#lines + 1] = 'Scan history problem: ' .. archiveState.lastError
+	end
 	return lines
 end
 

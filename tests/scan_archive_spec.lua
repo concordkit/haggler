@@ -439,3 +439,180 @@ t.test('the status lines report the archive size', function()
 	local lines = table.concat(addon.host.RunCommand('scan status'), '\n')
 	t.truthy(lines:find('Scan history: 1 scan, 0.0 of 32 MB', 1, true), lines)
 end)
+
+t.group('scan archive: review fixes')
+
+t.test('open answers a non-table with a reason, never an error', function()
+	for _, junk in ipairs({ 'junk', 42, true }) do
+		local opened, reason = ScanArchive.open(junk)
+		t.eq(opened, nil)
+		t.eq(reason, 'not a table')
+	end
+end)
+
+t.test("a market's newest scan stays even when an older one in its slot is fuller", function()
+	local db = ScanArchive.open({})
+	local today = math.floor(NOW / DAY) * DAY
+	ScanArchive.record(db, MARKET, fakeEntry(today + 10 * 3600, 10))
+	ScanArchive.record(db, MARKET, fakeEntry(today + 11 * 3600, 9))
+	ScanArchive.prune(db, today + 11 * 3600, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { today + 11 * 3600 })
+	-- Once a later scan arrives, the earlier slot keeps what it kept.
+	ScanArchive.record(db, MARKET, fakeEntry(today + 13 * 3600, 1))
+	ScanArchive.prune(db, today + 13 * 3600, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { today + 11 * 3600, today + 13 * 3600 })
+end)
+
+t.test('an entry more than a day ahead of now is dropped and never protected as newest', function()
+	local db = ScanArchive.open({})
+	ScanArchive.record(db, MARKET, fakeEntry(NOW - 2 * DAY, 5))
+	ScanArchive.record(db, MARKET, fakeEntry(NOW, 5))
+	ScanArchive.record(db, MARKET, fakeEntry(NOW + 3600, 5))
+	ScanArchive.record(db, MARKET, fakeEntry(NOW + 2 * DAY, 50))
+	local entryBytes = ScanArchive.entryBytes(fakeEntry(NOW, 5))
+	ScanArchive.prune(db, NOW, { recentDays = 3, maxBytes = entryBytes })
+	t.same(ats(db, MARKET), { NOW + 3600 }, 'within a day ahead it is the newest; past it, gone')
+end)
+
+t.test('the slot and day edge sits exactly at recentFrom', function()
+	local db = ScanArchive.open({})
+	local now = NOW + 3600
+	local recentFrom = now - 3 * DAY
+	-- Both in the same six-hour slot and the same day; only recentFrom tells them apart.
+	local slotStart = math.floor(recentFrom / ScanArchive.SLOT_SECONDS) * ScanArchive.SLOT_SECONDS
+	t.truthy(recentFrom - 1 >= slotStart, 'the fixture straddles recentFrom inside one slot')
+	ScanArchive.record(db, MARKET, fakeEntry(recentFrom - 1, 3))
+	ScanArchive.record(db, MARKET, fakeEntry(recentFrom, 2))
+	ScanArchive.record(db, MARKET, fakeEntry(now, 1))
+	ScanArchive.prune(db, now, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { recentFrom - 1, recentFrom, now }, 'one counts by day, one by slot')
+end)
+
+t.test('days split at UTC midnight', function()
+	local db = ScanArchive.open({})
+	local midnight = math.floor(NOW / DAY) * DAY - 10 * DAY
+	ScanArchive.record(db, MARKET, fakeEntry(midnight - 2, 4))
+	ScanArchive.record(db, MARKET, fakeEntry(midnight - 1, 3))
+	ScanArchive.record(db, MARKET, fakeEntry(midnight, 2))
+	ScanArchive.record(db, MARKET, fakeEntry(midnight + 1, 1))
+	ScanArchive.record(db, MARKET, fakeEntry(NOW, 1))
+	ScanArchive.prune(db, NOW, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { midnight - 2, midnight, NOW })
+end)
+
+t.test('records with an implausible id or units, or leading zeros, read as nothing', function()
+	local db = {
+		schema = 1,
+		markets = {
+			[MARKET] = {
+				{
+					at = NOW,
+					source = 'own',
+					count = 9,
+					items = table.concat({
+						'2589,90,20,0,10,0,20',
+						'10000001,90,20,0,0,0,0', -- item id past MAX_ITEM_ID
+						'2592,90,1000000001,0,0,0,0', -- units past MAX_UNITS
+						'02592,90,20,0,0,0,0',
+						'2592,090,20,0,0,0,0',
+						'2592,90,020,0,0,0,0',
+						'2592,90,20,00,0,0,0',
+						'2592,90,20,0,01,0,0',
+					}, ';'),
+				},
+			},
+		},
+	}
+	local export = ScanArchive.export(db, MARKET)
+	t.eq(#export.records, 1)
+	t.eq(export.skipped, 7)
+end)
+
+t.test('export is sorted by time even when saved out of order', function()
+	local db = {
+		schema = 1,
+		markets = { [MARKET] = { fakeEntry(NOW, 1), fakeEntry(NOW - DAY, 1), fakeEntry(NOW - 2 * DAY, 1) } },
+	}
+	local times = {}
+	for index, record in ipairs(ScanArchive.export(db, MARKET).records) do
+		times[index] = record.at
+	end
+	t.same(times, { NOW - 2 * DAY, NOW - DAY, NOW })
+end)
+
+-- A game with a previous scan saved, so the new scan has a sales diff to record.
+local function gameWithPreviousScan()
+	local game = FakeGame.new({ now = NOW, listings = { { LINEN, 20, 1800 } } })
+	local addon = FakeGame.startAddon(t, game, function(started)
+		ScanStore.save(started.store:Market(MARKET), snapshotOf({ { LINEN, 30, 2700, 4 } }, NOW - 3600, 'own'))
+	end)
+	local announced, salesRecorded = {}, 0
+	addon.host.Bus:Listen('spec', 'SCAN_READY', function(_, marketKey)
+		announced[#announced + 1] = marketKey
+	end)
+	local record = addon.Sales.record
+	addon.Sales.record = function(...)
+		salesRecorded = salesRecorded + 1
+		return record(...)
+	end
+	return game, addon, function()
+		return announced, salesRecorded
+	end
+end
+
+local function runScan(game)
+	game:Fire('AUCTION_HOUSE_SHOW')
+	game:Fire('REPLICATE_ITEM_LIST_UPDATE')
+	game:RunFrames()
+end
+
+for _, failing in ipairs({ 'record', 'prune' }) do
+	t.test('a throwing archive ' .. failing .. ' still records sales and sends SCAN_READY', function()
+		local game, addon, results = gameWithPreviousScan()
+		addon.ScanArchive[failing] = function()
+			error('archive broke')
+		end
+		runScan(game)
+		local announced, salesRecorded = results()
+		t.same(announced, { MARKET })
+		t.eq(salesRecorded, 1)
+		t.eq(addon.scanControl.Status().lastError, nil, 'the scan is not reported as failed')
+		local lines = table.concat(addon.host.RunCommand('scan status'), '\n')
+		t.truthy(lines:find('Scan history problem: ', 1, true) and lines:find('archive broke', 1, true), lines)
+	end)
+end
+
+t.test('an archive build failure shows in the scan status and costs only the history', function()
+	local game, addon, results = gameWithPreviousScan()
+	addon.ScanArchive.newEntryBuilder = function()
+		return {
+			Step = function()
+				error('builder broke')
+			end,
+			Result = function()
+				return nil
+			end,
+		}
+	end
+	runScan(game)
+	local announced, salesRecorded = results()
+	t.same(announced, { MARKET })
+	t.eq(salesRecorded, 1)
+	t.same(game.savedArchiveDb.markets, {})
+	local lines = table.concat(addon.host.RunCommand('scan status'), '\n')
+	t.truthy(lines:find('builder broke', 1, true), lines)
+end)
+
+t.test('archiveMaxMB reaches prune', function()
+	local game = FakeGame.new({ now = NOW, listings = { { LINEN, 20, 1800 } } })
+	local addon = FakeGame.startAddon(t, game)
+	addon.host.RunCommand('set scan.archiveMaxMB 4')
+	local seenOptions
+	local prune = addon.ScanArchive.prune
+	addon.ScanArchive.prune = function(db, now, options)
+		seenOptions = options
+		return prune(db, now, options)
+	end
+	runScan(game)
+	t.eq(seenOptions.maxBytes, 4 * ScanArchive.BYTES_PER_MB)
+end)

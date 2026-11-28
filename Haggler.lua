@@ -28,7 +28,10 @@ function onAddonLoaded()
 		return
 	end
 	ns.store = store
-	HagglerArchiveDB = HagglerArchiveDB or {}
+	-- Anything but a table (a hand edit, a broken file) holds no history worth keeping.
+	if type(HagglerArchiveDB) ~= 'table' then
+		HagglerArchiveDB = {}
+	end
 	-- A newer archive is left untouched and nothing is archived (ns.archiveDb stays nil).
 	if not ns.ScanArchive.open(HagglerArchiveDB) then
 		ns.wow:Print('The scan history is from a newer Haggler; update the add-on. It is kept as it is.')
