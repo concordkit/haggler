@@ -328,7 +328,10 @@ t.test('below the coverage threshold sales a day is AHledger, with a reason', fu
 	t.eq(view.source, 'ahledger')
 	t.eq(view.perDay, 45)
 	t.same(codesOf(view.reasons), { 'ownSalesThin:high' })
-	t.truthy(view.reasons[1].text:find('5 of 6 scans, 30 of 12 hours', 1, true), view.reasons[1].text)
+	t.truthy(
+		view.reasons[1].text == 'sold a day from AHledger, as your own count has 5 of 6 scans and 30 of 12 hours',
+		view.reasons[1].text
+	)
 	t.eq(Sales.choose(stats(10, 0, 6, 11.9), 45, { minScans = 6, minHours = 12 }).source, 'ahledger')
 end)
 
@@ -423,7 +426,7 @@ end)
 t.test('a broken sales view is bad input; a throwing one too', function()
 	local price = Rules.evaluate(RULE, LINEN, ctxWithSales({ perDay = 'x', source = 'own', reasons = { 'junk' } }))
 	t.same(codesOf(price.confidence.reasons), { 'fewSales:medium', 'badInput:medium' })
-	t.eq(price.confidence.reasons[2].text, 'own sales a day was not usable; treated as unknown')
+	t.eq(price.confidence.reasons[2].text, 'own sales a day was not usable and is treated as unknown')
 	local ctx = ctxWithSales(nil)
 	ctx.sales = function()
 		error('broken')

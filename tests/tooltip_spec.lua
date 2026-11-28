@@ -656,6 +656,35 @@ t.test('a closing line that no longer holds the separator is never touched', fun
 	t.same(shownRuleLines(game, tooltip), { 2 })
 end)
 
+t.test("a collapsed closing line the client reads back as nil is still Haggler's", function()
+	local game, tooltips = newRegistry()
+	game.env.GameTooltip.isEmptyTextNil = true
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:AddLine('Later line')
+	tooltip:Show()
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', 'Later line' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('rules snap to the pixel grid where the client can', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	game:ShowItemTooltip(LINEN)
+	local rule = game.env.GameTooltip.children[1]
+	t.eq(rule.isSnappedToPixelGrid, true)
+	t.eq(rule.texelSnappingBias, 0)
+	local older, olderTooltips = newRegistry()
+	older.env.GameTooltip.hasPixelSnapping = false
+	addOtherLines(older, { 'Linen Cloth' })
+	withHagglerBlock(olderTooltips)
+	older:ShowItemTooltip(LINEN)
+	t.eq(#shownRuleLines(older, older.env.GameTooltip), 1, 'a client without them still draws the rule')
+end)
+
 t.test('rules are whole physical pixels: one pixel high, width and offset snapped', function()
 	local game, tooltips = newRegistry()
 	game.env.GetPhysicalScreenSize = function()

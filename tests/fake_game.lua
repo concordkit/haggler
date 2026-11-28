@@ -171,6 +171,15 @@ function FakeGame.newWidget(kind, parent, template)
 	function widget:CreateTexture(_, layer)
 		local texture = FakeGame.newWidget('Texture', self)
 		texture.layer = layer
+		-- Pixel snapping as the modern client has it; a test sets hasPixelSnapping = false without it.
+		if self.hasPixelSnapping ~= false then
+			function texture:SetSnapToPixelGrid(isSnapped)
+				self.isSnappedToPixelGrid = isSnapped
+			end
+			function texture:SetTexelSnappingBias(bias)
+				self.texelSnappingBias = bias
+			end
+		end
 		self.children[#self.children + 1] = texture
 		return texture
 	end
@@ -316,9 +325,14 @@ local function lineFontString(game, tooltip, index, side)
 	end
 	local key = side == 'right' and 'right' or 'left'
 	fontString = { index = index, left = tooltip.left + 10 }
+	-- The client can return nil for a line set to ''; a test sets tooltip.isEmptyTextNil for that.
 	function fontString:GetText()
 		local line = tooltip.lines[self.index]
-		return line and line[key]
+		local text = line and line[key]
+		if text == '' and tooltip.isEmptyTextNil then
+			return nil
+		end
+		return text
 	end
 	function fontString:SetText(text)
 		local line = tooltip.lines[self.index]

@@ -216,7 +216,7 @@ t.test('no AHledger: a scan price is low confidence, naming why', function()
 	t.eq(price.copper, 99)
 	t.same(
 		reasonOf(price, 'noPriceSource'),
-		{ code = 'noPriceSource', level = 'low', text = 'AHledger is not loaded; own scans only' }
+		{ code = 'noPriceSource', level = 'low', text = "AHledger is not loaded, so only Haggler's own scans count" }
 	)
 	t.eq(price.confidence.level, 'low')
 	local median, reason = Rules.evaluate(MEDIAN_RULE, LINEN, ctx)
@@ -241,7 +241,7 @@ t.test('broken: a scan price is low, naming the failure, with no credit', functi
 	t.eq(price.source, 'scan')
 	t.same(
 		reasonOf(price, 'priceSourceFailing'),
-		{ code = 'priceSourceFailing', level = 'low', text = 'AHledger calls fail; own scans only' }
+		{ code = 'priceSourceFailing', level = 'low', text = "AHledger calls fail, so only Haggler's own scans count" }
 	)
 	t.eq(price.confidence.level, 'low')
 	t.eq(newService(newSource({ mode = 'broken' })):Quote(LINEN, { 'minimum' }).credit, nil)
@@ -253,7 +253,7 @@ t.test('a GetPrice that throws while the table answers is low too', function()
 	local price = Rules.evaluate(MINIMUM_RULE, LINEN, withScan(contextWith(source)))
 	t.same(
 		reasonOf(price, 'priceSourceFailing'),
-		{ code = 'priceSourceFailing', level = 'low', text = 'AHledger calls fail; own scans only' }
+		{ code = 'priceSourceFailing', level = 'low', text = "AHledger calls fail, so only Haggler's own scans count" }
 	)
 	t.eq(price.usesPriceSource, false)
 end)
@@ -342,7 +342,7 @@ t.test('a market AHledger has no table for is low, with its own reason and no cr
 	t.same(reasonOf(price, 'noMarketTable'), {
 		code = 'noMarketTable',
 		level = 'low',
-		text = 'AHledger has no prices for forever/normal/alliance/us; own scans only',
+		text = "AHledger has no prices for forever/normal/alliance/us, so only Haggler's own scans count",
 	})
 	t.eq(newService(source):Quote(LINEN, { 'minimum' }).credit, nil)
 end)
@@ -544,7 +544,7 @@ t.test('absent: the tooltip shows no credit, and the low marker names the reason
 	local lines = game:ShowItemTooltip(LINEN)
 	t.eq(#lines, 4, 'the block, its low reason and its collapsed closing separator')
 	t.eq(lines[1].right, 'scan just now · no table')
-	t.eq(lines[3].left, 'Low confidence, AHledger is not loaded; own scans only')
+	t.eq(lines[3].left, "Low confidence, AHledger is not loaded, so only Haggler's own scans count")
 end)
 
 t.test('broken: nothing throws; prices come from scans', function()
