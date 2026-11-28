@@ -42,6 +42,8 @@ Settings are changed with `/hag`; there is no settings panel yet.
 
 Haggler requires the [AHledger](https://ahledger.com) add-on (`## Dependencies: AHledger`). Market prices come from AHledger's public, read-only `AHledgerAPI` (v1), which AHledger's own sync app keeps fresh. Haggler still reads every full AH scan itself, for listing depth and its own sales count.
 
+Haggler also keeps a history of its own scans (`HagglerArchiveDB`, `Engine/ScanArchive.lua`) for a future Haggler price network: per item per scan the cheapest unit price, units listed and four price quantiles, within a size budget (`/hag set scan.archiveMaxMB`, 32 MB by default). Only Haggler's own observations go in, never AHledger's figures, and nothing leaves the machine.
+
 - Prices go through one swappable source in `Engine/PriceData.lua` (`Status`, `Row`, `Table`); the AHledger source is the default, and another source with the same shape can replace it.
 - When AHledger only has the copy bundled with the add-on (`snapshot`), prices carry a confidence reason, as old data does.
 - The client does not load Haggler without AHledger. When AHledger is there but Haggler cannot use it (an API version Haggler does not read), Haggler says once in chat that it needs AHledger. When AHledger's calls fail or it has no prices for the player's market, prices come from Haggler's own scans with low confidence, and the reason is shown.
