@@ -993,41 +993,58 @@ local WAIT = {
 	gainOverVendorEach = 617,
 }
 
-t.test('lines: a wait says why on its own wrapped line under the decision', function()
+-- The reason rows under the Decision line, as { label, value } pairs.
+local function reasonRows(lines)
+	local rows = {}
+	for index = 5, #lines do
+		local line = lines[index]
+		if line.right == nil then
+			break
+		end
+		rows[#rows + 1] = { line.left, line.right }
+	end
+	return rows
+end
+
+t.test('lines: a wait says why in label and value rows right under the decision', function()
 	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
 	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
 	t.eq(lines[4].right, ns.Badges.decisionLabel('wait', icons))
-	local reason = lines[5]
-	t.eq(reason.right, nil, 'one wrapped line, no right column')
-	t.eq(reason.wrap, true)
-	t.eq(
-		reason.left,
-		'The lowest listing is 32% under the usual price while the market holds steady, and posting at the usual price nets '
-			.. TooltipLines.money(12345)
-			.. ' more than the vendor'
-	)
-	t.truthy(reason.left:find(COIN_ICONS.g, 1, true), 'money in coins')
-	t.eq(reason.left:find('[.;:·]$'), nil, 'no full stop on a single sentence')
-	t.eq(reason.left:find(' · ', 1, true), nil)
-	t.eq(reason.left:find(' - ', 1, true), nil)
+	t.same(reasonRows(lines), {
+		{ 'Lowest listing', '32% under usual' },
+		{ 'Market', 'Steady' },
+		{ 'Over vendor ×20', '+' .. TooltipLines.money(12345) },
+	})
+	for index = 5, 7 do
+		local row = lines[index]
+		t.eq(row.wrap, nil, 'a row never wraps')
+		t.eq(row.left:find('[.;:·]'), nil, row.left)
+		t.eq(row.right:find('[.;:·]$'), nil, row.right)
+		t.eq(row.right:find(' - ', 1, true), nil, row.right)
+		t.eq(row.left:find('Wait', 1, true), nil, 'the word Wait stays on the Decision line')
+	end
+	t.truthy(lines[7].right:find(COIN_ICONS.g, 1, true), 'money in coins')
 end)
 
-t.test('lines: the wait reason leaves the word Wait to the Decision line', function()
-	local reason = build({ stackCount = 20, advice = WAIT, icons = icons })[5].left
-	t.eq(reason:find('Wait', 1, true), nil, reason)
-	t.truthy(reason:find('^The lowest listing'), reason)
+t.test('lines: the wait reason rows are dimmer than the other rows, labels and values alike', function()
+	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
+	local muted = theme:Color('color.text.muted')
+	for index = 5, 7 do
+		t.same(lines[index].color, muted, lines[index].left)
+		t.same(lines[index].rightColor, muted, lines[index].left)
+	end
+	t.same(lines[4].color, theme:Color('color.text.secondary'), 'the Decision row keeps its colours')
+	t.same(lines[4].rightColor, theme:Color('color.text.primary'))
 end)
 
 t.test('lines: the wait gain follows the view, a unit in the unit view as the prices do', function()
-	local each = build({ stackCount = 20, advice = WAIT, icons = icons, isUnitView = true })[5].left
-	t.truthy(each:find(TooltipLines.money(617) .. ' more than the vendor (each)', 1, true), each)
-	t.eq(each:find(TooltipLines.money(12345), 1, true), nil, 'not the stack gain')
-	local stack = build({ stackCount = 20, advice = WAIT, icons = icons })[5].left
-	local tail = TooltipLines.money(12345) .. ' more than the vendor'
-	t.eq(stack:sub(-#tail), tail, stack)
+	local each = build({ stackCount = 20, advice = WAIT, icons = icons, isUnitView = true })
+	t.same(reasonRows(each)[3], { 'Over vendor' .. TooltipLines.EACH_SUFFIX, '+' .. TooltipLines.money(617) })
+	local single = build({ stackCount = 1, advice = WAIT, icons = icons })
+	t.same(reasonRows(single)[3], { 'Over vendor', '+' .. TooltipLines.money(12345) })
 end)
 
-t.test('lines: a unit gain under a copper shows the stack gain instead of 0c', function()
+t.test('lines: a unit gain under a copper shows the stack gain, labelled as the stack', function()
 	local small = {
 		decision = 'wait',
 		code = 'marketLow',
@@ -1035,20 +1052,21 @@ t.test('lines: a unit gain under a copper shows the stack gain instead of 0c', f
 		gainOverVendor = 15,
 		gainOverVendorEach = 0,
 	}
-	local reason = build({ stackCount = 20, advice = small, icons = icons, isUnitView = true })[5].left
-	local tail = TooltipLines.money(15) .. ' more than the vendor'
-	t.eq(reason:sub(-#tail), tail, reason)
+	local rows = reasonRows(build({ stackCount = 20, advice = small, icons = icons, isUnitView = true }))
+	t.same(rows[3], { 'Over vendor ×20', '+' .. TooltipLines.money(15) })
+	t.eq(rows[3][1]:find(TooltipLines.EACH_SUFFIX, 1, true), nil, 'a stack gain never says each')
 end)
 
 t.test('lines: the wait reason shows in the detail view too', function()
 	local lines = build({ stackCount = 20, advice = WAIT, icons = icons, isDetail = true })
-	t.truthy(find(lines, 'lowest listing is 32% under the usual price'), 'detail keeps the reason')
+	t.same(reasonRows(lines)[1], { 'Lowest listing', '32% under usual' })
 end)
 
 t.test('lines: a wait missing its facts still names the decision, without a reason', function()
 	local lines = build({ stackCount = 20, advice = { decision = 'wait', code = 'marketLow' }, icons = icons })
 	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
-	t.eq(find(lines, 'usual price'), nil)
+	t.eq(find(lines, 'Lowest listing'), nil)
+	t.eq(#lines, 4, 'no reason rows')
 end)
 
 t.test('module: a bag slot tooltip names the decision its badge shows', function()
@@ -1076,6 +1094,6 @@ t.test('module: a bag slot tooltip says why its item waits', function()
 	local lines = game:ShowItemTooltip(LINEN)
 	addon.Advice.forItem = forItem
 	t.truthy(find(lines, 'Wait'), 'the decision')
-	t.truthy(find(lines, 'lowest listing is 32% under the usual price'), 'and why')
+	t.truthy(find(lines, '32% under usual'), 'and why')
 	t.same(addon.errors, {})
 end)
