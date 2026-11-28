@@ -314,6 +314,7 @@ local function newRegistry(options)
 	local wow = ns.Wow.create(game.env)
 	local tooltips = ns.Tooltip.new({
 		wow = wow,
+		theme = theme,
 		onError = function(owner, err)
 			errors[#errors + 1] = owner .. ': ' .. tostring(err)
 		end,
@@ -346,7 +347,7 @@ t.test('one failing provider is reported; the others still draw', function()
 		return { 'not a line', { right = 'no left' }, { left = 'kept' } }
 	end)
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(#lines, 1)
+	t.eq(#lines, 2, 'the kept line and the collapsed closing separator')
 	t.eq(lines[1].left, 'kept')
 	t.eq(#errors, 1)
 	t.truthy(errors[1]:find('broken'))
@@ -368,12 +369,12 @@ t.test('removing the last provider stops drawing; adding again reuses the one ho
 	end
 	tooltips:AddProvider('a', provider)
 	tooltips:AddProvider('a', provider)
-	t.eq(#game:ShowItemTooltip(LINEN), 1, 'adding again replaces')
+	t.eq(#game:ShowItemTooltip(LINEN), 2, 'adding again replaces: one line and the closing separator')
 	tooltips:RemoveProvider('a')
 	t.eq(tooltips:HasProviders(), false)
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
 	tooltips:AddProvider('a', provider)
-	t.eq(#game:ShowItemTooltip(LINEN), 1)
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
 	t.eq(#game.postCalls, 1, 'the client hook cannot be undone, so it goes in once')
 end)
 
@@ -383,7 +384,7 @@ t.test('without the data processor the tooltip scripts are hooked instead', func
 		return { { left = 'line' } }
 	end)
 	t.truthy(game.env.GameTooltip.scripts.OnTooltipSetItem)
-	t.eq(#game:ShowItemTooltip(LINEN), 1)
+	t.eq(#game:ShowItemTooltip(LINEN), 2)
 end)
 
 t.test('the stack count comes from the bag slot under the cursor, when it holds the item', function()
@@ -657,7 +658,8 @@ t.test('item tooltips get the header and the default rule; a modifier change red
 	t.eq(lines[1].right, 'no scan · table 2 h')
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Prices from AHledger (ahledger.com)', 'the credit closes the block')
-	t.eq(#lines, 3)
+	t.eq(lines[4].left, '', 'then the closing separator, collapsed as the last line')
+	t.eq(#lines, 4)
 	game.modifiers.shift = true
 	game:Fire('MODIFIER_STATE_CHANGED', 'LSHIFT', 1)
 	t.eq(game.env.GameTooltip.refreshed, 1)
@@ -687,7 +689,7 @@ t.test('detail mode and modifier are settings', function()
 	t.truthy(#lines > 4)
 	t.eq(lines[2].left, 'Realistic', 'Alt shows the detail but not the unit view')
 	addon.host.RunCommand('set tooltip.detailMode off')
-	t.eq(#game:ShowItemTooltip(LINEN), 3)
+	t.eq(#game:ShowItemTooltip(LINEN), 4)
 end)
 
 t.test('items without data get no lines', function()
@@ -701,7 +703,7 @@ t.test('switching the module off removes its lines and its event, and back on re
 	t.same(game:ShowItemTooltip(LINEN), {})
 	t.eq(game.frame.events.MODIFIER_STATE_CHANGED, nil)
 	addon.host.Enable('tooltip')
-	t.eq(#game:ShowItemTooltip(LINEN), 3)
+	t.eq(#game:ShowItemTooltip(LINEN), 4)
 	t.eq(#game.postCalls, 1)
 end)
 

@@ -542,7 +542,7 @@ t.test('absent: the tooltip shows no credit, and the low marker names the reason
 	local game = startWith(nil)
 	scan(game)
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(#lines, 2)
+	t.eq(#lines, 3, 'the block and its collapsed closing separator')
 	t.eq(lines[1].right, 'scan just now · no table')
 	t.truthy(lines[2].right:find('(!) low: AHledger is not loaded; own scans only', 1, true))
 end)
