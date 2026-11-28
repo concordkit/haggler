@@ -1,12 +1,14 @@
 --[[
 	Tooltip: Haggler's lines on item tooltips (TooltipLines builds them). Compact by default:
-	one line per shown rule and the data age; the unit price while Shift is held. The detail
-	block shows always, on a modifier, or never. A gamepad modifier works through the client's
-	GamePadEmulateShift / Ctrl / Alt mapping. Holding or letting go of a modifier redraws the
-	tooltip at once. Over a bag slot it also names Haggler's decision for the item
-	(Advice.forItem) with the decision glyph, and for a Wait the reason under it. The line stands on its own: it shows where the
-	badge does not (its setting off, the client's junk coin in that corner, junk the type badge
-	already marks). Switching the module off removes its lines and its event.
+	a Buy section (the lowest listing a unit) and a Sell section (the default rule's price a
+	unit and for the stack), each with its data age. The detail block shows always, on a
+	modifier, or never. A gamepad modifier works through the client's GamePadEmulateShift /
+	Ctrl / Alt mapping. Holding or letting go of a modifier redraws the tooltip at once. Over a
+	bag slot the Sell section also names Haggler's decision for the item (Advice.forItem) as its
+	Signal, with the decision glyph, and for a Wait the reason under the prices. The line stands
+	on its own: it shows where the badge does not (its setting off, the client's junk coin in
+	that corner, junk the type badge already marks). Switching the module off removes its lines
+	and its event.
 ]]
 local _, ns = ...
 
@@ -16,7 +18,6 @@ local buildLines, isDetailShown, detailOptions, bagAdvice, tooltipIcons
 local icons
 
 local MODULE_KEY = 'tooltip'
-local UNIT_VIEW_MODIFIER = 'shift'
 local DETAIL_TOGGLES =
 	{ 'detailTrace', 'detailSales', 'detailListings', 'detailVendor', 'detailSellTime', 'sellTimeNote' }
 
@@ -82,7 +83,6 @@ function buildLines(module, itemId, info)
 	return ns.TooltipLines.build({
 		quote = prices:Quote(itemId, ns.store:ShownRules('tooltip')),
 		stackCount = info.stackCount,
-		isUnitView = modifiers[UNIT_VIEW_MODIFIER] == true,
 		isDetail = isDetailShown(module, modifiers),
 		options = detailOptions(module),
 		theme = ns.theme,

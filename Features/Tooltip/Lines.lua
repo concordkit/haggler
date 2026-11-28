@@ -3,25 +3,38 @@
 	no game calls, so every line is tested in luajit.
 
 	  build(input) -> Line[]
-	  input = { quote, stackCount, isUnitView, isDetail, options, theme, advice?, icons? }
+	  input = { quote, stackCount, isDetail, options, theme, advice?, icons? }
 	  advice  = Advice.forItem's BagAdvice for a bag slot
 	  options = { detailTrace, detailSales, detailListings, detailVendor, detailSellTime,
 	              sellTimeNote }
 
-	Compact view: a header (the module icon) with the data age, then one line per shown rule (default first) with
-	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
-	with the decision (Advice.forItem's) as its glyph and word. A Wait says why in short label and
-	value rows right below it, as supporting detail (small, indented, muted), in the compact and the detail view
-	alike: how far under the usual price the lowest listing is, that the market holds steady, and
-	what posting at the usual price nets over the vendor. A low-confidence price carries the
-	caution triangle on its line; while the detail block is off a wrapped line below it says
-	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
-	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
-	keep the tooltip narrow (an item name or another add-on may still widen it). Money reads with the game's coin icons, by texture path, as GetCoinTextureString
-	writes it. The detail block adds how the default rule got its price, every
-	confidence reason, sales a day, listings, vendor price and an estimated sell time with its
-	note. The last line is the price source's credit (quote.credit, "Prices from AHledger"),
-	whenever the source has prices: AHledger's terms ask for it where its prices appear.
+	The lines come in sections with a separator line ({ kind = 'separator' }, which the host
+	draws as a rule) between each two. A section without rows is left out, separator and all.
+
+	Buy: a header (the shopping cart) with the age of the AH scan after the search icon, then
+	what one unit costs to buy: "Auction house (each)", the lowest listing, never a total.
+	Without a scan the listing is the price source's, and the header shows its age after the
+	plug icon instead. A "Vendor (each)" row is meant to go above the AH row once its source is
+	settled (buySection).
+
+	Sell: a header (the module icon) with the age of the price source's data after the plug
+	icon; for a bag slot a Signal line with the decision (Advice.forItem's) as its glyph and
+	word; then the default rule's price as "Price (each)" and "Price × N" for the hovered stack,
+	or one "Price" line for a single item. Details come last: a Wait says why in short label and
+	value rows (small, indented, muted): how far under the usual price the lowest listing is,
+	that the market holds steady, and what posting at the usual price nets over the vendor. A
+	low-confidence price carries the caution triangle on its first price line; while the detail
+	block is off a wrapped line closes the section with "Low confidence" and its top reason.
+
+	Detail, a section of its own after Sell: the other shown rules (Minimum and the like) for
+	the stack, how the default rule got its price, every confidence reason, sales a day,
+	listings, vendor price and an estimated sell time with its note.
+
+	A label line stays short and anything that can grow long goes on a wrapped line of its own,
+	so Haggler's own lines keep the tooltip narrow (an item name or another add-on may still
+	widen it). Money reads with the game's coin icons, by texture path, as GetCoinTextureString
+	writes it. The price source's credit is not in the tooltip: the options panel and the
+	window footer carry it.
 
 	Sell time = (units listed at or under the price + this stack) / units sold a day. It is an
 	estimate from sales per day, not in-game time, and low confidence under one sale a day.
@@ -31,24 +44,34 @@ local _, ns = ...
 local TooltipLines = {}
 ns.TooltipLines = TooltipLines
 
--- The header shows the module icon (the TOC's IconTexture, never a banner) in place of the word,
--- inline at height 0: the client sizes it to the line's own text height and keeps it on the
--- line as it does the decision glyph.
+-- The Sell header shows the module icon (the TOC's IconTexture, never a banner) in place of a
+-- word, inline at height 0: the client sizes it to the line's own text height and keeps it on
+-- the line as it does the decision glyph.
 TooltipLines.TITLE_ICON_TEXTURE = 'Interface\\AddOns\\Haggler\\media\\icon.png'
+TooltipLines.SEPARATOR = 'separator'
+TooltipLines.BUY_ICON = 'shopping-cart'
+-- What the Buy header says on a client without the icon atlas.
+TooltipLines.BUY_FALLBACK = 'Buy'
+TooltipLines.SCAN_AGE_ICON = 'search'
+TooltipLines.TABLE_AGE_ICON = 'plug'
+TooltipLines.NO_AGE = 'no data'
+TooltipLines.AUCTION_HOUSE_LABEL = 'Auction house'
+TooltipLines.PRICE_LABEL = 'Price'
+TooltipLines.SIGNAL_LABEL = 'Signal'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
-TooltipLines.DECISION_LABEL = 'Decision'
--- Why an item waits, one label and value row each; the Decision line already says Wait. A wait
+-- Why an item waits, one label and value row each; the Signal line already says Wait. A wait
 -- only ever happens in a steady market (Advice), so Market always reads Steady.
 TooltipLines.WAIT_LOWEST_LABEL = 'Lowest listing'
 TooltipLines.WAIT_LOWEST_VALUE = '%d%% under usual'
 TooltipLines.WAIT_MARKET_LABEL = 'Market'
 TooltipLines.WAIT_MARKET_VALUE = 'Steady'
 TooltipLines.WAIT_GAIN_LABEL = 'Over vendor'
--- The reason rows hang off the Decision line by one grid step.
+-- The reason rows hang off the Sell rows by one grid step.
 local REASON_INDENT_TOKEN = 'space.3'
--- Marks a unit price or gain in the unit view.
+-- A unit price says each; a stack reads ' × 12', the DS quantity format.
 TooltipLines.EACH_SUFFIX = ' (each)'
+TooltipLines.QUANTITY_MARK = ' × '
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
@@ -72,9 +95,10 @@ local LEVEL_MARKERS = { low = '(!)', medium = '(?)', high = '(i)' }
 local LINE_HEIGHT_ICON = 0
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
+local appendSection, buySection, sellSection, detailSection, buyHeaderLine, sellHeaderLine, auctionHouseRow
+local sellPriceRows, priceRow, ageText, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine, waitReasonRows, reasonRow, stackSuffix
+local lowReasonLine, capitalized, iconSetFor, signalLine, waitReasonRows, reasonRow, stackSuffix
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -86,56 +110,20 @@ function TooltipLines.build(input)
 	if not hasAnyData(quote) then
 		return {}
 	end
-	local stack = math.max(1, input.stackCount or 1)
 	local view = {
-		stack = input.isUnitView and 1 or stack,
-		stackCount = stack,
+		stackCount = math.max(1, input.stackCount or 1),
 		theme = input.theme,
 		icons = input.icons or iconSetFor(input.theme),
-		isUnitView = input.isUnitView,
 		isDetail = input.isDetail,
 	}
-	local lines = { headerLine(quote.ages, view) }
-	for _, entry in ipairs(quote.prices) do
-		lines[#lines + 1] = priceLine(entry, view)
-		if not input.isDetail and entry.price and entry.price.confidence.level == 'low' then
-			lines[#lines + 1] = lowReasonLine(topLowReason(entry.price.confidence.reasons), view)
-		end
-	end
 	local advice = type(input.advice) == 'table' and input.advice or nil
-	local decision = decisionLine(advice and advice.decision, view)
-	if decision then
-		lines[#lines + 1] = decision
-		for _, row in ipairs(waitReasonRows(advice, view)) do
-			lines[#lines + 1] = row
-		end
+	local lines = {}
+	appendSection(lines, buySection(quote, view))
+	appendSection(lines, sellSection(quote, advice, view))
+	if input.isDetail then
+		appendSection(lines, detailSection(quote, input.options or {}, view))
 	end
-	if not input.isDetail then
-		return withCredit(lines, quote.credit, view)
-	end
-	local options = input.options or {}
-	local main = defaultEntry(quote.prices)
-	local detail = {}
-	if options.detailTrace ~= false and main and main.price then
-		traceLines(detail, main, view)
-	end
-	reasonLines(detail, quote.prices, view)
-	if options.detailSales ~= false then
-		detail[#detail + 1] = salesLine(quote.facts, view)
-	end
-	if options.detailListings ~= false then
-		detail[#detail + 1] = listingsLine(quote.facts, view)
-	end
-	if options.detailVendor ~= false and quote.facts.vendor and quote.facts.vendor > 0 then
-		detail[#detail + 1] = vendorLine(quote.facts, view)
-	end
-	if options.detailSellTime ~= false and main and main.price then
-		sellTimeLines(detail, main.price, quote.facts, stack, options.sellTimeNote ~= false, view)
-	end
-	for _, line in ipairs(detail) do
-		lines[#lines + 1] = line
-	end
-	return withCredit(lines, quote.credit, view)
+	return lines
 end
 
 --- Copper with the game's coin icons, each amount before its coin ('1 20 5' with gold, silver
@@ -192,43 +180,184 @@ end
 
 -- Helpers ---------------------------------------------------------------------------------
 
+-- Adds a section under the lines so far, a separator between; an empty section adds nothing.
+function appendSection(lines, section)
+	if #section == 0 then
+		return
+	end
+	if #lines > 0 then
+		lines[#lines + 1] = { kind = TooltipLines.SEPARATOR }
+	end
+	for _, line in ipairs(section) do
+		lines[#lines + 1] = line
+	end
+end
+
+-- The header and what a unit costs to buy; nothing when no row has a figure. Each row builder
+-- returns a line or nil; a vendor row goes first once its source is settled.
+function buySection(quote, view)
+	local rows = {}
+	for _, buildRow in ipairs({ auctionHouseRow }) do
+		local row = buildRow(quote, view)
+		if row then
+			rows[#rows + 1] = row
+		end
+	end
+	if #rows == 0 then
+		return {}
+	end
+	table.insert(rows, 1, buyHeaderLine(quote.ages or {}, view))
+	return rows
+end
+
+function sellSection(quote, advice, view)
+	local main = defaultEntry(quote.prices)
+	local lines = { sellHeaderLine(quote.ages or {}, view) }
+	local signal = signalLine(advice and advice.decision, view)
+	if signal then
+		lines[#lines + 1] = signal
+	end
+	for _, row in ipairs(sellPriceRows(main and main.price, view)) do
+		lines[#lines + 1] = row
+	end
+	for _, row in ipairs(advice and waitReasonRows(advice, view) or {}) do
+		lines[#lines + 1] = row
+	end
+	if not view.isDetail and main and main.price and main.price.confidence.level == 'low' then
+		lines[#lines + 1] = lowReasonLine(topLowReason(main.price.confidence.reasons), view)
+	end
+	return lines
+end
+
+function detailSection(quote, options, view)
+	local main = defaultEntry(quote.prices)
+	local detail = {}
+	for _, entry in ipairs(quote.prices) do
+		if entry ~= main then
+			local label = entry.name .. stackSuffix(view.stackCount)
+			detail[#detail + 1] = priceRow(label, entry.price, view.stackCount, true, view)
+		end
+	end
+	if options.detailTrace ~= false and main and main.price then
+		traceLines(detail, main, view)
+	end
+	reasonLines(detail, quote.prices, view)
+	if options.detailSales ~= false then
+		detail[#detail + 1] = salesLine(quote.facts, view)
+	end
+	if options.detailListings ~= false then
+		detail[#detail + 1] = listingsLine(quote.facts, view)
+	end
+	if options.detailVendor ~= false and quote.facts.vendor and quote.facts.vendor > 0 then
+		detail[#detail + 1] = vendorLine(quote.facts, view)
+	end
+	if options.detailSellTime ~= false and main and main.price then
+		sellTimeLines(detail, main.price, quote.facts, view.stackCount, options.sellTimeNote ~= false, view)
+	end
+	return detail
+end
+
+-- The scan's age when there is a scan; else the listing is the price source's, and so is its age.
+function buyHeaderLine(ages, view)
+	local cart = view.icons:Inline(TooltipLines.BUY_ICON, LINE_HEIGHT_ICON, 'color.text.accent')
+	local right = ages.scanAge and ageText(TooltipLines.SCAN_AGE_ICON, ages.scanAge, view)
+		or ageText(TooltipLines.TABLE_AGE_ICON, ages.tableAge, view)
+	return {
+		left = cart ~= '' and cart or TooltipLines.BUY_FALLBACK,
+		right = right,
+		color = color(view, 'color.text.accent'),
+		rightColor = color(view, 'color.text.muted'),
+	}
+end
+
+function sellHeaderLine(ages, view)
+	return {
+		left = '|T' .. TooltipLines.TITLE_ICON_TEXTURE .. ':' .. LINE_HEIGHT_ICON .. '|t',
+		right = ageText(TooltipLines.TABLE_AGE_ICON, ages.tableAge, view),
+		color = color(view, 'color.text.accent'),
+		rightColor = color(view, 'color.text.muted'),
+	}
+end
+
+-- The age after its source's icon; the icon is left out on a client without the atlas.
+function ageText(iconName, seconds, view)
+	local text = seconds and TooltipLines.age(seconds) or TooltipLines.NO_AGE
+	local icon = view.icons:Inline(iconName, LINE_HEIGHT_ICON, 'color.text.muted')
+	return icon ~= '' and (icon .. ' ' .. text) or text
+end
+
+-- The lowest listing a unit, never the stack: buying is per unit.
+function auctionHouseRow(quote, view)
+	local lowest = type(quote.facts) == 'table' and quote.facts.lowestListed or nil
+	if type(lowest) ~= 'number' then
+		return nil
+	end
+	return {
+		left = TooltipLines.AUCTION_HOUSE_LABEL .. TooltipLines.EACH_SUFFIX,
+		right = TooltipLines.money(lowest),
+		color = color(view, 'color.text.secondary'),
+		rightColor = color(view, 'color.text.primary'),
+	}
+end
+
+-- The default rule's price a unit and for the stack; one Price line for a single item or no price.
+function sellPriceRows(price, view)
+	local label, count = TooltipLines.PRICE_LABEL, view.stackCount
+	if not price or count == 1 then
+		return { priceRow(label, price, 1, true, view) }
+	end
+	return {
+		priceRow(label .. TooltipLines.EACH_SUFFIX, price, 1, true, view),
+		priceRow(label .. stackSuffix(count), price, count, false, view),
+	}
+end
+
+-- A price for a quantity; isMarked puts the caution triangle on a low-confidence price.
+function priceRow(label, price, quantity, isMarked, view)
+	local line = { left = label, color = color(view, 'color.text.secondary') }
+	if not price then
+		line.right = 'no price'
+		line.rightColor = color(view, 'color.text.muted')
+		return line
+	end
+	line.right = TooltipLines.money(price.copper * quantity)
+	line.rightColor = color(view, 'color.text.primary')
+	if isMarked and price.confidence.level == 'low' then
+		line.right = line.right .. ' ' .. levelIcon('low', view)
+	end
+	return line
+end
+
 -- The bag decision in the badge's own glyph and word; nil (no line) without one.
-function decisionLine(decision, view)
+function signalLine(decision, view)
 	local label = type(decision) == 'string' and view.icons and ns.Badges.decisionLabel(decision, view.icons) or nil
 	if not label then
 		return nil
 	end
 	return {
-		left = TooltipLines.DECISION_LABEL,
+		left = TooltipLines.SIGNAL_LABEL,
 		right = label,
 		color = color(view, 'color.text.secondary'),
 		rightColor = color(view, 'color.text.primary'),
 	}
 end
 
--- Why an item waits, as label and value rows under its Decision line; none for any other
--- decision, or a wait without its facts.
+-- Why an item waits, as label and value rows after the prices; none for any other decision, or
+-- a wait without its facts. The gain is the stack's, as the Price × N line above it.
 function waitReasonRows(advice, view)
 	local percent, gain = advice.underTypicalPercent, advice.gainOverVendor
 	if advice.decision ~= 'wait' or type(percent) ~= 'number' or type(gain) ~= 'number' then
 		return {}
 	end
-	local each = advice.gainOverVendorEach
-	-- The unit view shows the gain a unit, unless a unit gains under a copper: then it shows the
-	-- stack's gain, and the label says so.
-	local suffix = stackSuffix(view.stackCount)
-	if view.isUnitView and type(each) == 'number' and each >= 1 then
-		gain, suffix = each, TooltipLines.EACH_SUFFIX
-	end
 	return {
 		reasonRow(TooltipLines.WAIT_LOWEST_LABEL, string.format(TooltipLines.WAIT_LOWEST_VALUE, percent), view),
 		reasonRow(TooltipLines.WAIT_MARKET_LABEL, TooltipLines.WAIT_MARKET_VALUE, view),
-		reasonRow(TooltipLines.WAIT_GAIN_LABEL .. suffix, '+' .. TooltipLines.money(gain), view),
+		reasonRow(TooltipLines.WAIT_GAIN_LABEL .. stackSuffix(view.stackCount), '+' .. TooltipLines.money(gain), view),
 	}
 end
 
--- A supporting row under the Decision line: small text, indented a grid step, label and value
--- both muted, so it reads as detail of the Decision and not as another row.
+-- A supporting row: small text, indented a grid step, label and value both muted, so it reads
+-- as detail of the Signal and the prices and not as another row.
 function reasonRow(label, value, view)
 	local muted = color(view, 'color.text.muted')
 	return {
@@ -241,49 +370,9 @@ function reasonRow(label, value, view)
 	}
 end
 
--- The stack view's label mark, as the price lines carry it: ' ×20', nothing for a single item.
+-- A stack's label mark: ' × 20', nothing for a single item.
 function stackSuffix(stackCount)
-	return stackCount > 1 and (' ×' .. stackCount) or ''
-end
-
-function withCredit(lines, credit, view)
-	if type(credit) == 'string' and credit ~= '' then
-		lines[#lines + 1] = { left = credit, color = color(view, 'color.text.muted') }
-	end
-	return lines
-end
-
-function headerLine(ages, view)
-	local scanText = ages.scanAge and ('scan ' .. TooltipLines.age(ages.scanAge)) or 'no scan'
-	local tableText = ages.tableAge and ('table ' .. TooltipLines.age(ages.tableAge)) or 'no table'
-	return {
-		left = '|T' .. TooltipLines.TITLE_ICON_TEXTURE .. ':' .. LINE_HEIGHT_ICON .. '|t',
-		right = scanText .. ' · ' .. tableText,
-		color = color(view, 'color.text.accent'),
-		rightColor = color(view, 'color.text.muted'),
-	}
-end
-
-function priceLine(entry, view)
-	local label = entry.name
-	if view.isUnitView then
-		label = label .. TooltipLines.EACH_SUFFIX
-	else
-		label = label .. stackSuffix(view.stack)
-	end
-	local line = { left = label, color = color(view, 'color.text.secondary') }
-	local price = entry.price
-	if not price then
-		line.right = 'no price'
-		line.rightColor = color(view, 'color.text.muted')
-		return line
-	end
-	line.right = TooltipLines.money(price.copper * view.stack)
-	line.rightColor = color(view, 'color.text.primary')
-	if price.confidence.level == 'low' then
-		line.right = line.right .. ' ' .. levelIcon('low', view)
-	end
-	return line
+	return stackCount > 1 and (TooltipLines.QUANTITY_MARK .. stackCount) or ''
 end
 
 -- The word for the icon and the top reason, wrapped under the price line it explains.
@@ -382,7 +471,7 @@ end
 function vendorLine(facts, view)
 	return {
 		left = 'Vendor',
-		right = TooltipLines.money(facts.vendor * view.stack),
+		right = TooltipLines.money(facts.vendor * view.stackCount),
 		color = color(view, 'color.text.muted'),
 		rightColor = color(view, 'color.text.secondary'),
 	}

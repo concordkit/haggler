@@ -542,9 +542,13 @@ t.test('absent: the tooltip shows no credit, and the low marker names the reason
 	local game = startWith(nil)
 	scan(game)
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(#lines, 4, 'the block, its low reason and its collapsed closing separator')
-	t.eq(lines[1].right, 'scan just now · no table')
-	t.eq(lines[3].left, "Low confidence, AHledger is not loaded, so only Haggler's own scans count")
+	t.eq(#lines, 7, 'Buy, its separator, Sell with its low reason, and the collapsed closing separator')
+	t.truthy(lines[1].right:find('just now$'), 'the scan age')
+	t.truthy(lines[4].right:find('no data$'), 'no price source data')
+	t.eq(lines[6].left, "Low confidence, AHledger is not loaded, so only Haggler's own scans count")
+	for _, line in ipairs(lines) do
+		t.eq(tostring(line.left):find('Prices from', 1, true), nil, 'no credit in the tooltip')
+	end
 end)
 
 t.test('broken: nothing throws; prices come from scans', function()
