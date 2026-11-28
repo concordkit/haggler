@@ -59,7 +59,7 @@ Badges.TYPES = {
 -- The glyph size (12) and the outline width (2), read from the theme in whole pixels.
 Badges.ICON_SIZE_TOKEN = 'size.icon.badge'
 Badges.OUTLINE_WIDTH_TOKEN = 'border.glyphOutline'
--- The DS glyph outline: one copy at each of these, stepped by half the width and by the width.
+-- The DS glyph outline: one copy at each of these, at every whole step from 1 to the width.
 Badges.OUTLINE_DIRECTIONS = {
 	{ -1, 0 },
 	{ 1, 0 },
@@ -191,18 +191,13 @@ function Badges.footprint(theme)
 	return Badges.iconSize(theme) + 2 * Badges.outlineWidth(theme)
 end
 
---- The outline copies for a width: every OUTLINE_DIRECTIONS step at half the width (rounded
---- down, when not zero) and at the width.
+--- The outline copies for a width: every OUTLINE_DIRECTIONS step at each whole pixel from 1 to
+--- the width, so no ring is left out (16 copies at 2, as the DS records it).
 --- @param width number whole pixels
 --- @return table { { dx, dy }... }
 function Badges.outlineOffsets(width)
-	local steps = { width }
-	local half = math.floor(width / 2)
-	if half > 0 and half < width then
-		steps = { half, width }
-	end
 	local offsets = {}
-	for _, step in ipairs(steps) do
+	for step = 1, width do
 		for _, direction in ipairs(Badges.OUTLINE_DIRECTIONS) do
 			offsets[#offsets + 1] = { direction[1] * step, direction[2] * step }
 		end
@@ -220,7 +215,6 @@ function Badges.newPainter(options)
 	local width = Badges.outlineWidth(theme)
 	return setmetatable({
 		icons = options.icons,
-		theme = options.theme,
 		-- Read once: the textures are sized and placed when they are created.
 		measures = {
 			iconSize = Badges.iconSize(theme),

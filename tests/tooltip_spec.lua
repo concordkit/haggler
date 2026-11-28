@@ -1023,7 +1023,8 @@ t.test('lines: the wait gain follows the view, a unit in the unit view as the pr
 	t.truthy(each:find(TooltipLines.money(617) .. ' more than the vendor (each)', 1, true), each)
 	t.eq(each:find(TooltipLines.money(12345), 1, true), nil, 'not the stack gain')
 	local stack = build({ stackCount = 20, advice = WAIT, icons = icons })[5].left
-	t.truthy(stack:find(TooltipLines.money(12345) .. ' more than the vendor$'), stack)
+	local tail = TooltipLines.money(12345) .. ' more than the vendor'
+	t.eq(stack:sub(-#tail), tail, stack)
 end)
 
 t.test('lines: a unit gain under a copper shows the stack gain instead of 0c', function()
@@ -1035,7 +1036,8 @@ t.test('lines: a unit gain under a copper shows the stack gain instead of 0c', f
 		gainOverVendorEach = 0,
 	}
 	local reason = build({ stackCount = 20, advice = small, icons = icons, isUnitView = true })[5].left
-	t.truthy(reason:find(TooltipLines.money(15) .. ' more than the vendor$'), reason)
+	local tail = TooltipLines.money(15) .. ' more than the vendor'
+	t.eq(reason:sub(-#tail), tail, reason)
 end)
 
 t.test('lines: the wait reason shows in the detail view too', function()

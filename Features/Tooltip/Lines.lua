@@ -35,9 +35,12 @@ TooltipLines.TITLE = 'Haggler'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
 TooltipLines.DECISION_LABEL = 'Decision'
--- The lowest listing's percent under the usual price, then the stack's gain over the vendor.
+-- The lowest listing's percent under the usual price, then the gain over the vendor. The
+-- Decision line already says Wait.
 TooltipLines.WAIT_REASON =
-	'Wait, the lowest listing is %d%% under the usual price while the market holds steady, and posting at the usual price nets %s more than the vendor'
+	'The lowest listing is %d%% under the usual price while the market holds steady, and posting at the usual price nets %s more than the vendor'
+-- Marks a gain a unit, as the price lines mark the unit view.
+TooltipLines.EACH_SUFFIX = ' (each)'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
@@ -199,8 +202,14 @@ function waitReasonLine(advice, view)
 	if advice.decision ~= 'wait' or type(percent) ~= 'number' or type(gain) ~= 'number' then
 		return nil
 	end
+	local each = advice.gainOverVendorEach
+	local suffix = ''
+	-- The unit view shows the gain a unit, unless a unit gains under a copper.
+	if view.isUnitView and type(each) == 'number' and each >= 1 then
+		gain, suffix = each, TooltipLines.EACH_SUFFIX
+	end
 	return {
-		left = string.format(TooltipLines.WAIT_REASON, percent, TooltipLines.money(gain)),
+		left = string.format(TooltipLines.WAIT_REASON, percent, TooltipLines.money(gain)) .. suffix,
 		color = color(view, 'color.text.secondary'),
 		wrap = true,
 	}
