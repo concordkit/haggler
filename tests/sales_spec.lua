@@ -378,6 +378,12 @@ t.test('the flag is raised while AHledger figures are in use', function()
 	t.eq(view.reasons[2].text, 'sales may include troll buys (40% of vanished units)')
 end)
 
+t.test('on own scans the flag says the troll buys are left out, in one plain sentence', function()
+	local view = Sales.choose(stats(49, 51, 9, 24), nil, { minScans = 1, minHours = 1 })
+	t.eq(view.source, 'own')
+	t.eq(view.reasons[1].text, '51% of vanished units were troll buys and are left out')
+end)
+
 t.group('sales in rules')
 
 local RULE = { id = 'r', name = 'R', base = { kind = 'median' }, steps = {} }

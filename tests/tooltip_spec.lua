@@ -9,6 +9,22 @@ local NOW = 1000000
 local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 } }
 
 local theme = Theme.new(ns.Tokens)
+local icons = ns.IconSet.new({ theme = theme })
+local COIN_ICONS = {
+	g = '|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t',
+	s = '|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t',
+	c = '|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t',
+}
+local LOW_ICON = icons:Inline('alert-triangle', 0, 'color.state.caution')
+local MEDIUM_ICON = icons:Inline('alert-triangle', 0, 'color.state.warning')
+local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
+
+-- Money as the tooltip writes it: '18s 80c' reads 18 and the silver coin, 80 and the copper coin.
+local function coins(text)
+	return (text:gsub('(%d+)([gsc])', function(amount, unit)
+		return amount .. COIN_ICONS[unit]
+	end))
+end
 
 local function price(copper, level, reasons, trace)
 	return {
@@ -42,6 +58,7 @@ end
 
 local function build(input)
 	input.theme = input.theme or theme
+	input.icons = input.icons or icons
 	input.quote = input.quote or quote()
 	return TooltipLines.build(input)
 end
@@ -68,14 +85,14 @@ t.group('tooltip lines')
 t.test('compact: the age header, then one line per rule with the stack price', function()
 	t.same(texts(build({ stackCount = 20 })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic ×20 | 18s 80c',
-		'Median ×20 | 24s',
+		'Realistic ×20 | ' .. coins('18s 80c'),
+		'Median ×20 | ' .. coins('24s'),
 	})
 end)
 
 t.test('a single item shows no count; the unit view shows the price each', function()
-	t.same(texts(build({ stackCount = 1 }))[2], 'Realistic | 94c')
-	t.same(texts(build({ stackCount = 20, isUnitView = true }))[2], 'Realistic (each) | 94c')
+	t.same(texts(build({ stackCount = 1 }))[2], 'Realistic | ' .. coins('94c'))
+	t.same(texts(build({ stackCount = 20, isUnitView = true }))[2], 'Realistic (each) | ' .. coins('94c'))
 end)
 
 t.test('low confidence is marked on the line itself; medium is not', function()
@@ -87,9 +104,26 @@ t.test('low confidence is marked on the line itself; medium is not', function()
 			},
 		}),
 	})
-	t.truthy(lines[2].right:find('(!) low', 1, true))
-	t.truthy(lines[2].right:find('|c' .. theme:Hex('color.state.danger'), 1, true), 'in the danger colour')
-	t.eq(lines[3].right:find('(!)', 1, true), nil)
+	t.eq(lines[2].right, coins('94c') .. ' ' .. LOW_ICON, 'the caution triangle, no text mark')
+	t.eq(lines[3].left, 'Low confidence', 'the word goes on its own line below')
+	t.eq(lines[4].right, coins('1s 20c'), 'medium is not marked')
+end)
+
+t.test('with the detail off, the top low reason wraps on its own line under the price', function()
+	local reasons = {
+		{ code = 'trollBuys', level = 'low', text = '81% of vanished units were troll buys and are left out' },
+	}
+	local lowQuote = quote({
+		prices = { { ruleId = 'minimum', name = 'Minimum', isDefault = true, price = price(24, 'low', reasons) } },
+	})
+	local lines = build({ quote = lowQuote, stackCount = 2 })
+	t.same(texts(lines), {
+		'Haggler | scan 12 min · table 3 h',
+		'Minimum ×2 | ' .. coins('48c') .. ' ' .. LOW_ICON,
+		'Low confidence, 81% of vanished units were troll buys and are left out',
+	})
+	t.eq(lines[3].wrap, true, 'wraps at the tooltip width instead of widening it')
+	t.same(lines[3].color, theme:Color('color.state.caution'))
 end)
 
 t.test('with the detail off, a low line names its top reason inline', function()
@@ -100,14 +134,13 @@ t.test('with the detail off, a low line names its top reason inline', function()
 	local lowQuote = quote({
 		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) } },
 	})
-	t.eq(
-		texts(build({ quote = lowQuote }))[2],
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low: few sales')
-	)
-	t.eq(
-		texts(build({ quote = lowQuote, isDetail = true }))[2],
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low')
-	)
+	t.same({ unpack(texts(build({ quote = lowQuote })), 2, 3) }, {
+		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
+		'Low confidence, few sales',
+	})
+	local detailed = texts(build({ quote = lowQuote, isDetail = true, options = { detailTrace = false } }))
+	t.eq(detailed[2], 'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON)
+	t.eq(detailed[3], MEDIUM_ICON .. ' Medium confidence, scan is 3 h old', 'the detail block lists every reason')
 end)
 
 t.test('a rule without a price says so', function()
@@ -156,18 +189,18 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 	})
 	t.same(texts(build({ quote = detailed, stackCount = 20, isDetail = true })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic ×20 | 19s 60c',
-		'Median ×20 | 24s ' .. theme:Wrap('color.state.danger', '(!) low'),
+		'Realistic ×20 | ' .. coins('19s 60c'),
+		'Median ×20 | ' .. coins('24s') .. ' ' .. LOW_ICON,
 		'Realistic, each:',
-		'  scan first price with 5 units | 99c',
+		'  scan first price with 5 units | ' .. coins('99c'),
 		'  cap skipped: no median',
-		'  undercut by 1c | 98c',
-		'  price step 1c | 98c',
-		'(?) AHledger data is 30 hours old',
-		'(!) Median: under 1 sale a day',
+		'  undercut by 1c | ' .. coins('98c'),
+		'  price step 1c | ' .. coins('98c'),
+		MEDIUM_ICON .. ' Medium confidence, AHledger data is 30 hours old',
+		LOW_ICON .. ' Median: low confidence, under 1 sale a day',
 		'Sold a day | 45',
 		'Listed | 60 units · 2 prices',
-		'Vendor | 2s 60c',
+		'Vendor | ' .. coins('2s 60c'),
 		'Sell time | ~21 h', -- (20 listed under 98c + 20) / 45 a day
 		'  ' .. TooltipLines.SELL_TIME_NOTE,
 	})
@@ -187,9 +220,32 @@ t.test('detail lines follow their settings; the reasons always show', function()
 	}
 	t.same(texts(build({ quote = lowQuote, isDetail = true, options = options })), {
 		'Haggler | scan 12 min · table 3 h',
-		'Realistic | 94c ' .. theme:Wrap('color.state.danger', '(!) low'),
-		'(!) old data',
+		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
+		LOW_ICON .. ' Low confidence, old data',
 	})
+end)
+
+t.test('detail lines that can grow long wrap at the tooltip width', function()
+	local reasons = { { code = 'stale', level = 'low', text = 'old data' } }
+	local lowQuote = quote({
+		prices = {
+			{ ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'low', reasons) },
+			{ ruleId = 'median', name = 'Median', isDefault = false, reason = 'too few sales in the window' },
+		},
+		facts = { salesPerDay = 0.2, levels = {} },
+	})
+	local lines = build({ quote = lowQuote, isDetail = true, options = { detailTrace = false } })
+	for _, text in ipairs({ 'old data', 'no price, too few sales', 'under 1 sale a day', TooltipLines.SELL_TIME_NOTE }) do
+		local isFound = false
+		for _, line in ipairs(lines) do
+			if line.left:find(text, 1, true) then
+				isFound = true
+				t.eq(line.wrap, true, text)
+				t.eq(line.right, nil, text)
+			end
+		end
+		t.truthy(isFound, text)
+	end
 end)
 
 t.test('an informational reason gets its own marker, never a bare leading space', function()
@@ -198,7 +254,7 @@ t.test('an informational reason gets its own marker, never a bare leading space'
 		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'high', reasons) } },
 	})
 	local lines = build({ quote = infoQuote, isDetail = true, options = { detailTrace = false } })
-	t.truthy(find(lines, '(i) sold a day from AHledger'))
+	t.truthy(find(lines, INFO_ICON .. ' sold a day from AHledger'))
 end)
 
 t.test('the sales line says when sales a day is the own count', function()
@@ -237,18 +293,25 @@ t.test('sell time counts the units at or under the price plus the stack', functi
 	t.eq(TooltipLines.sellTimeDays({ levels = { 'junk', { price = '1', qty = 2 } }, salesPerDay = 1 }, 94, 1), 1)
 end)
 
-t.test('a slow sell time is marked low', function()
+t.test('a slow sell time is marked low, with the reason wrapped below', function()
 	local lines = build({ isDetail = true, quote = quote({ facts = { salesPerDay = 0.2, levels = {} } }) })
-	t.truthy(find(lines, 'Sell time | ~5.0 days ' .. theme:Wrap('color.state.danger', '(!) low')))
+	local texted = texts(lines)
+	for index, text in ipairs(texted) do
+		if text:find('Sell time', 1, true) then
+			t.eq(text, 'Sell time | ~5.0 days ' .. LOW_ICON)
+			t.eq(texted[index + 1], 'Low confidence, under 1 sale a day')
+		end
+	end
+	t.truthy(find(lines, 'Sell time'))
 end)
 
 t.test('money and ages read short', function()
-	t.eq(TooltipLines.money(0), '0c')
-	t.eq(TooltipLines.money(5), '5c')
-	t.eq(TooltipLines.money(100), '1s')
-	t.eq(TooltipLines.money(10000), '1g')
-	t.eq(TooltipLines.money(12005), '1g 20s 5c')
-	t.eq(TooltipLines.money(1230000), '123g')
+	t.eq(TooltipLines.money(0), '0' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(48), '48' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(100), '1' .. COIN_ICONS.s)
+	t.eq(TooltipLines.money(10000), '1' .. COIN_ICONS.g, 'zero parts are left out, as the game does')
+	t.eq(TooltipLines.money(12005), '1' .. COIN_ICONS.g .. ' 20' .. COIN_ICONS.s .. ' 5' .. COIN_ICONS.c)
+	t.eq(TooltipLines.money(1230000), '123' .. COIN_ICONS.g)
 	t.eq(TooltipLines.age(5), 'just now')
 	t.eq(TooltipLines.age(150), '2 min')
 	t.eq(TooltipLines.age(7300), '2 h')
