@@ -1,6 +1,6 @@
 --[[
 	Haggler.lua: the bootstrap, loaded last. It opens the saved data (and the scan history,
-	HagglerArchiveDB) once the game has loaded it, starts the host and registers /hag (plain
+	HagglerArchiveDB, and the merchant record in it) once the game has loaded it, starts the host and registers /hag (plain
 	/hag opens the Haggler window). Init.lua made the shared services, and the features
 	registered their modules with ns.host before this runs.
 ]]
@@ -39,6 +39,14 @@ function onAddonLoaded()
 	else
 		-- Non-tables were replaced above, so the one refusal left is a newer schema.
 		ns.wow:Print("Haggler's scan history is from a newer Haggler. Update the add-on. It is kept as it is.")
+	end
+	-- The merchant record has its own schema and cap, apart from the scan history's. A newer
+	-- record, or a newer whole file, is left untouched (ns.vendorDb stays nil).
+	local vendorDb, vendorReason = ns.VendorStore.open(HagglerArchiveDB)
+	ns.vendorDb = vendorDb
+	-- A newer whole file was reported above; only a newer merchant record alone needs a line.
+	if vendorReason == 'newer schema' then
+		ns.wow:Print("Haggler's merchant record is from a newer Haggler. Update the add-on. It is kept as it is.")
 	end
 	ns.host.Start(store:Settings())
 	ns.wow:RegisterSlash(function(text)
