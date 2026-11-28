@@ -985,7 +985,13 @@ t.test('lines: the decision reads as the badge glyph next to its word, after the
 	t.eq(#build({ stackCount = 20, advice = { decision = 'post', code = 'ah' } }), 4, 'post: no reason line')
 end)
 
-local WAIT = { decision = 'wait', code = 'marketLow', underTypicalPercent = 32, gainOverVendor = 12345 }
+local WAIT = {
+	decision = 'wait',
+	code = 'marketLow',
+	underTypicalPercent = 32,
+	gainOverVendor = 12345,
+	gainOverVendorEach = 617,
+}
 
 t.test('lines: a wait says why on its own wrapped line under the decision', function()
 	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
@@ -996,7 +1002,7 @@ t.test('lines: a wait says why on its own wrapped line under the decision', func
 	t.eq(reason.wrap, true)
 	t.eq(
 		reason.left,
-		'Wait, the lowest listing is 32% under the usual price while the market holds steady, and posting at the usual price nets '
+		'The lowest listing is 32% under the usual price while the market holds steady, and posting at the usual price nets '
 			.. TooltipLines.money(12345)
 			.. ' more than the vendor'
 	)
@@ -1006,9 +1012,35 @@ t.test('lines: a wait says why on its own wrapped line under the decision', func
 	t.eq(reason.left:find(' - ', 1, true), nil)
 end)
 
+t.test('lines: the wait reason leaves the word Wait to the Decision line', function()
+	local reason = build({ stackCount = 20, advice = WAIT, icons = icons })[5].left
+	t.eq(reason:find('Wait', 1, true), nil, reason)
+	t.truthy(reason:find('^The lowest listing'), reason)
+end)
+
+t.test('lines: the wait gain follows the view, a unit in the unit view as the prices do', function()
+	local each = build({ stackCount = 20, advice = WAIT, icons = icons, isUnitView = true })[5].left
+	t.truthy(each:find(TooltipLines.money(617) .. ' more than the vendor (each)', 1, true), each)
+	t.eq(each:find(TooltipLines.money(12345), 1, true), nil, 'not the stack gain')
+	local stack = build({ stackCount = 20, advice = WAIT, icons = icons })[5].left
+	t.truthy(stack:find(TooltipLines.money(12345) .. ' more than the vendor$'), stack)
+end)
+
+t.test('lines: a unit gain under a copper shows the stack gain instead of 0c', function()
+	local small = {
+		decision = 'wait',
+		code = 'marketLow',
+		underTypicalPercent = 32,
+		gainOverVendor = 15,
+		gainOverVendorEach = 0,
+	}
+	local reason = build({ stackCount = 20, advice = small, icons = icons, isUnitView = true })[5].left
+	t.truthy(reason:find(TooltipLines.money(15) .. ' more than the vendor$'), reason)
+end)
+
 t.test('lines: the wait reason shows in the detail view too', function()
 	local lines = build({ stackCount = 20, advice = WAIT, icons = icons, isDetail = true })
-	t.truthy(find(lines, 'the lowest listing is 32% under the usual price'), 'detail keeps the reason')
+	t.truthy(find(lines, 'lowest listing is 32% under the usual price'), 'detail keeps the reason')
 end)
 
 t.test('lines: a wait missing its facts still names the decision, without a reason', function()
@@ -1042,6 +1074,6 @@ t.test('module: a bag slot tooltip says why its item waits', function()
 	local lines = game:ShowItemTooltip(LINEN)
 	addon.Advice.forItem = forItem
 	t.truthy(find(lines, 'Wait'), 'the decision')
-	t.truthy(find(lines, 'the lowest listing is 32% under the usual price'), 'and why')
+	t.truthy(find(lines, 'lowest listing is 32% under the usual price'), 'and why')
 	t.same(addon.errors, {})
 end)

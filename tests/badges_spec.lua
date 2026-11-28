@@ -349,6 +349,14 @@ t.test('the outline is the DS method: 16 copies, the 8 sides and diagonals at 1 
 		end
 	end
 	t.eq(#Badges.outlineOffsets(1), 8, 'width 1: the 8 offsets once, at 1')
+	local wide = {}
+	for _, offset in ipairs(Badges.outlineOffsets(3)) do
+		wide[offset[1] .. ',' .. offset[2]] = true
+	end
+	t.eq(#Badges.outlineOffsets(3), 24, 'width 3: every step 1, 2 and 3')
+	for _, key in ipairs({ '1,0', '2,0', '3,0', '-2,-2', '0,-3' }) do
+		t.truthy(wide[key], 'width 3 has no gap ring at ' .. key)
+	end
 end)
 
 t.test('the outline copies fill every pixel within its width: a solid edge, no gaps', function()
@@ -468,6 +476,11 @@ t.test('the painter creates an overlay only when there is something to show, the
 	t.eq(#shownTextures(button), 0)
 	t.eq(valueText(button), nil)
 	painter:Clear(FakeGame.newWidget('Button'))
+end)
+
+t.test('the painter keeps only what it reads: no theme field', function()
+	local painter = Badges.newPainter({ icons = icons, theme = theme })
+	t.eq(rawget(painter, 'theme'), nil)
 end)
 
 t.test('the painter writes nothing onto the button table', function()
