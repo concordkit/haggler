@@ -42,9 +42,10 @@
 	now (a clock that ran ahead) is dropped. Within recentDays the fullest scan of each six-hour
 	slot is kept, older ones the fullest scan of each day (ties go to the later scan), then the
 	oldest entries go first until the archive fits maxBytes. Each market's newest entry at or
-	before now (the newest of all when none is) always stays, in addition to its bucket's
-	fullest, and the size cap never takes it; once a later scan arrives, its bucket keeps the
-	fullest as usual. Days and slots are UTC, as Sales counts days. At the default 32 MB one
+	before now (the newest of all when none is) always stays, and the size cap never takes it.
+	It takes part in its bucket's contest like any other scan; when it does not win, it is kept
+	as an extra entry beside the winner. Once a later scan arrives, its bucket keeps only its
+	fullest scan. A now that is not a finite positive number changes nothing. Days and slots are UTC, as Sales counts days. At the default 32 MB one
 	market holds the 12 slot scans of the last 3 days (about 9.4 MB) and about 29 days before
 	that, daily.
 
@@ -221,12 +222,16 @@ end
 --- Applies the retention: downsamples each market and fits the archive into maxBytes. Drops
 --- broken entries and markets.
 --- @param db table an opened archive (changed in place)
---- @param now number unix seconds
+--- @param now any unix seconds; anything but a finite positive number changes nothing
 --- @param options table|nil { recentDays?, maxBytes? }
 --- @return number entries dropped
 function ScanArchive.prune(db, now, options)
 	if not isOpened(db) then
 		error('ScanArchive.prune: open the archive first', 2)
+	end
+	-- A broken clock must never wipe the history.
+	if not isFinitePositive(now) then
+		return 0
 	end
 	options = options or {}
 	local recentDays = isFinitePositive(options.recentDays) and options.recentDays or ScanArchive.DEFAULT_RECENT_DAYS
@@ -402,8 +407,8 @@ function parseRecord(text)
 	return record
 end
 
--- The entries worth keeping, oldest first, how many went, and the protected newest entry:
--- each bucket keeps its fullest scan, and the newest is kept beside it.
+-- The entries worth keeping, oldest first, how many went, and the protected newest entry.
+-- Each bucket keeps its fullest scan; the newest is added beside it only when it did not win.
 function downsample(entries, now, recentFrom)
 	if type(entries) ~= 'table' then
 		return {}, 0, nil
@@ -413,16 +418,20 @@ function downsample(entries, now, recentFrom)
 	local bestByBucket, total = {}, 0
 	for _, entry in ipairs(entries) do
 		total = total + 1
-		if isUsableEntry(entry) and entry.at <= latestAllowed and entry ~= newest then
+		if isUsableEntry(entry) and entry.at <= latestAllowed then
 			local bucket = bucketOf(entry.at, recentFrom)
 			if isBetterEntry(entry, bestByBucket[bucket]) then
 				bestByBucket[bucket] = entry
 			end
 		end
 	end
-	local kept = { newest }
+	local kept, isNewestKept = {}, false
 	for _, entry in pairs(bestByBucket) do
 		kept[#kept + 1] = entry
+		isNewestKept = isNewestKept or entry == newest
+	end
+	if newest and not isNewestKept then
+		kept[#kept + 1] = newest
 	end
 	table.sort(kept, function(a, b)
 		return a.at < b.at

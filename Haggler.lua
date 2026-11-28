@@ -22,9 +22,9 @@ end)
 function onAddonLoaded()
 	HagglerDB = HagglerDB or {}
 	HagglerCharDB = HagglerCharDB or {}
-	local store, reason = ns.Store.open(HagglerDB, HagglerCharDB, { now = ns.wow:Now() })
+	local store = ns.Store.open(HagglerDB, HagglerCharDB, { now = ns.wow:Now() })
 	if not store then
-		ns.wow:Print('Saved data is from a newer Haggler (' .. reason .. '); update the add-on. Nothing was changed.')
+		ns.wow:Print('Saved data is from a newer Haggler. Update the add-on. Nothing was changed.')
 		return
 	end
 	ns.store = store
@@ -33,13 +33,12 @@ function onAddonLoaded()
 		HagglerArchiveDB = {}
 	end
 	-- A refused archive is left untouched and nothing is archived (ns.archiveDb stays nil).
-	local archiveDb, archiveReason = ns.ScanArchive.open(HagglerArchiveDB)
+	local archiveDb = ns.ScanArchive.open(HagglerArchiveDB)
 	if archiveDb then
 		ns.archiveDb = archiveDb
-	elseif archiveReason == 'newer schema' then
-		ns.wow:Print('The scan history is from a newer Haggler; update the add-on. It is kept as it is.')
 	else
-		ns.wow:Print('The scan history could not be opened (' .. tostring(archiveReason) .. '); it is kept as it is.')
+		-- Non-tables were replaced above, so the one refusal left is a newer schema.
+		ns.wow:Print("Haggler's scan history is from a newer Haggler. Update the add-on. It is kept as it is.")
 	end
 	ns.host.Start(store:Settings())
 	ns.wow:RegisterSlash(function(text)

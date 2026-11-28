@@ -102,7 +102,15 @@ t.test('a newer scan history is kept as it is and the add-on still starts', func
 		t.truthy(ns.host.IsStarted())
 		t.eq(ns.archiveDb, nil)
 		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 9 })
-		t.truthy(table.concat(printed, '\n'):find('scan history is from a newer Haggler', 1, true))
+		t.truthy(
+			table
+				.concat(printed, '\n')
+				:find(
+					"Haggler's scan history is from a newer Haggler. Update the add-on. It is kept as it is.",
+					1,
+					true
+				)
+		)
 	end)
 end)
 
@@ -113,6 +121,8 @@ t.test('newer saved data is left alone and reported', function()
 		frame.onEvent(frame, 'ADDON_LOADED', 'Haggler')
 		t.eq(ns.host.IsStarted(), false)
 		t.truthy(printed[1]:find('newer Haggler', 1, true))
+		local message = printed[1]:match('|r: (.*)$') or printed[1]
+		t.eq(message:find('[;:\194\183]'), nil, 'no joined sentences: ' .. message)
 		t.same(rawget(_G, 'HagglerDB'), { version = 999 })
 	end)
 end)

@@ -464,6 +464,26 @@ t.test("a market's newest scan stays beside its slot's fullest, which the slot k
 	t.same(ats(db, MARKET), { fullest, later })
 end)
 
+t.test('a newest scan that is also the fullest is kept once, with nothing beside it', function()
+	local db = ScanArchive.open({})
+	local today = math.floor(NOW / DAY) * DAY
+	ScanArchive.record(db, MARKET, fakeEntry(today + 12 * 3600, 10))
+	ScanArchive.record(db, MARKET, fakeEntry(today + 13 * 3600, 20))
+	ScanArchive.prune(db, today + 13 * 3600, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { today + 13 * 3600 })
+end)
+
+t.test('prune with a missing or broken now changes nothing', function()
+	for _, now in ipairs({ false, 0 / 0, -1, 1 / 0 }) do
+		local db = ScanArchive.open({})
+		ScanArchive.record(db, MARKET, fakeEntry(NOW - DAY, 5))
+		ScanArchive.record(db, MARKET, fakeEntry(NOW, 5))
+		local before = deepCopy(db)
+		t.eq(ScanArchive.prune(db, now or nil, { maxBytes = 1 }), 0, tostring(now))
+		t.same(db, before, tostring(now))
+	end
+end)
+
 t.test('only the newest scan at or before now is protected; far-future entries are dropped', function()
 	local db = ScanArchive.open({})
 	ScanArchive.record(db, MARKET, fakeEntry(NOW - 2 * DAY, 5))
