@@ -8,6 +8,8 @@
 	  theme:Hex(name)   -> 'ffrrggbb' for |c escapes
 	  theme:Wrap(name, text) -> text in that colour
 	  theme:Number(name) -> number, e.g. 'focus.ringWidth'; 0 when no theme in the chain has it
+	  theme:Face(name)   -> font file path, e.g. 'font.face.heading'; the body face when the
+	      chain has no such face, and FALLBACK_FACE when it has no body face either
 ]]
 local _, ns = ...
 
@@ -16,6 +18,9 @@ ns.Theme = Theme
 
 Theme.DEFAULT_THEME = 'banneret'
 Theme.FALLBACK_COLOR = { r = 0.5, g = 0.5, b = 0.5, a = 1 }
+Theme.BODY_FACE = 'font.face.body'
+-- The client's own UI face, read in place: it is a path into the client, never a shipped file.
+Theme.FALLBACK_FACE = 'Fonts\\ARIALN.TTF'
 local MAX_EXTENDS_DEPTH = 8
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
@@ -67,6 +72,21 @@ function ThemeMethods:Number(name)
 		value = findToken(self.themes, Theme.DEFAULT_THEME, name)
 	end
 	return type(value) == 'number' and value or 0
+end
+
+--- A font face token; a missing one reads as the body face, so a renamed token still draws text.
+--- @param name string token name, e.g. 'font.face.heading'
+--- @return string font file path
+function ThemeMethods:Face(name)
+	return self:faceOrNil(name) or self:faceOrNil(Theme.BODY_FACE) or Theme.FALLBACK_FACE
+end
+
+function ThemeMethods:faceOrNil(name)
+	local value = findToken(self.themes, self.key, name)
+	if type(value) ~= 'string' or value == '' then
+		value = findToken(self.themes, Theme.DEFAULT_THEME, name)
+	end
+	return type(value) == 'string' and value ~= '' and value or nil
 end
 
 -- Helpers ---------------------------------------------------------------------------------

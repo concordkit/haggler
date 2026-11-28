@@ -1137,6 +1137,16 @@ t.test('a button shrinks to a shorter label but not under a set width', function
 	t.eq(button:GetWidth(), 200)
 end)
 
+t.test('the window title and a detail title read the heading face; body text does not', function()
+	local game, addon = start()
+	carry(game, 1, LINEN, 20)
+	addon.host.RunCommand('open sell')
+	local heading = addon.theme:Face('font.face.heading')
+	t.eq(addon.window.titleText.font[1], addon.theme:Face('window.titleFace'))
+	t.eq(container(addon, 'sell').title.font[1], heading)
+	t.truthy(addon.window.modeText.font[1] ~= heading, 'the mode line is body text')
+end)
+
 t.group('rules review')
 
 t.test('saving or deleting a rule sends RULES_CHANGED; delete asks for a second click', function()

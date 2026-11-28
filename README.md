@@ -29,10 +29,12 @@ Settings are changed with `/hag`; there is no settings panel yet.
 | --- | --- |
 | `Host/` | Haggler's own host layer, shaped like Concord's API: `AddModule`, `Provide` / `Get`, the bus, settings schemas and the generated `/hag` commands |
 | `Host/Tokens.lua` | Generated from the Concord design system by `tools/sync-design.sh`; do not edit |
+| `Host/LocalTokens.lua` | Haggler-local tokens the design system has not adopted yet (the craft margin bands); the sync leaves it alone |
 | `Engine/` | UI-free: the WoW API wrapper, saved data and migrations, the price source (AHledger), calculation rules and price steps, item value, trade verdicts and the ledger |
 | `Host/BagHosts/` | One adapter per bag add-on (Blizzard, BagPad, Bagnon, Baganator), detected at runtime |
 | `Features/` | One module per feature: pricing, value, scan, tooltip, bags, trade, tracking, crafting, the window and its tabs |
 | `media/icons/` | Icon atlases generated from the Concord design system by `tools/sync-design.sh`; do not edit |
+| `media/fonts/` | Roboto Condensed (body, figures) and Atkinson Hyperlegible Next SemiBold (headings, titles, tabs), each with its licence; the sync copies Atkinson from the design system |
 | `Haggler.lua` | Bootstrap: opens the saved data on `ADDON_LOADED` and starts the host |
 | `tests/` | luajit specs |
 
@@ -65,8 +67,10 @@ Before a release, run the in-game check suite (`/hc`, see [dev/README.md](dev/RE
 To refresh the design tokens from the Concord design system:
 
 ```bash
-tools/sync-design.sh
+tools/sync-design.sh [path/to/design-system/dist]
 ```
+
+The default dist is `~/Developer/wow-concord/mockups/design-system/dist`. New or changed font files need a full client restart; `/reload` does not load them.
 
 ## Credits
 
@@ -75,5 +79,7 @@ Prices from [AHledger](https://ahledger.com). Their data is free for personal an
 ## Third-party
 
 Roboto Condensed 2.137, Copyright 2011 Google Inc., Apache License 2.0, media/fonts/LICENSE-RobotoCondensed.txt
+
+Atkinson Hyperlegible Next SemiBold, Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors, SIL Open Font License 1.1, media/fonts/OFL-AtkinsonHyperlegibleNext.txt. A static weight-600 instance cut from the variable font by the Concord design system, so a Modified Version under the OFL.
 
 Bundled libraries and their licences are listed in Libs/LICENSES.md.
