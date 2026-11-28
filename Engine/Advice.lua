@@ -9,15 +9,25 @@
 	  Advice.forItem(value, item?) -> BagAdvice|nil   what to do with an item in the bags
 	  Advice.isMarketLow(lowest, typical) -> boolean
 
-	BagAdvice = { decision = 'post'|'sell'|'wait'|'undecided', code }, checked in this order:
+	BagAdvice = { decision = 'post'|'sell'|'wait'|'undecided', code, underTypicalPercent?,
+	              gainOverVendor?, gainOverVendorEach?, recentUnderTypicalPercent? }, checked in this order:
 	  undecided  the value is a guess (low or no confidence: lowConfidence) or nothing pays
 	             (noPrice)
 	  wait       the lowest listing is WAIT_UNDER_TYPICAL_PERCENT or more under the 30-day median
-	             and listing at that median would net more than the vendor, measured as Post
+	             while the market holds steady: the 7-day median (AHledger's, recentPrice) is less
+	             than WAIT_TREND_FALL_PERCENT under the 30-day median. A recent median that far
+	             under is a falling trend, not a dip, and no recent median is an unknown trend:
+	             either way the item reads Post or Sell. And listing at that median would net
+	             more than the vendor, measured as Post
 	             measures the AH (Value's typicalAhNet: the cut, the deposit and the sell chance)
-	             (marketLow)
+	             (marketLow). A wait carries its reason: underTypicalPercent, the whole percent the
+	             lowest listing is under the median, and gainOverVendor, whole copper the stack
+	             nets at the median over the vendor (typicalAhNet - vendorNet, at least 1 to wait),
+	             with gainOverVendorEach the same a unit (floored)
 	  post       the AH nets more than the vendor (ah), as Value's opportunity picks it
 	  sell       the vendor pays at least as much (vendor)
+	Past undecided, recentUnderTypicalPercent (whole percent the 7-day median is under the
+	30-day median, 0 when not under) rides along whenever both medians are known.
 	A bound or quest item gets none: it cannot go to the AH.
 
 	auction = { itemId, unitPrice, listed, deposit? }   a tracked auction (AuctionTracker)
@@ -49,10 +59,13 @@ Advice.THRESHOLD_PERCENT = 5
 -- Product choice (proposed, not settled): how far under its 30-day median the lowest listing
 -- must be before a bag item reads Wait instead of Post or Sell.
 Advice.WAIT_UNDER_TYPICAL_PERCENT = 25
+-- User decision 2026-11-28: a 7-day median this many whole percent under the 30-day median is a
+-- falling trend, so a low listing is no reason to wait.
+Advice.WAIT_TREND_FALL_PERCENT = 10
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local hold, relist, confidenceOf, isFinitePositive, isFiniteNonNegative, percentApart, claimPendingPost
-local isWorthWaiting
+local isWorthWaiting, vendorNetOf, gainOverVendorOf, unitsOf, recentUnderTypicalPercentOf, withTrend
 
 --- Advice for one listed auction.
 --- @param auction table see the file header
@@ -87,7 +100,7 @@ function Advice.forAuction(auction, facts, options)
 			return hold('closeEnough', string.format('within %d%% of the cheapest listing', threshold), confidence)
 		end
 		if target < floor then
-			return hold('underFloor', 'the cheapest listing is under your floor; wait, or take it out', confidence)
+			return hold('underFloor', 'the cheapest listing is under your floor, so wait or take it out', confidence)
 		end
 		local net = Guardrail.saleNet(target, listed) - deposit
 		if net <= vendor * listed then
@@ -145,13 +158,21 @@ function Advice.forItem(value, item)
 	if not isPaying then
 		return { decision = 'undecided', code = 'noPrice' }
 	end
-	if Advice.isMarketLow(value.lowestListed, value.typicalPrice) and isWorthWaiting(value) then
-		return { decision = 'wait', code = 'marketLow' }
+	local recentUnder = recentUnderTypicalPercentOf(value)
+	local isSteady = recentUnder ~= nil and recentUnder < Advice.WAIT_TREND_FALL_PERCENT
+	if isSteady and Advice.isMarketLow(value.lowestListed, value.typicalPrice) and isWorthWaiting(value) then
+		return withTrend({
+			decision = 'wait',
+			code = 'marketLow',
+			underTypicalPercent = percentApart(value.typicalPrice, value.lowestListed),
+			gainOverVendor = gainOverVendorOf(value),
+			gainOverVendorEach = math.floor(gainOverVendorOf(value) / unitsOf(value)),
+		}, recentUnder)
 	end
 	if value.source == 'ah' then
-		return { decision = 'post', code = 'ah' }
+		return withTrend({ decision = 'post', code = 'ah' }, recentUnder)
 	end
-	return { decision = 'sell', code = 'vendor' }
+	return withTrend({ decision = 'sell', code = 'vendor' }, recentUnder)
 end
 
 --- True when the lowest listing is at least WAIT_UNDER_TYPICAL_PERCENT (whole percent) under
@@ -267,8 +288,36 @@ function isWorthWaiting(value)
 	if type(typicalAhNet) ~= 'number' or typicalAhNet ~= typicalAhNet or math.abs(typicalAhNet) == math.huge then
 		return false
 	end
-	local vendorNet = isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
-	return typicalAhNet > vendorNet
+	return gainOverVendorOf(value) >= 1
+end
+
+-- What listing the stack at the usual price nets over the vendor, in whole copper.
+function gainOverVendorOf(value)
+	return math.floor(value.typicalAhNet - vendorNetOf(value))
+end
+
+function unitsOf(value)
+	return isFinitePositive(value.count) and math.floor(value.count) >= 1 and math.floor(value.count) or 1
+end
+
+-- The vendor net of the stack; nothing when the vendor pays nothing or the value is unreadable.
+function vendorNetOf(value)
+	return isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
+end
+
+-- Whole percent the 7-day median sits under the 30-day median, 0 when not under; nil when
+-- either is unknown.
+function recentUnderTypicalPercentOf(value)
+	local recent, typical = value.recentPrice, value.typicalPrice
+	if not isFinitePositive(recent) or not isFinitePositive(typical) then
+		return nil
+	end
+	return recent < typical and percentApart(typical, recent) or 0
+end
+
+function withTrend(advice, recentUnder)
+	advice.recentUnderTypicalPercent = recentUnder
+	return advice
 end
 
 -- Takes the first pending venture post that matches an owned entry; true when one did.

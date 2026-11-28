@@ -3,13 +3,17 @@
 	no game calls, so every line is tested in luajit.
 
 	  build(input) -> Line[]
-	  input = { quote, stackCount, isUnitView, isDetail, options, theme, decision?, icons? }
+	  input = { quote, stackCount, isUnitView, isDetail, options, theme, advice?, icons? }
+	  advice  = Advice.forItem's BagAdvice for a bag slot
 	  options = { detailTrace, detailSales, detailListings, detailVendor, detailSellTime,
 	              sellTimeNote }
 
 	Compact view: a header with the data age, then one line per shown rule (default first) with
 	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
-	with the decision (Advice.forItem's) as its glyph and word. A low-confidence price carries the
+	with the decision (Advice.forItem's) as its glyph and word. A Wait says why on a wrapped line
+	below it, in the compact and the detail view alike: how far under the usual price the lowest
+	listing is, that the market holds steady, and what posting at the usual price nets over the
+	vendor. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
 	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
 	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
@@ -31,6 +35,12 @@ TooltipLines.TITLE = 'Haggler'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
 TooltipLines.DECISION_LABEL = 'Decision'
+-- The lowest listing's percent under the usual price, then the gain over the vendor. The
+-- Decision line already says Wait.
+TooltipLines.WAIT_REASON =
+	'The lowest listing is %d%% under the usual price while the market holds steady, and posting at the usual price nets %s more than the vendor'
+-- Marks a gain a unit, as the price lines mark the unit view.
+TooltipLines.EACH_SUFFIX = ' (each)'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
@@ -56,7 +66,7 @@ local LINE_HEIGHT_ICON = 0
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine
+local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine, waitReasonLine
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -83,7 +93,12 @@ function TooltipLines.build(input)
 			lines[#lines + 1] = lowReasonLine(topLowReason(entry.price.confidence.reasons), view)
 		end
 	end
-	lines[#lines + 1] = decisionLine(input.decision, view)
+	local advice = type(input.advice) == 'table' and input.advice or nil
+	local decision = decisionLine(advice and advice.decision, view)
+	if decision then
+		lines[#lines + 1] = decision
+		lines[#lines + 1] = waitReasonLine(advice, view)
+	end
 	if not input.isDetail then
 		return withCredit(lines, quote.credit, view)
 	end
@@ -177,6 +192,26 @@ function decisionLine(decision, view)
 		right = label,
 		color = color(view, 'color.text.secondary'),
 		rightColor = color(view, 'color.text.primary'),
+	}
+end
+
+-- Why an item waits, wrapped under its Decision line; nil for any other decision, or a wait
+-- without its facts.
+function waitReasonLine(advice, view)
+	local percent, gain = advice.underTypicalPercent, advice.gainOverVendor
+	if advice.decision ~= 'wait' or type(percent) ~= 'number' or type(gain) ~= 'number' then
+		return nil
+	end
+	local each = advice.gainOverVendorEach
+	local suffix = ''
+	-- The unit view shows the gain a unit, unless a unit gains under a copper.
+	if view.isUnitView and type(each) == 'number' and each >= 1 then
+		gain, suffix = each, TooltipLines.EACH_SUFFIX
+	end
+	return {
+		left = string.format(TooltipLines.WAIT_REASON, percent, TooltipLines.money(gain)) .. suffix,
+		color = color(view, 'color.text.secondary'),
+		wrap = true,
 	}
 end
 

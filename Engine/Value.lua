@@ -17,8 +17,9 @@
 
 	ItemValue = { itemId, count, copper, perUnit, source = 'ah'|'vendor'|'none', ruleId,
 	              rulePrice?, reason?, sellChance?, depositLoss?, deposit?, ahNet?, vendorNet?,
-	              lowestListed?, typicalPrice?, typicalAhNet?, isPriced, confidence }
-	lowestListed and typicalPrice (the 30-day median) are unit prices from PriceContext.facts;
+	              lowestListed?, typicalPrice?, recentPrice?, typicalAhNet?, isPriced, confidence }
+	lowestListed, typicalPrice (the 30-day median) and recentPrice (the 7-day median) are unit
+	prices from PriceContext.facts;
 	typicalAhNet is the AH net of listing the stack at typicalPrice, worked out as ahNet is (cut,
 	deposit, sell chance), and only while the lowest listing is under it. Advice.forItem reads
 	them for the bag decision.
@@ -175,6 +176,7 @@ function ValueMethods:Stack(itemId, count, options)
 		vendorNet = opportunity.vendorNet,
 		lowestListed = facts.lowestListed,
 		typicalPrice = facts.typicalPrice,
+		recentPrice = facts.recentPrice,
 		typicalAhNet = typicalAhNet,
 		isPriced = price ~= nil,
 		confidence = Value.mergeConfidence({ price and price.confidence, { reasons = opportunity.reasons } }),
