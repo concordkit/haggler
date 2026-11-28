@@ -975,13 +975,46 @@ local function bagSlot(bag, slot)
 end
 
 t.test('lines: the decision reads as the badge glyph next to its word, after the prices', function()
-	local lines = build({ stackCount = 20, decision = 'post', icons = icons })
+	local lines = build({ stackCount = 20, advice = { decision = 'post', code = 'ah' }, icons = icons })
 	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
 	t.eq(lines[4].right, ns.Badges.decisionLabel('post', icons))
 	t.truthy(lines[4].right:find(GAVEL_PIXELS, 1, true), lines[4].right)
 	t.truthy(lines[4].right:find('Post$'), 'the word stays next to the icon')
 	t.eq(find(build({ stackCount = 20 }), TooltipLines.DECISION_LABEL), nil, 'no decision, no line')
-	t.eq(find(build({ decision = 'nonsense', icons = icons }), TooltipLines.DECISION_LABEL), nil)
+	t.eq(find(build({ advice = { decision = 'nonsense' }, icons = icons }), TooltipLines.DECISION_LABEL), nil)
+	t.eq(#build({ stackCount = 20, advice = { decision = 'post', code = 'ah' } }), 4, 'post: no reason line')
+end)
+
+local WAIT = { decision = 'wait', code = 'marketLow', underTypicalPercent = 32, gainOverVendor = 12345 }
+
+t.test('lines: a wait says why on its own wrapped line under the decision', function()
+	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
+	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
+	t.eq(lines[4].right, ns.Badges.decisionLabel('wait', icons))
+	local reason = lines[5]
+	t.eq(reason.right, nil, 'one wrapped line, no right column')
+	t.eq(reason.wrap, true)
+	t.eq(
+		reason.left,
+		'Wait, the lowest listing is 32% under the usual price, and posting at the usual price nets '
+			.. TooltipLines.money(12345)
+			.. ' more than the vendor'
+	)
+	t.truthy(reason.left:find(COIN_ICONS.gold, 1, true), 'money in coins')
+	t.eq(reason.left:find('[.;:·]$'), nil, 'no full stop on a single sentence')
+	t.eq(reason.left:find(' · ', 1, true), nil)
+	t.eq(reason.left:find(' - ', 1, true), nil)
+end)
+
+t.test('lines: the wait reason shows in the detail view too', function()
+	local lines = build({ stackCount = 20, advice = WAIT, icons = icons, isDetail = true })
+	t.truthy(find(lines, 'the lowest listing is 32% under the usual price'), 'detail keeps the reason')
+end)
+
+t.test('lines: a wait missing its facts still names the decision, without a reason', function()
+	local lines = build({ stackCount = 20, advice = { decision = 'wait', code = 'marketLow' }, icons = icons })
+	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
+	t.eq(find(lines, 'usual price'), nil)
 end)
 
 t.test('module: a bag slot tooltip names the decision its badge shows', function()
@@ -995,5 +1028,20 @@ t.test('module: a bag slot tooltip names the decision its badge shows', function
 	t.eq(find(game:ShowItemTooltip(LINEN), TooltipLines.DECISION_LABEL), nil, 'bound: no decision')
 	game.env.GameTooltip.owner = nil
 	t.eq(find(game:ShowItemTooltip(LINEN), TooltipLines.DECISION_LABEL), nil, 'not in the bags: no decision')
+	t.same(addon.errors, {})
+end)
+
+t.test('module: a bag slot tooltip says why its item waits', function()
+	local game, addon = startWithTable()
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 20 }
+	game.env.GameTooltip.owner = bagSlot(0, 3)
+	local forItem = addon.Advice.forItem
+	addon.Advice.forItem = function()
+		return WAIT
+	end
+	local lines = game:ShowItemTooltip(LINEN)
+	addon.Advice.forItem = forItem
+	t.truthy(find(lines, 'Wait'), 'the decision')
+	t.truthy(find(lines, 'the lowest listing is 32% under the usual price'), 'and why')
 	t.same(addon.errors, {})
 end)

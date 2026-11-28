@@ -261,53 +261,88 @@ t.group('badges: placement and outline')
 t.test('the decision sits top left, the type top right, both inset on whole pixels', function()
 	t.eq(Badges.SLOTS.decision.point, 'TOPLEFT')
 	t.eq(Badges.SLOTS.type.point, 'TOPRIGHT')
-	t.eq(Badges.ICON_SIZE, theme:Number('size.icon.xs'))
 	for _, slot in pairs(Badges.SLOTS) do
 		t.eq(slot.x % 1, 0)
 		t.eq(slot.y % 1, 0)
 	end
 end)
 
+t.test('the badge glyph is 12 whole pixels, under the smallest DS icon size', function()
+	t.eq(Badges.ICON_SIZE, 12)
+	t.eq(Badges.ICON_SIZE % 1, 0)
+	t.truthy(Badges.ICON_SIZE < theme:Number('size.icon.xs'), 'smaller than size.icon.xs')
+end)
+
+t.test('the footprint, glyph and outline, is 16 and stays inside the button', function()
+	t.eq(Badges.FOOTPRINT, Badges.ICON_SIZE + 2 * Badges.OUTLINE_WIDTH)
+	t.eq(Badges.FOOTPRINT, 16)
+	t.truthy(Badges.INSET >= Badges.OUTLINE_WIDTH, 'the outline never crosses the button edge')
+end)
+
 t.test('no badge reaches the stack count, outline included', function()
-	local outline = Badges.outlineWidth(theme)
 	local countTopFromTop = BUTTON_SIZE - COUNT_BOTTOM - COUNT_HEIGHT
 	for name, slot in pairs(Badges.SLOTS) do
-		local badgeBottomFromTop = math.abs(slot.y) + Badges.ICON_SIZE + outline
+		local badgeBottomFromTop = math.abs(slot.y) + Badges.ICON_SIZE + Badges.OUTLINE_WIDTH
 		t.truthy(badgeBottomFromTop < countTopFromTop, name .. ' reaches ' .. badgeBottomFromTop)
 		t.truthy(slot.point:find('^TOP'), name .. ' sits on the top edge, away from the count')
 	end
 end)
 
-t.test('the outline is the DS glyph outline: four copies, left, right, up and down', function()
-	t.eq(#Badges.OUTLINE_OFFSETS, 4)
-	local seen = {}
-	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
-		t.eq(math.abs(offset[1]) + math.abs(offset[2]), 1, 'one step on one axis')
-		seen[offset[1] .. ',' .. offset[2]] = true
-	end
-	t.same(seen, { ['-1,0'] = true, ['1,0'] = true, ['0,1'] = true, ['0,-1'] = true })
+t.test('the two top badges keep apart, outlines included', function()
+	local decisionRight = Badges.SLOTS.decision.x + Badges.ICON_SIZE + Badges.OUTLINE_WIDTH
+	local typeLeft = BUTTON_SIZE + Badges.SLOTS.type.x - Badges.ICON_SIZE - Badges.OUTLINE_WIDTH
+	t.truthy(decisionRight < typeLeft, decisionRight .. ' meets ' .. typeLeft)
 end)
 
-t.test('the outline width is a token in whole pixels, at least one', function()
+t.test('the outline is 2 whole pixels in the shadow colour', function()
 	t.eq(Badges.OUTLINE_COLOR, 'color.text.shadow')
-	t.eq(Badges.OUTLINE_WIDTH, 'border.hairline')
-	t.eq(Badges.outlineWidth(theme), theme:Number('border.hairline'))
-	local odd = {
-		Number = function()
-			return 1.6
-		end,
-	}
-	t.eq(Badges.outlineWidth(odd), 2, 'rounded to a whole pixel')
-	t.eq(
-		Badges.outlineWidth({
-			Number = function()
-				return 0
-			end,
-		}),
-		1,
-		'a missing token still outlines'
-	)
-	t.eq(Badges.outlineWidth(nil), 1)
+	t.eq(Badges.OUTLINE_WIDTH, 2)
+	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
+		t.eq(offset[1] % 1, 0)
+		t.eq(offset[2] % 1, 0)
+	end
+end)
+
+t.test('the outline copies fill every pixel within its width: a solid edge, no gaps', function()
+	local width = Badges.OUTLINE_WIDTH
+	local seen = {}
+	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
+		local dx, dy = offset[1], offset[2]
+		t.truthy(dx ~= 0 or dy ~= 0, 'no copy under the glyph itself')
+		t.truthy(dx * dx + dy * dy <= width * width, dx .. ',' .. dy .. ' reaches past the width')
+		t.eq(seen[dx .. ',' .. dy], nil, 'no copy twice')
+		seen[dx .. ',' .. dy] = true
+	end
+	for dx = -width, width do
+		for dy = -width, width do
+			if (dx ~= 0 or dy ~= 0) and dx * dx + dy * dy <= width * width then
+				t.truthy(seen[dx .. ',' .. dy], 'a gap at ' .. dx .. ',' .. dy)
+			end
+		end
+	end
+end)
+
+t.test('a one pixel diagonal stroke gets an unbroken outline', function()
+	-- The 4 sides and 4 diagonals at 2 alone leave holes beside a thin diagonal; the disc does not.
+	local width = Badges.OUTLINE_WIDTH
+	local stroke, covered = {}, {}
+	for step = 0, 11 do
+		stroke[#stroke + 1] = { step, step }
+		covered[step .. ',' .. step] = true
+	end
+	for _, pixel in ipairs(stroke) do
+		for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
+			covered[(pixel[1] + offset[1]) .. ',' .. (pixel[2] + offset[2])] = true
+		end
+	end
+	for x = 0, 11 do
+		for y = 0, 11 do
+			local distance = math.abs(x - y) / math.sqrt(2)
+			if distance <= width then
+				t.truthy(covered[x .. ',' .. y], 'uncovered at ' .. x .. ',' .. y)
+			end
+		end
+	end
 end)
 
 t.test('the painter draws each badge over a dark outline at its corner', function()
@@ -322,14 +357,16 @@ t.test('the painter draws each badge over a dark outline at its corner', functio
 	for _, outline in ipairs(outlines) do
 		t.same(outline.color, { shadow.r, shadow.g, shadow.b, shadow.a or 1 })
 		t.eq(outline.layer, 'OVERLAY')
+		t.eq(outline.width, Badges.ICON_SIZE)
 	end
 	t.truthy(Badges.GLYPH_SUBLEVEL > Badges.OUTLINE_SUBLEVEL, 'the glyph draws over its outline')
-	local width = Badges.outlineWidth(theme)
 	for _, glyph in ipairs(glyphs) do
 		local point, _, _, x, y = glyph:GetPoint(1)
 		t.truthy(point == 'TOPLEFT' or point == 'TOPRIGHT', point)
 		t.eq(math.abs(x), Badges.INSET)
 		t.eq(y, -Badges.INSET)
+		t.eq(glyph.width, Badges.ICON_SIZE)
+		t.eq(glyph.height, Badges.ICON_SIZE)
 	end
 	local offsets = {}
 	for _, outline in ipairs(outlines) do
@@ -341,10 +378,20 @@ t.test('the painter draws each badge over a dark outline at its corner', functio
 	table.sort(offsets)
 	local expected = {}
 	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
-		expected[#expected + 1] = (offset[1] * width) .. ',' .. (offset[2] * width)
+		expected[#expected + 1] = offset[1] .. ',' .. offset[2]
 	end
 	table.sort(expected)
 	t.same(offsets, expected)
+end)
+
+t.test('a badge frame for a host holds the glyph and its outline: 16 square', function()
+	local painter = Badges.newPainter({ icons = icons, theme = theme })
+	local frame = painter:NewBadgeFrame(FakeGame.newWidget('Frame'))
+	t.eq(frame.width, Badges.FOOTPRINT)
+	t.eq(frame.height, Badges.FOOTPRINT)
+	t.eq(painter:PaintBadgeFrame(frame, Badges.decide(value(), ALL).badges[1]), true)
+	t.eq(#shownTextures(frame, Badges.OUTLINE_SUBLEVEL), #Badges.OUTLINE_OFFSETS)
+	t.eq(#shownTextures(frame, Badges.GLYPH_SUBLEVEL), 1)
 end)
 
 t.test('the painter creates an overlay only when there is something to show, then reuses it', function()
