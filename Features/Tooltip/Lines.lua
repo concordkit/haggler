@@ -18,9 +18,11 @@
 	the age of AHledger's row. A "Vendor (each)" row is meant to go above the AH row once its
 	source is settled (buySection).
 
-	Sell: a header (the module icon) with the age of the default price's own source: the search
-	icon for Haggler's scans, the plug icon for AHledger, nothing for other sources (vendor,
-	craft cost, realized) or no price. An icon without a known age stands alone; no header says
+	Sell: a header (the module icon) with the age of the default price's base, after its source's
+	icon: the search icon for Haggler's scans, the plug icon for AHledger, nothing for other
+	sources (vendor, craft cost, realized) or no price. When a step read AHledger's row (the
+	default rule caps at the median), the plug icon and that row's own age follow; a scan icon
+	never carries AHledger's age. An icon without a known age stands alone; no header says
 	"no data". For a bag slot a Signal line with the decision (Advice.forItem's) as its glyph and
 	word; then the default rule's price as "Price (each)" and "Price × N" for the hovered stack,
 	or one "Price" line for a single item. Details come last: a Wait says why in short label and
@@ -106,6 +108,7 @@ local appendSection, buySection, sellSection, detailSection, buyHeaderLine, sell
 local sellPriceRows, priceRow, ageText, traceLines, reasonLines, salesLines, listingsLines, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
 local lowReasonLine, capitalized, iconSetFor, signalLine, waitReasonRows, reasonRow, stackSuffix, detailRow
+local sellAgesText
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -279,14 +282,27 @@ function buyHeaderLine(facts, view)
 	}
 end
 
--- The age of the price's own source; no right side for a source without a market age.
+-- The base's icon and own age, then AHledger's row age when a step read it; no right side for
+-- a source without a market age.
 function sellHeaderLine(price, view)
 	return {
 		left = '|T' .. TooltipLines.TITLE_ICON_TEXTURE .. ':' .. LINE_HEIGHT_ICON .. '|t',
-		right = price and ageText(price.source, price.ageSeconds, view) or nil,
+		right = price and sellAgesText(price, view) or nil,
 		color = color(view, 'color.text.accent'),
 		rightColor = color(view, 'color.text.muted'),
 	}
+end
+
+function sellAgesText(price, view)
+	local base = ageText(price.source, price.baseAgeSeconds or price.ageSeconds, view)
+	local row = price.source ~= 'ahledger'
+			and price.rowAgeSeconds ~= nil
+			and ageText('ahledger', price.rowAgeSeconds, view)
+		or nil
+	if base and row then
+		return base .. ' ' .. row
+	end
+	return base or row
 end
 
 -- The age after its source's icon; nil for a source no icon names. Without a known age the icon
@@ -419,7 +435,7 @@ end
 
 -- How the default rule got its price, per unit. Confidence entries are left to reasonLines.
 function traceLines(detail, entry, view)
-	detail[#detail + 1] = { left = entry.name .. ', each:', color = color(view, 'color.text.muted') }
+	detail[#detail + 1] = { left = entry.name .. TooltipLines.EACH_SUFFIX, color = color(view, 'color.text.muted') }
 	for _, step in ipairs(entry.price.trace) do
 		if step.kind ~= 'confidence' then
 			local line = { left = '  ' .. step.label, color = color(view, 'color.text.muted') }
@@ -434,7 +450,7 @@ end
 
 function reasonLines(detail, entries, view)
 	for _, entry in ipairs(entries) do
-		local prefix = entry.isDefault and '' or (entry.name .. ': ')
+		local prefix = entry.isDefault and '' or (entry.name .. ', ')
 		if not entry.price then
 			detail[#detail + 1] = {
 				left = prefix .. 'no price, ' .. tostring(entry.reason or 'no data'),

@@ -298,10 +298,10 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 	}
 	local trace = {
 		{ kind = 'base', label = 'scan first price with 5 units', copper = 99 },
-		{ kind = 'skip', label = 'cap skipped: no median' },
+		{ kind = 'skip', label = 'cap skipped, no median' },
 		{ kind = 'step', label = 'undercut by 1c', copper = 98 },
 		{ kind = 'snap', label = 'price step 1c', copper = 98 },
-		{ kind = 'confidence', label = 'medium confidence: AHledger data is 30 hours old' },
+		{ kind = 'confidence', label = 'medium confidence, AHledger data is 30 hours old' },
 	}
 	local detailed = quote({
 		prices = {
@@ -323,13 +323,13 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 		'Price × 20 | ' .. coins('19s 60c'),
 		SEPARATOR,
 		'Median × 20 | ' .. coins('24s') .. ' ' .. LOW_ICON,
-		'Realistic, each:',
+		'Realistic (each)',
 		'  scan first price with 5 units | ' .. coins('99c'),
-		'  cap skipped: no median',
+		'  cap skipped, no median',
 		'  undercut by 1c | ' .. coins('98c'),
 		'  price step 1c | ' .. coins('98c'),
 		MEDIUM_ICON .. ' Medium confidence, AHledger data is 30 hours old',
-		LOW_ICON .. ' Median: low confidence, under 1 sale a day',
+		LOW_ICON .. ' Median, low confidence, under 1 sale a day',
 		'Sold a day | 45',
 		'Listed | × 60',
 		'Price levels | 2',

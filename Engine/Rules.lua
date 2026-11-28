@@ -21,8 +21,11 @@
 	AHledger's lowest buyout. A step whose base has no data is skipped and noted in the trace; only
 	a missing base fails the rule. The engine never throws on data, only on a broken call.
 
-	evaluate(rule, itemId, ctx) returns Price = { copper, ageSeconds, source, step, confidence,
-	trace }, or nil and a reason. The copper is snapped down to the item's price grid (see
+	evaluate(rule, itemId, ctx) returns Price = { copper, ageSeconds, source, baseAgeSeconds,
+	rowAgeSeconds?, step, confidence, trace }, or nil and a reason. ageSeconds is the oldest input
+	(it sets confidence); source and baseAgeSeconds are the base's own; rowAgeSeconds is the age
+	of the AHledger row a step read (a cap at the median, say), nil when no step read one, so a
+	display never dates one source with another's age. The copper is snapped down to the item's price grid (see
 	ItemMarket), except that a floor or higher bound is snapped up: a price never goes under its
 	floor. A floor stays in force for every later step, so a later undercut or cap clamps at it;
 	when that overrides a cap, the trace and confidence (capOverridden) say so.
@@ -284,14 +287,20 @@ function Rules.evaluate(rule, itemId, ctx)
 		return nil, age
 	end
 	local ageSeconds = age
+	local baseAgeSeconds = age
+	local rowAgeSeconds = nil
 	-- A floor (or higher bound) stays in force for every later step: nothing takes the price
 	-- under it, not even a later cap or undercut.
 	local floorCopper = nil
 	local ceilingCopper = nil
 	for _, step in ipairs(rule.steps) do
-		local stepped, stepAge, lowerBound, upperBound = applyStep(step, copper, rule, itemId, ctx, trace, facts)
+		local stepped, stepAge, lowerBound, upperBound, stepSource =
+			applyStep(step, copper, rule, itemId, ctx, trace, facts)
 		copper = stepped
 		ageSeconds = olderOf(ageSeconds, stepAge)
+		if stepSource == 'ahledger' then
+			rowAgeSeconds = olderOf(rowAgeSeconds, stepAge)
+		end
 		floorCopper = lowerBound and math.max(floorCopper or 0, lowerBound) or floorCopper
 		ceilingCopper = upperBound and math.min(ceilingCopper or math.huge, upperBound) or ceilingCopper
 		if floorCopper and copper < floorCopper then
@@ -316,12 +325,14 @@ function Rules.evaluate(rule, itemId, ctx)
 	local confidence = assessConfidence(facts, ageSeconds, market, ctx)
 	for _, reason in ipairs(confidence.reasons) do
 		trace[#trace + 1] =
-			{ kind = 'confidence', label = string.format('%s confidence: %s', reason.level, reason.text) }
+			{ kind = 'confidence', label = string.format('%s confidence, %s', reason.level, reason.text) }
 	end
 	return {
 		copper = snapped,
 		ageSeconds = ageSeconds,
 		source = source,
+		baseAgeSeconds = baseAgeSeconds,
+		rowAgeSeconds = rowAgeSeconds,
 		step = market.step,
 		confidence = confidence,
 		trace = trace,
@@ -378,12 +389,12 @@ function resolveListingBase(base, rule, itemId, ctx, trace, facts)
 		if skipped > 0 then
 			trace[#trace + 1] = {
 				kind = 'antiBait',
-				label = isAllBait and string.format('all %d units are bait; dearest level kept', skipped)
+				label = isAllBait and string.format('all %d units are bait, dearest level kept', skipped)
 					or string.format('%d bait units passed over', skipped),
 			}
 		end
 		local copper, isThin = readListing(base, levels, soldPerDay)
-		local note = isThin and ' (listing too thin; dearest level)' or ''
+		local note = isThin and ' (listing too thin, dearest level)' or ''
 		trace[#trace + 1] = { kind = 'base', label = 'scan ' .. describeBase(base) .. note, copper = copper }
 		recordListing(facts, sumUnits(listed), skipped, isAllBait, isThin)
 		noteInput(facts, 'scan')
@@ -464,7 +475,8 @@ end
 -- Steps -----------------------------------------------------------------------------------
 
 -- Returns the new copper, the age of any base the step read (nil when none), for floor and
--- higher the lower bound the price must not go under, and for cap and lower the upper bound.
+-- higher the lower bound the price must not go under, for cap and lower the upper bound, and
+-- the source of the base the step read.
 function applyStep(step, copper, rule, itemId, ctx, trace, facts)
 	local kind = step.kind
 	if kind == 'multiply' then
@@ -479,9 +491,9 @@ function applyStep(step, copper, rule, itemId, ctx, trace, facts)
 		return result
 	end
 	local stepTrace = {}
-	local other, age = resolveBase(step.base, rule, itemId, ctx, stepTrace, facts)
+	local other, age, source = resolveBase(step.base, rule, itemId, ctx, stepTrace, facts)
 	if not other then
-		trace[#trace + 1] = { kind = 'skip', label = string.format('%s skipped: %s', kind, age) }
+		trace[#trace + 1] = { kind = 'skip', label = string.format('%s skipped, %s', kind, age) }
 		return copper
 	end
 	local limit = other
@@ -496,7 +508,7 @@ function applyStep(step, copper, rule, itemId, ctx, trace, facts)
 		label = string.format('%s at%s %s', kind, percentText, describeBase(step.base)),
 		copper = result,
 	}
-	return result, age, (not isUpperBound) and limit or nil, isUpperBound and limit or nil
+	return result, age, (not isUpperBound) and limit or nil, isUpperBound and limit or nil, source
 end
 
 -- Confidence ------------------------------------------------------------------------------

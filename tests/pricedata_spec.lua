@@ -550,6 +550,23 @@ t.test('absent: the tooltip shows no credit, and the low marker names the reason
 	end
 end)
 
+t.test('the default rule: a scan base and an AHledger cap each show their own age in the Sell header', function()
+	local game, addon =
+		startWith((FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 2 * 86400, rows = ROWS })))
+	scan(game)
+	game.now = game.now + 300
+	local price = addon.prices:Get(LINEN, 'realistic')
+	t.eq(price.source, 'scan')
+	t.eq(price.baseAgeSeconds, 300, "the scan base's own age")
+	t.eq(price.rowAgeSeconds, 2 * 86400 + 300, 'the AHledger row the cap read')
+	t.eq(price.ageSeconds, 2 * 86400 + 300, 'the oldest input still sets confidence')
+	local icons = addon.IconSet.new({ theme = addon.theme })
+	local search = icons:Inline('search', 0, 'color.text.muted')
+	local plug = icons:Inline('plug', 0, 'color.text.muted')
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(lines[4].right, search .. ' 5 min ' .. plug .. ' 2 d', 'never the row age after the search icon')
+end)
+
 t.test('broken: nothing throws; prices come from scans', function()
 	local game, addon = startWith((FakeGame.newAHledgerAPI({ market = MARKET, rows = ROWS, mode = 'broken' })))
 	scan(game)

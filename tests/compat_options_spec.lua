@@ -278,6 +278,21 @@ t.test('the Settings entry reads the credit again each time the Settings panel s
 	t.same(addon.errors, {})
 end)
 
+t.test('the credit is current before Settings draws: a loaded price table and /hag options refresh it', function()
+	local game, addon = startWithCredit(FakeGame.addSettingsApi)
+	local function swapCredit(credit)
+		game.env.AHledgerAPI =
+			FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 3600, rows = {}, credit = credit })
+	end
+	swapCredit('Prices from AHledger (ahledger.com), loaded')
+	addon.host.Bus:Send('PRICE_TABLE_LOADED', { MARKET })
+	t.eq(initializerOf(game, 'sectionHeader'):GetData().name, 'Prices from AHledger (ahledger.com), loaded')
+	swapCredit('Prices from AHledger (ahledger.com), opened')
+	addon.host.RunCommand('options')
+	t.eq(initializerOf(game, 'sectionHeader'):GetData().name, 'Prices from AHledger (ahledger.com), opened')
+	t.same(addon.errors, {})
+end)
+
 t.test('without the section header the credit goes on the open button row, as its plain label', function()
 	local game, addon = startWithCredit(function(g)
 		FakeGame.addSettingsApi(g)

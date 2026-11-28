@@ -4,7 +4,9 @@
 	panel, /hag and the Haggler window always agree, and a button that opens the Haggler window.
 	It also carries the price source's credit (AHledgerAPI.CREDIT, through PriceData), which
 	AHledger's terms ask for where its prices appear; the item tooltip does not. The credit is
-	read again each time the panel shows, so a source that answers late still gets its own line.
+	read again when a price table loads (the moment AHledger's line can change), before /hag
+	options opens the entry, and each time the panel shows, so the row already holds the current
+	line when Settings draws the category, even when it reopens on it.
 	It sits on a section header row; a client without that initializer gets it as the plain
 	label of the open button's row, and one without either gets the old panel, where it is a
 	muted line under the title.
@@ -70,10 +72,12 @@ local options = ns.host.AddModule({
 	canDisable = false,
 	onEnable = function(module)
 		registerCategory()
+		module:On('PRICE_TABLE_LOADED', refreshCredit)
 		module:AddCommand('options', {
 			usage = 'options',
 			help = 'Open Haggler under Settings → AddOns',
 			run = function()
+				refreshCredit()
 				if not ns.wow:OpenOptionsCategory(Options.category) then
 					return { 'The Settings window did not open; find Haggler under Settings → AddOns.' }
 				end
@@ -181,7 +185,8 @@ function setInitializerName(initializer, name)
 	end
 end
 
--- The Settings window draws the rows when it opens; the credit is refreshed just before.
+-- A late catch for a credit that changed with no price table loading; the hook runs after the
+-- panel's own OnShow, so the refreshes above are what the first draw reads.
 function hookSettingsPanelShow()
 	ns.wow:HookFrameScript(ns.wow:Global('SettingsPanel'), 'OnShow', refreshCredit)
 end

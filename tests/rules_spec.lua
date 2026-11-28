@@ -287,6 +287,43 @@ t.test('a step whose base has no data is skipped and traced', function()
 	)
 	t.eq(price.copper, 500)
 	t.eq(price.trace[2].kind, 'skip')
+	t.eq(price.trace[2].label, 'floor skipped, no craftCost')
+end)
+
+t.test('trace labels join no clauses with a colon, semicolon, middle dot or dash', function()
+	local levels =
+		{ { price = 100, qty = 2 }, { price = 110, qty = 2 }, { price = 120, qty = 2 }, { price = 200, qty = 50 } }
+	local thin = evaluate(rule({ kind = 'firstWithUnits', n = 100 }), { levels = levels })
+	t.eq(thin.trace[1].label, 'scan first price with 100 units (listing too thin, dearest level)')
+	local allBait = evaluate(
+		rule({ kind = 'lowest' }, {}, { enabled = true, minutes = 60 }),
+		{ row = ROW, levels = { { price = 700, qty = 1 } } }
+	)
+	t.eq(allBait.trace[1].label, 'all 1 units are bait, dearest level kept')
+	local skipped = evaluate(
+		rule({ kind = 'median' }, { { kind = 'floor', percent = 100, base = { kind = 'craftCost' } } }),
+		{ row = ROW }
+	)
+	for _, price in ipairs({ thin, allBait, skipped }) do
+		for _, entry in ipairs(price.trace) do
+			t.eq(entry.label:find('[:;\194\183]'), nil, entry.label)
+			t.eq(entry.label:find(' %- '), nil, entry.label)
+		end
+	end
+end)
+
+t.test('a price keeps each source age apart: the base, and the AHledger row a step read', function()
+	local price = evaluate(rule({ kind = 'lowest' }, { { kind = 'cap', percent = 100, base = { kind = 'median' } } }), {
+		row = ROW,
+		levels = { { price = 900, qty = 9 } },
+	})
+	t.eq(price.source, 'scan')
+	t.eq(type(price.baseAgeSeconds), 'number')
+	t.eq(type(price.rowAgeSeconds), 'number')
+	t.truthy(price.rowAgeSeconds ~= price.baseAgeSeconds, 'the scan and the row are dated apart in this context')
+	local plain = evaluate(rule({ kind = 'median' }, { { kind = 'undercut', copper = 1 } }), { row = ROW })
+	t.eq(plain.rowAgeSeconds, nil, 'no step read AHledger')
+	t.eq(plain.baseAgeSeconds, plain.ageSeconds)
 end)
 
 t.test('the oldest base used sets the age', function()
