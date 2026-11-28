@@ -89,7 +89,7 @@ t.test('a scan history that is not a table is replaced, never raised', function(
 		local ns = loadWithBootstrap()
 		frame.onEvent(frame, 'ADDON_LOADED', 'Haggler')
 		t.truthy(ns.host.IsStarted())
-		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 1, markets = {}, vendors = { schema = 1, byNpc = {} } })
+		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 1, markets = {}, vendors = { schema = 2, byNpc = {} } })
 		t.eq(ns.archiveDb, rawget(_G, 'HagglerArchiveDB'))
 		t.eq(ns.vendorDb, rawget(_G, 'HagglerArchiveDB').vendors)
 	end)

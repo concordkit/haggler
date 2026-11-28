@@ -7,7 +7,7 @@
 
 	Saved beside the scan history in HagglerArchiveDB (account-wide), under its own schema:
 
-	  HagglerArchiveDB.vendors = { schema = 1, byNpc = { [npcId] = Vendor } }
+	  HagglerArchiveDB.vendors = { schema = 2, byNpc = { [npcId] = Vendor } }
 	  Vendor  = { name?, mapId?, zone?, faction?, reaction?, firstSeenAt, seenAt, items = Packed }
 	  Packed  = 'Record;Record;...'   in no set order, each item id once
 	  Record  = 'itemId,price,stack,available,seenAt,goneAt,reaction,costs'
@@ -30,6 +30,18 @@
 	and reaction are the latest read's. When that read was discounted or of unknown standing
 	and an earlier read of the item was at base price, basePrice, baseStack and baseSeenAt
 	keep that base read, so a discounted read never erases it; a later base read replaces it.
+	A kept base is dropped when it is stale: the latest read asks more per unit than the base
+	(a discount never raises a price, so the base price went up), the base is more than
+	BASE_MAX_AGE_SECONDS older than the latest read, or the latest read asks a currency or item
+	beside copper. Then the latest read or the seed answers.
+
+	Schema 2 added the base fields; a schema 1 store opens as it is (its records have none).
+	A kept base is dropped when it is stale: the latest read asks more per unit than the base
+	(a discount never raises a price, so the base price went up), the base is more than
+	BASE_MAX_AGE_SECONDS older than the latest read, or the latest read asks a currency or item
+	beside copper. Then the latest read or the seed answers.
+
+	Schema 2 added the base fields; a schema 1 store opens as it is (its records have none).
 
 	A record that does not parse strictly reads as nothing; a broken vendor reads as none; never
 	an error. open never raises, whatever the saved table holds. It refuses, untouched, a store of
@@ -53,24 +65,30 @@
 	                slots = { { itemId, price, stack, available, costs? }... }, isComplete }
 	(Wow:MerchantVendor and Wow:MerchantSlots.) Offer = { npcId, name?, zone?, mapId?, faction?,
 	itemId, price, stack, unitPrice, available, isLimited, seenAt, priceSeenAt, goneAt?,
-	reaction?, hasExtendedCost, costs, isBasePrice, latestPrice, latestStack }. price, stack and
-	unitPrice are the vendor's base price when one is known, else the latest read's;
-	priceSeenAt is when that price was read, latestPrice and latestStack the latest read's.
+	reaction?, hasExtendedCost, costs, isBasePrice, priceFromBase, latestPrice, latestStack }.
+	price, stack and unitPrice are the vendor's kept base price when it has one (priceFromBase
+	true), else the latest read's; priceSeenAt is when that price was read; reaction,
+	latestPrice and latestStack are the latest read's.
 
-	export is the entry point a network would call: pure, nothing leaves the machine.
+	export is the entry point a network would call: pure, nothing leaves the machine. It gives
+	the raw records (ExportRecord), not offers, so a receiver can apply its own rules.
 ]]
 local _, ns = ...
 
 local VendorStore = {}
 ns.VendorStore = VendorStore
 
-VendorStore.SCHEMA = 1
+VendorStore.SCHEMA = 2
 VendorStore.UNLIMITED = -1
 -- The highest standing (UnitReaction) at which a vendor asks its base price: 4 is Neutral.
 -- Whether Friendly (5) already gets a discount on Forever is unconfirmed: the server applies
 -- the discount and the 71037 client holds no rule for it (client facts register V7, probe 55).
 -- The value stays at Neutral, the one standing known to pay base price.
 VendorStore.BASE_PRICE_MAX_REACTION = 4
+-- A kept base price older than this before the latest read is stale.
+VendorStore.BASE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+-- No merchant sells more units in one slot; a larger stack is a broken read or record.
+VendorStore.MAX_STACK = 10000
 VendorStore.MAX_ITEMS_PER_VENDOR = 255
 VendorStore.DEFAULT_MAX_KB = 512
 VendorStore.BYTES_PER_KB = 1024
@@ -85,10 +103,12 @@ local indexes = setmetatable({}, { __mode = 'k' })
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local isOpened, isUsableVendor, isWhole, isWholePositive, isFinitePositive, cleanText
 local packRecord, parseRecord, packCosts, parseCosts, parseItems, packItems, recordFromSlot
-local trimItems, offerOf, buildIndex, bump, sortedNpcIds, isBaseReaction, keepBasePrice
+local trimItems, offerOf, exportRecord, buildIndex, bump, sortedNpcIds, isBaseReaction, keepBasePrice
+local isStack, isFreshBase, parseBase
 
 --- Opens the vendor store inside the archive's saved table. Never raises: a missing or broken
---- store is replaced with an empty one; a newer schema is left untouched.
+--- store is replaced with an empty one; a schema 1 store opens as schema 2 (its records read
+--- as they are); a newer schema is left untouched.
 --- @param archiveDb any HagglerArchiveDB
 --- @return table|nil db
 --- @return string|nil reason 'not a table' | 'newer archive' (the whole file) | 'newer schema'
@@ -193,7 +213,9 @@ end
 --- A vendor's item records, parsed; {} for an unknown or broken vendor.
 --- @param db any a store
 --- @param npcId number
---- @return table { [itemId] = { itemId, price, stack, available, seenAt, goneAt?, reaction?, costs } }
+--- @return table { [itemId] = { itemId, price, stack, available, seenAt, goneAt?, reaction?, costs,
+---   basePrice?, baseStack?, baseSeenAt? } }, price, stack and reaction from the latest read and
+---   the base fields a fresh kept base price (see the header)
 function VendorStore.vendorItems(db, npcId)
 	local vendor = type(db) == 'table' and type(db.byNpc) == 'table' and db.byNpc[npcId] or nil
 	if not isUsableVendor(vendor) then
@@ -268,7 +290,9 @@ end
 --- @param fromAt number|nil unix seconds, inclusive; nil for the start
 --- @param toAt number|nil unix seconds, inclusive; nil for now
 --- @return table { schema, skipped, vendors = { { npcId, name?, mapId?, zone?, faction?,
----   reaction?, firstSeenAt, seenAt, items = { Offer... } }... } }
+---   reaction?, firstSeenAt, seenAt, items = { ExportRecord... } }... } }, ExportRecord =
+---   { itemId, price, stack, available, seenAt, goneAt?, reaction?, costs, basePrice?,
+---   baseStack?, baseSeenAt? }: the latest read, and a kept base price beside it
 function VendorStore.export(db, fromAt, toAt)
 	local export = { schema = VendorStore.SCHEMA, vendors = {}, skipped = 0 }
 	if type(db) ~= 'table' or type(db.byNpc) ~= 'table' then
@@ -286,7 +310,7 @@ function VendorStore.export(db, fromAt, toAt)
 		export.skipped = export.skipped + skipped
 		for _, record in pairs(recordsById) do
 			if isInRange(record.seenAt) or isInRange(record.goneAt) then
-				items[#items + 1] = offerOf(npcId, vendor, record)
+				items[#items + 1] = exportRecord(record)
 			end
 		end
 		if #items > 0 then
@@ -389,6 +413,10 @@ function recordFromSlot(slot, now, reaction)
 	if slot.price > ns.PriceData.MAX_COPPER then
 		return nil
 	end
+	-- A missing or broken stack reads as 1; a stack past the cap is a broken read.
+	if isWholePositive(slot.stack) and not isStack(slot.stack) then
+		return nil
+	end
 	local available = slot.available
 	if not isWhole(available) then
 		available = VendorStore.UNLIMITED
@@ -444,19 +472,19 @@ function packRecord(record)
 end
 
 function parseRecord(text)
-	local fields = '^(%d+),(%d+),(%d+),(%-?%d+),(%d+),(%d*),(%d*),([%dcix+]*)'
-	local idText, priceText, stackText, availableText, seenText, goneText, reactionText, costsText, baseText, baseStackText, baseSeenText =
-		text:match(fields .. ',(%d+),(%d+),(%d+)$')
-	if not idText then
-		idText, priceText, stackText, availableText, seenText, goneText, reactionText, costsText =
-			text:match(fields .. '$')
+	-- The eight fields of the latest read, then a base tail that only the base depends on.
+	local idText, priceText, stackText, availableText, seenText, goneText, reactionText, costsText, baseTail =
+		text:match('^(%d+),(%d+),(%d+),(%-?%d+),(%d+),(%d*),(%d*),([%dcix+]*)(.*)$')
+	-- Anything after the costs that is not a comma-led tail is a broken costs field.
+	if baseTail and baseTail ~= '' and baseTail:sub(1, 1) ~= ',' then
+		return nil
 	end
 	local itemId, price, stack = tonumber(idText), tonumber(priceText), tonumber(stackText)
 	local available, seenAt = tonumber(availableText), tonumber(seenText)
 	local isValid = isWholePositive(itemId)
 		and isWhole(price)
 		and price <= ns.PriceData.MAX_COPPER
-		and isWholePositive(stack)
+		and isStack(stack)
 		and (available == VendorStore.UNLIMITED or isWhole(available))
 		and isWholePositive(seenAt)
 	if not isValid then
@@ -468,13 +496,7 @@ function parseRecord(text)
 	end
 	local goneAt = goneText ~= '' and tonumber(goneText) or nil
 	local reaction = reactionText ~= '' and tonumber(reactionText) or nil
-	local basePrice, baseStack, baseSeenAt = tonumber(baseText), tonumber(baseStackText), tonumber(baseSeenText)
-	-- A broken base price drops only the base price, never the read.
-	local hasBase = isWholePositive(basePrice)
-		and basePrice <= ns.PriceData.MAX_COPPER
-		and isWholePositive(baseStack)
-		and isWholePositive(baseSeenAt)
-	return {
+	local record = {
 		itemId = itemId,
 		price = price,
 		stack = stack,
@@ -483,10 +505,23 @@ function parseRecord(text)
 		goneAt = isWholePositive(goneAt) and goneAt or nil,
 		reaction = isWholePositive(reaction) and reaction <= 8 and reaction or nil,
 		costs = costs,
-		basePrice = hasBase and basePrice or nil,
-		baseStack = hasBase and baseStack or nil,
-		baseSeenAt = hasBase and baseSeenAt or nil,
 	}
+	-- A broken or stale base tail drops only the base price, never the read.
+	local basePrice, baseStack, baseSeenAt = parseBase(baseTail)
+	if basePrice and isFreshBase(record, basePrice, baseStack, baseSeenAt) then
+		record.basePrice, record.baseStack, record.baseSeenAt = basePrice, baseStack, baseSeenAt
+	end
+	return record
+end
+
+-- '' or ',basePrice,baseStack,baseSeenAt'; anything else is no base.
+function parseBase(tail)
+	local priceText, stackText, seenText = tail:match('^,(%d+),(%d+),(%d+)$')
+	local price, stack, seenAt = tonumber(priceText), tonumber(stackText), tonumber(seenText)
+	if isWholePositive(price) and price <= ns.PriceData.MAX_COPPER and isStack(stack) and isWholePositive(seenAt) then
+		return price, stack, seenAt
+	end
+	return nil
 end
 
 function packCosts(costs)
@@ -563,7 +598,9 @@ end
 function offerOf(npcId, vendor, record)
 	local hasExtendedCost = #record.costs > 0
 	local isLatestBase = isBaseReaction(record.reaction)
-	local hasKeptBase = not isLatestBase and record.basePrice ~= nil
+	local hasKeptBase = not isLatestBase
+		and record.basePrice ~= nil
+		and isFreshBase(record, record.basePrice, record.baseStack, record.baseSeenAt)
 	local price = hasKeptBase and record.basePrice or record.price
 	local stack = hasKeptBase and record.baseStack or record.stack
 	return {
@@ -585,6 +622,7 @@ function offerOf(npcId, vendor, record)
 		hasExtendedCost = hasExtendedCost,
 		costs = record.costs,
 		isBasePrice = isLatestBase or hasKeptBase,
+		priceFromBase = hasKeptBase,
 		latestPrice = record.price,
 		latestStack = record.stack,
 	}
@@ -623,18 +661,55 @@ function isBaseReaction(reaction)
 	return reaction ~= nil and reaction <= VendorStore.BASE_PRICE_MAX_REACTION
 end
 
--- A discounted or unknown-standing read keeps the base price an earlier read left; a base
--- read needs none beside its own price.
+-- A discounted or unknown-standing read keeps the base price an earlier read left, unless it
+-- is stale (isFreshBase); a base read needs none beside its own price.
 function keepBasePrice(record, previous)
 	if isBaseReaction(record.reaction) or not previous then
 		return
 	end
+	local price, stack, seenAt
 	if isBaseReaction(previous.reaction) and #previous.costs == 0 and previous.price > 0 then
-		record.basePrice, record.baseStack, record.baseSeenAt = previous.price, previous.stack, previous.seenAt
+		price, stack, seenAt = previous.price, previous.stack, previous.seenAt
 	elseif previous.basePrice then
-		record.basePrice, record.baseStack, record.baseSeenAt =
-			previous.basePrice, previous.baseStack, previous.baseSeenAt
+		price, stack, seenAt = previous.basePrice, previous.baseStack, previous.baseSeenAt
 	end
+	if price and isFreshBase(record, price, stack, seenAt) then
+		record.basePrice, record.baseStack, record.baseSeenAt = price, stack, seenAt
+	end
+end
+
+-- Whether a base price may stand beside the latest read: read no later than it, at most
+-- BASE_MAX_AGE_SECONDS before it, the latest read in copper only and asking no more per unit
+-- (a discount never raises a price, so a dearer read means the base price went up).
+function isFreshBase(record, basePrice, baseStack, baseSeenAt)
+	return #record.costs == 0
+		and baseSeenAt <= record.seenAt
+		and record.seenAt - baseSeenAt <= VendorStore.BASE_MAX_AGE_SECONDS
+		and record.price / record.stack <= basePrice / baseStack
+end
+
+function isStack(value)
+	return isWholePositive(value) and value <= VendorStore.MAX_STACK
+end
+
+function exportRecord(record)
+	local costs = {}
+	for position, cost in ipairs(record.costs) do
+		costs[position] = { kind = cost.kind, id = cost.id, count = cost.count }
+	end
+	return {
+		itemId = record.itemId,
+		price = record.price,
+		stack = record.stack,
+		available = record.available,
+		seenAt = record.seenAt,
+		goneAt = record.goneAt,
+		reaction = record.reaction,
+		costs = costs,
+		basePrice = record.basePrice,
+		baseStack = record.baseStack,
+		baseSeenAt = record.baseSeenAt,
+	}
 end
 
 -- Usable vendors' ids, the one seen longest ago first.

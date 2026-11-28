@@ -45,7 +45,7 @@ t.test('open never raises and fills the layout', function()
 	t.eq(select(2, VendorStore.open('junk')), 'not a table')
 	local archive = { vendors = 'broken' }
 	local db = VendorStore.open(archive)
-	t.eq(db.schema, 1)
+	t.eq(db.schema, 2)
 	t.same(db.byNpc, {})
 	t.eq(archive.vendors, db)
 	local broken = { vendors = { schema = 'x', byNpc = 7 } }
@@ -54,7 +54,7 @@ t.test('open never raises and fills the layout', function()
 end)
 
 t.test('open leaves a newer schema untouched', function()
-	local archive = { vendors = { schema = 2, byNpc = { [1] = 'future' } } }
+	local archive = { vendors = { schema = 3, byNpc = { [1] = 'future' } } }
 	local db, reason = VendorStore.open(archive)
 	t.eq(db, nil)
 	t.eq(reason, 'newer schema')
@@ -66,7 +66,7 @@ t.test('the store sits beside the scan history without touching it', function()
 	ns.ScanArchive.open(archive)
 	VendorStore.open(archive)
 	t.same(archive.markets, {})
-	t.eq(archive.vendors.schema, 1)
+	t.eq(archive.vendors.schema, 2)
 	t.eq(archive.schema, 1)
 end)
 
@@ -312,10 +312,14 @@ t.test('a discounted or unknown read never erases a vendor base price', function
 	t.eq(offer.priceSeenAt, NOW + 1)
 	t.eq(offer.latestPrice, 9)
 	t.eq(offer.seenAt, NOW + 3)
+	t.eq(offer.priceFromBase, true)
 	local price = pricesOf(db):BuyPrice(THREAD)
 	t.eq(price.price, 10)
 	t.eq(price.isBasePrice, true)
 	t.eq(price.ageSeconds, 600 - 1)
+	-- The latest read's standing is unknown; priceFromBase says the price is not from it.
+	t.eq(price.cheapestVendor.reaction, nil)
+	t.eq(price.cheapestVendor.priceFromBase, true)
 	-- Gone still applies to the kept base.
 	VendorStore.record(db, observation(ALICE, { { itemId = FLUX, price = 9 } }, { reaction = 8 }), NOW + 4)
 	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].goneAt, NOW + 4)
@@ -326,6 +330,74 @@ t.test('a discounted or unknown read never erases a vendor base price', function
 	t.eq(rebased.price, 11)
 	t.eq(rebased.basePrice, nil)
 	t.eq(VendorStore.offers(db, THREAD)[1].price, 11)
+	t.eq(pricesOf(db):BuyPrice(THREAD).cheapestVendor.priceFromBase, false)
+end)
+
+t.test('a dearer discounted read proves the kept base stale', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 100 } }, { reaction = 4 }), NOW)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 150 } }, { reaction = 8 }), NOW + 60)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, nil)
+	local price = pricesOf(db):BuyPrice(THREAD)
+	t.eq(price.price, 150)
+	t.eq(price.isBasePrice, false)
+	-- The review's case: base 100, a year later an exalted read at 150.
+	local yearDb = openStore()
+	VendorStore.record(yearDb, observation(ALICE, { { itemId = THREAD, price = 100 } }, { reaction = 4 }), NOW)
+	VendorStore.record(
+		yearDb,
+		observation(ALICE, { { itemId = THREAD, price = 150 } }, { reaction = 8 }),
+		NOW + 365 * 24 * 60 * 60
+	)
+	local yearPrice = pricesOf(yearDb):BuyPrice(THREAD)
+	t.truthy(not (yearPrice.price == 100 and yearPrice.isBasePrice), 'a stale base never answers')
+	t.eq(yearPrice.price, 150)
+	t.eq(yearPrice.isBasePrice, false)
+end)
+
+t.test('a kept base older than BASE_MAX_AGE_SECONDS before the latest read is dropped', function()
+	local db = openStore()
+	local maxAge = VendorStore.BASE_MAX_AGE_SECONDS
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 100 } }, { reaction = 4 }), NOW)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 90 } }, { reaction = 8 }), NOW + maxAge)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, 100)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 90 } }, { reaction = 8 }), NOW + maxAge + 1)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, nil)
+	local price = pricesOf(db, { build = 'test', items = { [THREAD] = 95 } }):BuyPrice(THREAD)
+	t.eq(price.source, 'seed')
+	t.eq(price.price, 95)
+	t.eq(pricesOf(db):BuyPrice(THREAD).price, 90)
+	-- A record saved with a stale base reads without it.
+	local saved = openStore()
+	saved.byNpc[ALICE] = {
+		seenAt = NOW,
+		items = string.format('2320,90,1,-1,%d,,8,,100,1,%d', NOW, NOW - maxAge - 1),
+	}
+	t.eq(VendorStore.vendorItems(saved, ALICE)[THREAD].basePrice, nil)
+	t.eq(VendorStore.offers(saved, THREAD)[1].isBasePrice, false)
+end)
+
+t.test('an extended cost drops a kept copper base, in either order', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }, { reaction = 4 }), NOW)
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 5, hasExtendedCost = true } }, { reaction = 8 }),
+		NOW + 1
+	)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, nil)
+	t.eq(pricesOf(db):BuyPrice(THREAD), nil)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 9 } }, { reaction = 8 }), NOW + 2)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, nil)
+	local reversed = openStore()
+	VendorStore.record(
+		reversed,
+		observation(BOB, { { itemId = THREAD, price = 10, hasExtendedCost = true } }, { reaction = 4 }),
+		NOW
+	)
+	VendorStore.record(reversed, observation(BOB, { { itemId = THREAD, price = 9 } }, { reaction = 8 }), NOW + 1)
+	t.eq(VendorStore.vendorItems(reversed, BOB)[THREAD].basePrice, nil)
+	t.eq(pricesOf(reversed):BuyPrice(THREAD).isBasePrice, false)
 end)
 
 t.test('a broken kept base price drops only the base price', function()
@@ -336,6 +408,77 @@ t.test('a broken kept base price drops only the base price', function()
 	t.eq(record.basePrice, nil)
 	db.byNpc[ALICE].items = '2320,9,1,-1,2000000,,8,,10,1,1999999'
 	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, 10)
+	local head = '2320,9,1,-1,2000000,,8,'
+	for label, tail in pairs({
+		tenFields = ',10,1',
+		twelveFields = ',10,1,1999999,5',
+		negativeBase = ',-10,1,1999999',
+		emptyBase = ',,1,1999999',
+		emptyStack = ',10,,1999999',
+		emptySeenAt = ',10,1,',
+		stackOverCap = ',10,' .. (VendorStore.MAX_STACK + 1) .. ',1999999',
+		seenAfterRead = ',10,1,2000001',
+		junk = ',x',
+	}) do
+		db.byNpc[ALICE].items = head .. tail
+		local parsed = VendorStore.vendorItems(db, ALICE)[THREAD]
+		t.truthy(parsed and parsed.price == 9 and parsed.reaction == 8, label .. ': the read stays')
+		t.eq(parsed.basePrice, nil, label)
+		t.eq(parsed.baseStack, nil, label)
+		t.eq(parsed.baseSeenAt, nil, label)
+	end
+	-- The stack of the read itself is capped the same way, and junk after the costs is no record.
+	db.byNpc[ALICE].items = '2320,9,' .. (VendorStore.MAX_STACK + 1) .. ',-1,2000000,,8,'
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD], nil)
+	db.byNpc[ALICE].items = '2320,9,1,-1,2000000,,8,c1x2zz'
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD], nil)
+	local saved = VendorStore.record(
+		db,
+		observation(BOB, { { itemId = THREAD, price = 9, stack = VendorStore.MAX_STACK + 1 } }),
+		NOW
+	)
+	t.eq(saved, false)
+end)
+
+t.test('export gives the raw records with the kept base beside the latest read', function()
+	local db = openStore()
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }, { reaction = 4 }), NOW)
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 8, available = 3 } }, { reaction = 8 }),
+		NOW + 1
+	)
+	local export = VendorStore.export(db)
+	t.eq(export.schema, 2)
+	t.same(export.vendors[1].items[1], {
+		itemId = THREAD,
+		price = 8,
+		stack = 1,
+		available = 3,
+		seenAt = NOW + 1,
+		reaction = 8,
+		costs = {},
+		basePrice = 10,
+		baseStack = 1,
+		baseSeenAt = NOW,
+	})
+	-- The export is a copy: changing it leaves the store alone.
+	export.vendors[1].items[1].costs[1] = { kind = 'item', id = 1, count = 1 }
+	t.same(VendorStore.vendorItems(db, ALICE)[THREAD].costs, {})
+end)
+
+t.test('a schema 1 store opens as schema 2 and keeps its records', function()
+	local archive = {
+		vendors = {
+			schema = 1,
+			byNpc = { [ALICE] = { firstSeenAt = NOW, seenAt = NOW, items = '2320,10,1,-1,2000000,,4,' } },
+		},
+	}
+	local db, reason = VendorStore.open(archive)
+	t.eq(reason, nil)
+	t.eq(db.schema, 2)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].price, 10)
+	t.eq(pricesOf(db):BuyPrice(THREAD).isBasePrice, true)
 end)
 
 t.test('a base-price read beats a cheaper discounted read from any vendor', function()
@@ -483,11 +626,11 @@ t.test('export returns per-vendor records oldest first, filtered by time', funct
 	)
 	local before = VendorStore.bytes(db)
 	local export = VendorStore.export(db)
-	t.eq(export.schema, 1)
+	t.eq(export.schema, 2)
 	t.eq(#export.vendors, 2)
 	t.eq(export.vendors[1].name, 'Alice')
 	t.eq(export.vendors[1].items[1].itemId, THREAD)
-	t.eq(export.vendors[1].items[1].unitPrice, 12)
+	t.eq(export.vendors[1].items[1].price, 12)
 	t.eq(export.vendors[1].items[2].itemId, FLUX)
 	t.eq(export.vendors[2].npcId, BOB)
 	local later = VendorStore.export(db, NOW + 50)
@@ -495,7 +638,7 @@ t.test('export returns per-vendor records oldest first, filtered by time', funct
 	t.eq(later.vendors[1].npcId, BOB)
 	t.eq(#VendorStore.export(db, nil, NOW - 1).vendors, 0)
 	t.eq(VendorStore.bytes(db), before)
-	t.same(VendorStore.export('junk'), { schema = 1, vendors = {}, skipped = 0 })
+	t.same(VendorStore.export('junk'), { schema = 2, vendors = {}, skipped = 0 })
 end)
 
 t.test('prune fits the budget, oldest vendors first, never the newest', function()

@@ -22,9 +22,11 @@
 	vendorCount says how many seen vendors sell it now, with a seed price too. isLimited is true
 	only when no seen vendor that sells it now has unlimited stock (from the seed alone, the
 	seed's flag). An offer that is gone or asks a currency or item beside copper is not a copper
-	price and is left out. cheapestVendor = { npcId, name?, zone?, mapId?, faction?, reaction? },
-	the vendor the price came from (reaction: its latest read); ageSeconds is how long ago that
-	price was read. isVendorConfirmed is true when Questie's item data lists a vendor, nil when
+	price and is left out. cheapestVendor = { npcId, name?, zone?, mapId?, faction?, reaction?,
+	priceFromBase }, the vendor the price came from. reaction is the standing of that vendor's
+	latest read. priceFromBase true means the price is the vendor's kept base price from an
+	earlier read at or below BASE_PRICE_MAX_REACTION, not the latest read's, so a discounted
+	reaction there never contradicts isBasePrice. ageSeconds is how long ago that price was read. isVendorConfirmed is true when Questie's item data lists a vendor, nil when
 	it cannot say.
 ]]
 local _, ns = ...
@@ -79,6 +81,7 @@ function Methods:BuyPrice(itemId)
 				mapId = offer.mapId,
 				faction = offer.faction,
 				reaction = offer.reaction,
+				priceFromBase = offer.priceFromBase,
 			},
 			ageSeconds = math.max(0, deps.now() - offer.priceSeenAt),
 			isLimited = isEveryLimited(usable),
