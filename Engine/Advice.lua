@@ -99,7 +99,7 @@ function Advice.forAuction(auction, facts, options)
 			return hold('closeEnough', string.format('within %d%% of the cheapest listing', threshold), confidence)
 		end
 		if target < floor then
-			return hold('underFloor', 'the cheapest listing is under your floor; wait, or take it out', confidence)
+			return hold('underFloor', 'the cheapest listing is under your floor, so wait or take it out', confidence)
 		end
 		local net = Guardrail.saleNet(target, listed) - deposit
 		if net <= vendor * listed then

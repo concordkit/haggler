@@ -10,6 +10,9 @@
 	  Badges.decisionLabel(kind, icons) -> string|nil   the badge glyph and its word, for a tooltip
 	  Badges.valueLabel(decision, icons) -> string|nil   the value text, marked when low
 	  Badges.shortMoney(copper) -> '12g' | '3s' | '45c'
+	  Badges.iconSize(theme) / Badges.outlineWidth(theme) -> whole pixels from the tokens, at least 1
+	  Badges.footprint(theme) -> the glyph and its outline on both sides
+	  Badges.outlineOffsets(width) -> { { dx, dy }... } the outline copies
 	  Badges.newPainter({ icons, theme }) -> painter
 	      painter:Paint(button, decision)   creates the overlay on first use, then reuses it
 	      painter:Clear(button)
@@ -26,10 +29,11 @@
 	its own text too, so no setting or hidden widget can show a guessed value bare.
 
 	Both slots sit on the top edge, clear of the stack count (bottom right) and the value text
-	(bottom left). Each glyph (ICON_SIZE, 12) sits over twelve copies of itself in the outline
-	colour, one at every whole-pixel offset within OUTLINE_WIDTH (2) of it: a solid dark edge that
-	keeps it readable on any item icon, with a FOOTPRINT of 16. Four or eight copies at 2 would
-	leave a pixel of the item art showing between a thin stroke and its outline. While the client shows its junk coin or upgrade arrow on a button
+	(bottom left). Each glyph (size.icon.badge, 12) sits over sixteen copies of itself in the
+	outline colour, the DS glyph outline (border.glyphOutline, 2): the 8 side and diagonal offsets
+	at 1 and again at 2. It is solid, a dark edge that keeps the glyph readable on any item icon,
+	with a footprint of 16. The copies at 2 alone would leave a pixel of the item art showing
+	between a thin stroke and its outline; the ring at 1 fills it. While the client shows its junk coin or upgrade arrow on a button
 	(both top left), the decision badge stays off it; the tooltip's Decision line still names it.
 	A badge is retextured only when its icon or colour changes.
 
@@ -52,32 +56,24 @@ Badges.TYPES = {
 	quest = { icon = 'flag', color = 'color.text.accent', label = 'Quest' },
 	junk = { icon = 'recycle', color = 'color.text.muted', label = 'Junk' },
 }
--- Glyph size in whole pixels. Pending DS token size.icon.badge: the DS has no icon size under
--- size.icon.xs (16), which read too big on a 37px item button.
-Badges.ICON_SIZE = 12
--- Pending DS rule: the glyph outline is 2px.
-Badges.OUTLINE_WIDTH = 2
--- Every whole-pixel offset within OUTLINE_WIDTH (dx^2 + dy^2 <= 4), so the outline is solid.
-Badges.OUTLINE_OFFSETS = {
-	{ -2, 0 },
-	{ 2, 0 },
-	{ 0, -2 },
-	{ 0, 2 },
-	{ -1, -1 },
+-- The glyph size (12) and the outline width (2), read from the theme in whole pixels.
+Badges.ICON_SIZE_TOKEN = 'size.icon.badge'
+Badges.OUTLINE_WIDTH_TOKEN = 'border.glyphOutline'
+-- The DS glyph outline: one copy at each of these, stepped by half the width and by the width.
+Badges.OUTLINE_DIRECTIONS = {
 	{ -1, 0 },
-	{ -1, 1 },
+	{ 1, 0 },
 	{ 0, -1 },
 	{ 0, 1 },
+	{ -1, -1 },
+	{ -1, 1 },
 	{ 1, -1 },
-	{ 1, 0 },
 	{ 1, 1 },
 }
--- The glyph and its outline on each side.
-Badges.FOOTPRINT = Badges.ICON_SIZE + 2 * Badges.OUTLINE_WIDTH
 -- Off the 8px grid by design: the item icon art fills the 37px button nearly to its edge, so a
--- grid step (8) would sink the badge well into the art; at 2 the outline runs to the button's
--- edge and no further.
-Badges.INSET = Badges.OUTLINE_WIDTH
+-- grid step (8) would sink the badge well into the art. 2 is border.glyphOutline: the outline
+-- runs to the button's edge and no further.
+Badges.INSET = 2
 Badges.SLOTS = {
 	decision = { point = 'TOPLEFT', x = Badges.INSET, y = -Badges.INSET },
 	type = { point = 'TOPRIGHT', x = -Badges.INSET, y = -Badges.INSET },
@@ -100,6 +96,7 @@ local COPPER_PER_GOLD = 10000
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local decisionBadge, typeBadge, newBadge, newOverlay, newGroup, paintGroup, hideGroup, isClientMarkingTopLeft
+local wholePixels
 
 local PainterMethods = {}
 PainterMethods.__index = PainterMethods
@@ -173,15 +170,63 @@ function Badges.shortMoney(copper)
 	return copper .. 'c'
 end
 
---- @param options table { icons = IconSet, theme = Theme }
+--- The glyph size from size.icon.badge, in whole pixels; never under one.
+--- @param theme table|nil Theme
+--- @return number
+function Badges.iconSize(theme)
+	return wholePixels(theme, Badges.ICON_SIZE_TOKEN)
+end
+
+--- The outline width from border.glyphOutline, in whole pixels; never under one.
+--- @param theme table|nil Theme
+--- @return number
+function Badges.outlineWidth(theme)
+	return wholePixels(theme, Badges.OUTLINE_WIDTH_TOKEN)
+end
+
+--- The glyph and its outline on both sides, in pixels.
+--- @param theme table|nil Theme
+--- @return number
+function Badges.footprint(theme)
+	return Badges.iconSize(theme) + 2 * Badges.outlineWidth(theme)
+end
+
+--- The outline copies for a width: every OUTLINE_DIRECTIONS step at half the width (rounded
+--- down, when not zero) and at the width.
+--- @param width number whole pixels
+--- @return table { { dx, dy }... }
+function Badges.outlineOffsets(width)
+	local steps = { width }
+	local half = math.floor(width / 2)
+	if half > 0 and half < width then
+		steps = { half, width }
+	end
+	local offsets = {}
+	for _, step in ipairs(steps) do
+		for _, direction in ipairs(Badges.OUTLINE_DIRECTIONS) do
+			offsets[#offsets + 1] = { direction[1] * step, direction[2] * step }
+		end
+	end
+	return offsets
+end
+
+--- @param options table { icons = IconSet, theme = Theme }; the theme defaults to the add-on's
 --- @return table painter
 function Badges.newPainter(options)
 	if type(options) ~= 'table' or not options.icons then
 		error('Badges.newPainter: needs icons', 2)
 	end
+	local theme = options.theme or ns.theme or ns.Theme.new(ns.Tokens)
+	local width = Badges.outlineWidth(theme)
 	return setmetatable({
 		icons = options.icons,
 		theme = options.theme,
+		-- Read once: the textures are sized and placed when they are created.
+		measures = {
+			iconSize = Badges.iconSize(theme),
+			footprint = Badges.footprint(theme),
+			offsets = Badges.outlineOffsets(width),
+		},
 		overlays = setmetatable({}, { __mode = 'k' }),
 		badgeFrames = setmetatable({}, { __mode = 'k' }),
 	}, PainterMethods)
@@ -195,7 +240,7 @@ function PainterMethods:Paint(button, decision)
 		if not hasContent then
 			return
 		end
-		overlay = newOverlay(button)
+		overlay = newOverlay(button, self.measures)
 		self.overlays[button] = overlay
 	end
 	local bySlot = {}
@@ -233,13 +278,14 @@ function PainterMethods:HasOverlay(button)
 end
 
 --- Fills a frame of Haggler's own with one badge's glyph and outline, centred in it; the frame
---- is sized to hold the outline (FOOTPRINT square). For hosts that place and hide a region
+--- is sized to hold the outline (a footprint square). For hosts that place and hide a region
 --- themselves.
 --- @param frame table
 --- @return table frame
 function PainterMethods:NewBadgeFrame(frame)
-	frame:SetSize(Badges.FOOTPRINT, Badges.FOOTPRINT)
-	self.badgeFrames[frame] = newGroup(frame, 'CENTER', 0, 0)
+	local side = self.measures.footprint
+	frame:SetSize(side, side)
+	self.badgeFrames[frame] = newGroup(frame, 'CENTER', 0, 0, self.measures)
 	return frame
 end
 
@@ -273,10 +319,10 @@ function newBadge(slot, kind, style)
 	return { slot = slot, kind = kind, icon = style.icon, color = style.color }
 end
 
-function newOverlay(button)
+function newOverlay(button, measures)
 	local overlay = { groups = {} }
 	for name, slot in pairs(Badges.SLOTS) do
-		overlay.groups[name] = newGroup(button, slot.point, slot.x, slot.y)
+		overlay.groups[name] = newGroup(button, slot.point, slot.x, slot.y, measures)
 	end
 	local value = button:CreateFontString(nil, 'OVERLAY', Badges.VALUE_FONT)
 	value:SetPoint('BOTTOMLEFT', button, 'BOTTOMLEFT', 2, 2)
@@ -287,16 +333,17 @@ end
 
 -- One badge: its outline copies first (drawn under, all on one sublevel: the outline colour is
 -- opaque, so overlapping copies stay one even shade), then the glyph.
-function newGroup(parent, point, x, y)
+function newGroup(parent, point, x, y, measures)
+	local size = measures.iconSize
 	local function newTexture(sublevel, dx, dy)
 		local texture = parent:CreateTexture(nil, 'OVERLAY', nil, sublevel)
-		texture:SetSize(Badges.ICON_SIZE, Badges.ICON_SIZE)
+		texture:SetSize(size, size)
 		texture:SetPoint(point, parent, point, x + dx, y + dy)
 		texture:Hide()
 		return texture
 	end
 	local group = { outlines = {} }
-	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
+	for _, offset in ipairs(measures.offsets) do
 		group.outlines[#group.outlines + 1] = newTexture(Badges.OUTLINE_SUBLEVEL, offset[1], offset[2])
 	end
 	group.glyph = newTexture(Badges.GLYPH_SUBLEVEL, 0, 0)
@@ -334,6 +381,11 @@ function hideGroup(group)
 	for _, outline in ipairs(group.outlines) do
 		outline:Hide()
 	end
+end
+
+function wholePixels(theme, token)
+	local number = theme and type(theme.Number) == 'function' and tonumber(theme:Number(token)) or 0
+	return math.max(1, math.floor(number + 0.5))
 end
 
 -- Reads the button's own regions only (never writes): reading a Blizzard field taints nothing.
