@@ -10,21 +10,11 @@ local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 } }
 
 local theme = Theme.new(ns.Tokens)
 local icons = ns.IconSet.new({ theme = theme })
-local COIN_ICONS = {
-	g = '|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t',
-	s = '|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t',
-	c = '|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t',
-}
+local COIN_ICONS = FakeGame.COIN_ICONS
+local coins = FakeGame.coins
 local LOW_ICON = icons:Inline('alert-triangle', 0, 'color.state.caution')
 local MEDIUM_ICON = icons:Inline('alert-triangle', 0, 'color.state.warning')
 local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
-
--- Money as the tooltip writes it: '18s 80c' reads 18 and the silver coin, 80 and the copper coin.
-local function coins(text)
-	return (text:gsub('(%d+)([gsc])', function(amount, unit)
-		return amount .. COIN_ICONS[unit]
-	end))
-end
 
 local function price(copper, level, reasons, trace)
 	return {
@@ -254,7 +244,7 @@ t.test('an informational reason gets its own marker, never a bare leading space'
 		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94, 'high', reasons) } },
 	})
 	local lines = build({ quote = infoQuote, isDetail = true, options = { detailTrace = false } })
-	t.truthy(find(lines, INFO_ICON .. ' sold a day from AHledger'))
+	t.truthy(find(lines, INFO_ICON .. ' Sold a day from AHledger'))
 end)
 
 t.test('the sales line says when sales a day is the own count', function()
@@ -839,7 +829,7 @@ t.test('shown rules come from the store, default first', function()
 	local lines = game:ShowItemTooltip(LINEN)
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Median')
-	t.eq(lines[3].right, '1s 20c')
+	t.eq(lines[3].right, FakeGame.coins('1s 20c'))
 end)
 
 t.test('detail mode and modifier are settings', function()

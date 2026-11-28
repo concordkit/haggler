@@ -467,7 +467,8 @@ end
 function trollReason(view)
 	local percent = math.floor(view.trollShare * 100 + 0.5)
 	local level = view.trollShare > Sales.LOW_TROLL_SHARE and 'low' or 'medium'
-	local text = view.source == 'own' and string.format('%d%% of vanished units were troll buys (left out)', percent)
+	local text = view.source == 'own'
+			and string.format('%d%% of vanished units were troll buys and are left out', percent)
 		or string.format('sales may include troll buys (%d%% of vanished units)', percent)
 	return { code = 'trollBuys', level = level, text = text }
 end

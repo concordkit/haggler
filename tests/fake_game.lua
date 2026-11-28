@@ -4,6 +4,21 @@
 -- and its partner.
 local FakeGame = {}
 
+-- The client's coin textures as Haggler writes money (TooltipLines.money).
+FakeGame.COIN_ICONS = {
+	g = '|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t',
+	s = '|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t',
+	c = '|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t',
+}
+
+--- Money as Haggler writes it, from the short letters: '18s 80c' reads 18 and the silver coin,
+--- 80 and the copper coin. Keeps a spec's expected text readable.
+function FakeGame.coins(text)
+	return (text:gsub('(%d+)([gsc])', function(amount, unit)
+		return amount .. FakeGame.COIN_ICONS[unit]
+	end))
+end
+
 -- Helpers live further down; declared here so they stay local.
 local addAuctionHouseActions, addTrackingApi
 
