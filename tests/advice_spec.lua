@@ -175,6 +175,7 @@ local function itemValue(fields)
 		vendorNet = 100,
 		lowestListed = 10000,
 		typicalPrice = 10000,
+		recentPrice = 10000,
 		typicalAhNet = 9500,
 		confidence = HIGH,
 	}
@@ -336,6 +337,34 @@ t.test('forItem: only wait carries the wait reason', function()
 	t.eq(post.gainOverVendor, nil)
 	local sell = Advice.forItem(itemValue({ source = 'vendor', copper = 100, typicalPrice = 90, lowestListed = 90 }))
 	t.eq(sell.gainOverVendor, nil)
+end)
+
+t.test('forItem: a recent median 10% or more under the 30-day median is a trend: no wait', function()
+	t.eq(Advice.WAIT_TREND_FALL_PERCENT, 10)
+	local falling = Advice.forItem(itemValue({ lowestListed = 6800, recentPrice = 9000 }))
+	t.eq(falling.decision, 'post', 'on the edge: the drop is a trend, post as usual')
+	t.eq(falling.code, 'ah')
+	t.eq(falling.recentUnderTypicalPercent, 10, 'the trend figure rides along')
+	t.eq(falling.underTypicalPercent, nil, 'no wait reason')
+	local steeper = itemValue({ source = 'vendor', vendorNet = 9000, lowestListed = 4000, recentPrice = 8000 })
+	t.eq(decisionOf(steeper), 'sell', 'a falling market falls through to sell too')
+end)
+
+t.test('forItem: a recent median under 10% below the 30-day median is a dip: wait', function()
+	local dip = Advice.forItem(itemValue({ lowestListed = 6800, recentPrice = 9001 }))
+	t.eq(dip.decision, 'wait', 'a copper short of the edge')
+	t.eq(dip.recentUnderTypicalPercent, 9)
+	local rising = Advice.forItem(itemValue({ lowestListed = 6800, recentPrice = 11000 }))
+	t.eq(rising.decision, 'wait', 'a rising market holds')
+	t.eq(rising.recentUnderTypicalPercent, 0, 'not under the usual price at all')
+end)
+
+t.test('forItem: no recent median: the trend is unknown, no wait', function()
+	for _, recent in ipairs({ false, 0, 0 / 0, math.huge }) do
+		local advice = Advice.forItem(itemValue({ lowestListed = 6800, recentPrice = recent }))
+		t.eq(advice.decision, 'post', tostring(recent))
+		t.eq(advice.recentUnderTypicalPercent, nil, tostring(recent))
+	end
 end)
 
 t.test('forItem: bound and quest items get no decision; no value gets none', function()

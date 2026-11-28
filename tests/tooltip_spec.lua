@@ -996,7 +996,7 @@ t.test('lines: a wait says why on its own wrapped line under the decision', func
 	t.eq(reason.wrap, true)
 	t.eq(
 		reason.left,
-		'Wait, the lowest listing is 32% under the usual price, and posting at the usual price nets '
+		'Wait, the lowest listing is 32% under the usual price while the market holds steady, and posting at the usual price nets '
 			.. TooltipLines.money(12345)
 			.. ' more than the vendor'
 	)
