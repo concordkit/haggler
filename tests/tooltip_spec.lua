@@ -16,6 +16,17 @@ local LOW_ICON = icons:Inline('triangle-alert', 0, 'color.state.caution')
 local MEDIUM_ICON = icons:Inline('triangle-alert', 0, 'color.state.warning')
 local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
 
+-- The module icon the TOC's IconTexture names, inline at the line's own text height (0).
+local function tocIconTexture()
+	for line in io.lines('Haggler.toc') do
+		local path = line:match('^## IconTexture:%s*(.-)%s*$')
+		if path then
+			return path
+		end
+	end
+end
+local HEADER_ICON = '|T' .. tocIconTexture() .. ':0|t'
+
 local function price(copper, level, reasons, trace)
 	return {
 		copper = copper,
@@ -74,7 +85,7 @@ t.group('tooltip lines')
 
 t.test('compact: the age header, then one line per rule with the stack price', function()
 	t.same(texts(build({ stackCount = 20 })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic ×20 | ' .. coins('18s 80c'),
 		'Median ×20 | ' .. coins('24s'),
 	})
@@ -108,7 +119,7 @@ t.test('with the detail off, the top low reason wraps on its own line under the 
 	})
 	local lines = build({ quote = lowQuote, stackCount = 2 })
 	t.same(texts(lines), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Minimum ×2 | ' .. coins('48c') .. ' ' .. LOW_ICON,
 		'Low confidence, 81% of vanished units were troll buys and are left out',
 	})
@@ -178,7 +189,7 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 		},
 	})
 	t.same(texts(build({ quote = detailed, stackCount = 20, isDetail = true })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic ×20 | ' .. coins('19s 60c'),
 		'Median ×20 | ' .. coins('24s') .. ' ' .. LOW_ICON,
 		'Realistic, each:',
@@ -209,7 +220,7 @@ t.test('detail lines follow their settings; the reasons always show', function()
 		detailSellTime = false,
 	}
 	t.same(texts(build({ quote = lowQuote, isDetail = true, options = options })), {
-		'Haggler | scan 12 min · table 3 h',
+		HEADER_ICON .. ' | scan 12 min · table 3 h',
 		'Realistic | ' .. coins('94c') .. ' ' .. LOW_ICON,
 		LOW_ICON .. ' Low confidence, old data',
 	})
@@ -951,7 +962,7 @@ end
 t.test('item tooltips get the header and the default rule; a modifier change redraws', function()
 	local game, addon = startWithTable()
 	local lines = game:ShowItemTooltip(LINEN)
-	t.eq(lines[1].left, 'Haggler')
+	t.eq(lines[1].left, HEADER_ICON)
 	t.eq(lines[1].right, 'no scan · table 2 h')
 	t.eq(lines[2].left, 'Realistic')
 	t.eq(lines[3].left, 'Prices from AHledger (ahledger.com)', 'the credit closes the block')
@@ -1138,6 +1149,16 @@ t.test('lines: the wait reason rows hang off the decision, small and indented a 
 		t.eq(lines[index].textSize, nil, lines[index].left)
 		t.eq(lines[index].indent, nil, lines[index].left)
 	end
+end)
+
+t.test('lines: the header shows the module icon in place of the word, its right column as before', function()
+	local lines = build({ stackCount = 20 })
+	t.eq(tocIconTexture(), 'Interface\\AddOns\\Haggler\\media\\icon.png', 'the plain module icon')
+	t.eq(lines[1].left, HEADER_ICON, 'only the icon, at the line text height')
+	t.eq(lines[1].left:find('Haggler', 1, true) ~= nil, true, 'the path names the add-on folder')
+	t.eq(lines[1].left:gsub('|T.-|t', ''), '', 'no word left beside it')
+	t.eq(lines[1].right, 'scan 12 min · table 3 h')
+	t.same(lines[1].rightColor, theme:Color('color.text.muted'))
 end)
 
 t.test('lines: the wait gain follows the view, a unit in the unit view as the prices do', function()
