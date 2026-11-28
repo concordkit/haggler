@@ -10,10 +10,10 @@
 
 	Compact view: a header with the data age, then one line per shown rule (default first) with
 	the stack price, or the unit price in the unit view; then, for a bag slot, a Decision line
-	with the decision (Advice.forItem's) as its glyph and word. A Wait says why on a wrapped line
-	below it, in the compact and the detail view alike: how far under the usual price the lowest
-	listing is, that the market holds steady, and what posting at the usual price nets over the
-	vendor. A low-confidence price carries the
+	with the decision (Advice.forItem's) as its glyph and word. A Wait says why in short label and
+	value rows right below it, dimmed as supporting detail, in the compact and the detail view
+	alike: how far under the usual price the lowest listing is, that the market holds steady, and
+	what posting at the usual price nets over the vendor. A low-confidence price carries the
 	caution triangle on its line; while the detail block is off a wrapped line below it says
 	"Low confidence" with its top reason. This cannot be switched off. A label line stays short
 	and anything that can grow long goes on a wrapped line of its own, so Haggler's own lines
@@ -35,11 +35,14 @@ TooltipLines.TITLE = 'Haggler'
 TooltipLines.LOW_CONFIDENCE = 'Low confidence'
 TooltipLines.SLOW_SELL_REASON = 'under 1 sale a day'
 TooltipLines.DECISION_LABEL = 'Decision'
--- The lowest listing's percent under the usual price, then the gain over the vendor. The
--- Decision line already says Wait.
-TooltipLines.WAIT_REASON =
-	'The lowest listing is %d%% under the usual price while the market holds steady, and posting at the usual price nets %s more than the vendor'
--- Marks a gain a unit, as the price lines mark the unit view.
+-- Why an item waits, one label and value row each; the Decision line already says Wait. A wait
+-- only ever happens in a steady market (Advice), so Market always reads Steady.
+TooltipLines.WAIT_LOWEST_LABEL = 'Lowest listing'
+TooltipLines.WAIT_LOWEST_VALUE = '%d%% under usual'
+TooltipLines.WAIT_MARKET_LABEL = 'Market'
+TooltipLines.WAIT_MARKET_VALUE = 'Steady'
+TooltipLines.WAIT_GAIN_LABEL = 'Over vendor'
+-- Marks a unit price or gain in the unit view.
 TooltipLines.EACH_SUFFIX = ' (each)'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
@@ -66,7 +69,7 @@ local LINE_HEIGHT_ICON = 0
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine, waitReasonLine
+local withCredit, lowReasonLine, capitalized, iconSetFor, decisionLine, waitReasonRows, reasonRow, stackSuffix
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -81,6 +84,7 @@ function TooltipLines.build(input)
 	local stack = math.max(1, input.stackCount or 1)
 	local view = {
 		stack = input.isUnitView and 1 or stack,
+		stackCount = stack,
 		theme = input.theme,
 		icons = input.icons or iconSetFor(input.theme),
 		isUnitView = input.isUnitView,
@@ -97,7 +101,9 @@ function TooltipLines.build(input)
 	local decision = decisionLine(advice and advice.decision, view)
 	if decision then
 		lines[#lines + 1] = decision
-		lines[#lines + 1] = waitReasonLine(advice, view)
+		for _, row in ipairs(waitReasonRows(advice, view)) do
+			lines[#lines + 1] = row
+		end
 	end
 	if not input.isDetail then
 		return withCredit(lines, quote.credit, view)
@@ -195,24 +201,37 @@ function decisionLine(decision, view)
 	}
 end
 
--- Why an item waits, wrapped under its Decision line; nil for any other decision, or a wait
--- without its facts.
-function waitReasonLine(advice, view)
+-- Why an item waits, as label and value rows under its Decision line; none for any other
+-- decision, or a wait without its facts.
+function waitReasonRows(advice, view)
 	local percent, gain = advice.underTypicalPercent, advice.gainOverVendor
 	if advice.decision ~= 'wait' or type(percent) ~= 'number' or type(gain) ~= 'number' then
-		return nil
+		return {}
 	end
 	local each = advice.gainOverVendorEach
-	local suffix = ''
-	-- The unit view shows the gain a unit, unless a unit gains under a copper.
+	-- The unit view shows the gain a unit, unless a unit gains under a copper: then it shows the
+	-- stack's gain, and the label says so.
+	local suffix = stackSuffix(view.stackCount)
 	if view.isUnitView and type(each) == 'number' and each >= 1 then
 		gain, suffix = each, TooltipLines.EACH_SUFFIX
 	end
 	return {
-		left = string.format(TooltipLines.WAIT_REASON, percent, TooltipLines.money(gain)) .. suffix,
-		color = color(view, 'color.text.secondary'),
-		wrap = true,
+		reasonRow(TooltipLines.WAIT_LOWEST_LABEL, string.format(TooltipLines.WAIT_LOWEST_VALUE, percent), view),
+		reasonRow(TooltipLines.WAIT_MARKET_LABEL, TooltipLines.WAIT_MARKET_VALUE, view),
+		reasonRow(TooltipLines.WAIT_GAIN_LABEL .. suffix, '+' .. TooltipLines.money(gain), view),
 	}
+end
+
+-- A supporting row under the Decision line: label and value both muted, so it reads below the
+-- rows above it.
+function reasonRow(label, value, view)
+	local muted = color(view, 'color.text.muted')
+	return { left = label, right = value, color = muted, rightColor = muted }
+end
+
+-- The stack view's label mark, as the price lines carry it: ' ×20', nothing for a single item.
+function stackSuffix(stackCount)
+	return stackCount > 1 and (' ×' .. stackCount) or ''
 end
 
 function withCredit(lines, credit, view)
@@ -236,9 +255,9 @@ end
 function priceLine(entry, view)
 	local label = entry.name
 	if view.isUnitView then
-		label = label .. ' (each)'
-	elseif view.stack > 1 then
-		label = label .. ' ×' .. view.stack
+		label = label .. TooltipLines.EACH_SUFFIX
+	else
+		label = label .. stackSuffix(view.stack)
 	end
 	local line = { left = label, color = color(view, 'color.text.secondary') }
 	local price = entry.price
