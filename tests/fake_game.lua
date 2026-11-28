@@ -288,27 +288,38 @@ local function newFrame(unknownEvents)
 	return frame
 end
 
--- A line's left font string, as the client names it (<tooltip>TextLeft<n>) and reuses it from
--- one build to the next. Its text is the line's left, so a test reads both the same way.
-local function lineFontString(game, tooltip, index)
-	local globalName = tooltip.name .. 'TextLeft' .. index
+-- A line's font string, as the client names it (<tooltip>TextLeft<n> / TextRight<n>) and
+-- reuses it from one build to the next. Its text is the line's left or right, so a test reads
+-- both the same way; a right font string shows only on a double line, as in the client.
+local LINE_HEIGHT = 12
+
+local function lineFontString(game, tooltip, index, side)
+	local globalName = tooltip.name .. 'Text' .. (side == 'right' and 'Right' or 'Left') .. index
 	local fontString = game.env[globalName]
 	if fontString then
 		return fontString
 	end
+	local key = side == 'right' and 'right' or 'left'
 	fontString = { index = index, left = tooltip.left + 10 }
 	function fontString:GetText()
 		local line = tooltip.lines[self.index]
-		return line and line.left
+		return line and line[key]
 	end
 	function fontString:SetText(text)
 		local line = tooltip.lines[self.index]
 		if line then
-			line.left = text
+			line[key] = text
 		end
+	end
+	function fontString:IsShown()
+		local line = tooltip.lines[self.index]
+		return line ~= nil and (key == 'left' or line.right ~= nil)
 	end
 	function fontString:GetLeft()
 		return self.left
+	end
+	function fontString:GetHeight()
+		return LINE_HEIGHT
 	end
 	game.env[globalName] = fontString
 	return fontString
@@ -324,17 +335,23 @@ local function newTooltip(game, name)
 		children = {},
 		left = 100,
 		width = 240,
+		scriptNames = { OnTooltipSetItem = true, OnTooltipCleared = true, OnShow = true, OnHide = true },
 	}
 	local function addLine(line)
 		tooltip.lines[#tooltip.lines + 1] = line
-		lineFontString(game, tooltip, #tooltip.lines)
+		lineFontString(game, tooltip, #tooltip.lines, 'left')
+		lineFontString(game, tooltip, #tooltip.lines, 'right')
 	end
 	function tooltip:SetOwner(owner, anchor)
 		self.owner, self.anchor = owner, anchor
 	end
-	-- Like the client, clearing runs OnTooltipCleared.
+	-- Like the client, clearing runs OnTooltipCleared and hides the money frames.
 	function tooltip:ClearLines()
 		self.lines = {}
+		for index = 1, self.numMoneyFrames or 0 do
+			game.env[self.name .. 'MoneyFrame' .. index]:Hide()
+		end
+		self.shownMoneyFrames = nil
 		if self.scripts.OnTooltipCleared then
 			self.scripts.OnTooltipCleared(self)
 		end
@@ -360,6 +377,13 @@ local function newTooltip(game, name)
 	end
 	function tooltip:GetWidth()
 		return self.width
+	end
+	function tooltip:GetEffectiveScale()
+		return self.scale or 1
+	end
+	-- What the client's tooltip template has; a test clears scriptNames to model one without.
+	function tooltip:HasScript(script)
+		return self.scriptNames[script] == true
 	end
 	function tooltip:CreateTexture(_, layer)
 		local texture = FakeGame.newWidget('Texture', self)
@@ -391,6 +415,23 @@ local function newTooltip(game, name)
 			end
 			handler(...)
 		end
+	end
+	-- The client's SetTooltipMoney: a ' ' line with a money frame anchored to it by name.
+	function tooltip:AddMoneyLine(copper)
+		self:AddLine(' ')
+		local index = (self.shownMoneyFrames or 0) + 1
+		local frameName = self.name .. 'MoneyFrame' .. index
+		local moneyFrame = game.env[frameName]
+		if not moneyFrame then
+			moneyFrame = FakeGame.newWidget('Frame', self)
+			game.env[frameName] = moneyFrame
+			self.numMoneyFrames = index
+		end
+		moneyFrame.copper = copper
+		moneyFrame:ClearAllPoints()
+		moneyFrame:SetPoint('LEFT', self.name .. 'TextLeft' .. #self.lines, 'LEFT', 4, 0)
+		moneyFrame:Show()
+		self.shownMoneyFrames = index
 	end
 	function tooltip:RefreshData()
 		self.refreshed = (self.refreshed or 0) + 1

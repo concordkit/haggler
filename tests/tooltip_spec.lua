@@ -429,11 +429,18 @@ t.group('tooltip separators')
 
 local SEPARATOR_ALPHA = 0.6
 
--- Another add-on's (or the game's) lines, added by a post-call like Haggler's own.
-local function addOtherLines(game, lineTexts, shouldShowAfter)
+-- Another add-on's (or the game's) lines, added by a post-call like Haggler's own. A line is
+-- its text, { left, right } for a double line, or { money = copper } for the sell-price line.
+local function addOtherLines(game, otherLines, shouldShowAfter)
 	game.env.TooltipDataProcessor.AddTooltipPostCall(game.env.Enum.TooltipDataType.Item, function(tooltip)
-		for _, text in ipairs(lineTexts) do
-			tooltip:AddLine(text)
+		for _, line in ipairs(otherLines) do
+			if type(line) == 'string' then
+				tooltip:AddLine(line)
+			elseif line.money then
+				tooltip:AddMoneyLine(line.money)
+			else
+				tooltip:AddDoubleLine(line[1], line[2])
+			end
 		end
 		if shouldShowAfter then
 			tooltip:Show()
@@ -487,14 +494,45 @@ t.test('a separator goes above the block: a blank line with a 1px rule in the to
 	t.eq(rule.width, 220, 'the tooltip width less the line inset on both sides')
 end)
 
-t.test('no doubled separator: a blank line above the block is used as it is', function()
+t.test('no doubled separator: a blank line above the block gets the rule, its text untouched', function()
 	local game, tooltips = newRegistry()
 	addOtherLines(game, { 'Linen Cloth', ' ' })
 	withHagglerBlock(tooltips)
 	local tooltip = game.env.GameTooltip
 	game:ShowItemTooltip(LINEN)
 	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
-	t.same(shownRuleLines(game, tooltip), {})
+	t.same(shownRuleLines(game, tooltip), { 2 })
+end)
+
+t.test('the sell-price money line above is not blank: the block gets its own separator', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', { money = 13 } })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 3 })
+end)
+
+t.test('a double line with only right text above is not blank either', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', { ' ', '5 charges' } })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 3 })
+end)
+
+t.test('a money line after the block gets the separator below', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { { money = 13 } }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', ' ' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
 end)
 
 t.test('Haggler last: no separator at the end of the tooltip', function()
@@ -530,7 +568,7 @@ t.test('the separator below waits for the next Show when the later add-on does n
 	t.same(shownRuleLines(game, tooltip), { 2, 5 })
 end)
 
-t.test('no doubled separator below: a blank line after the block keeps the closing one collapsed', function()
+t.test('no doubled separator below: a blank line after the block gets the rule, the closing stays collapsed', function()
 	local game, tooltips = newRegistry()
 	addOtherLines(game, { 'Linen Cloth' })
 	withHagglerBlock(tooltips)
@@ -538,7 +576,70 @@ t.test('no doubled separator below: a blank line after the block keeps the closi
 	local tooltip = game.env.GameTooltip
 	game:ShowItemTooltip(LINEN)
 	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '', ' ', 'Other add-on' })
+	t.same(shownRuleLines(game, tooltip), { 2, 6 })
+end)
+
+t.test('a tooltip without OnTooltipCleared gets the lines but no separators', function()
+	local game, tooltips = newRegistry()
+	game.env.GameTooltip.scriptNames.OnTooltipCleared = nil
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', 'Haggler', 'Realistic' })
+	t.eq(#tooltip.children, 0)
+end)
+
+t.test('a closing line that no longer holds the separator is never touched', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	game.env.GameTooltipTextLeft5:SetText('Someone else')
+	tooltip:AddLine('Later line')
+	tooltip:Show()
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', 'Someone else', 'Later line' })
 	t.same(shownRuleLines(game, tooltip), { 2 })
+end)
+
+t.test('rules are whole physical pixels: one pixel high, width and offset snapped', function()
+	local game, tooltips = newRegistry()
+	game.env.GetPhysicalScreenSize = function()
+		return 2560, 1440
+	end
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip.width = 241
+	game:ShowItemTooltip(LINEN)
+	local pixel = 768 / 1440
+	local rule = tooltip.children[1]
+	t.eq(rule.height, pixel, 'one physical pixel')
+	local function isWholePixels(value)
+		local count = value / pixel
+		return math.abs(count - math.floor(count + 0.5)) < 1e-9
+	end
+	t.truthy(isWholePixels(rule.width) and rule.width <= 221 and rule.width > 221 - pixel, 'width snapped down')
+	local point, relativeTo, relativePoint, x, y = rule:GetPoint(1)
+	t.eq(point, 'TOPLEFT')
+	t.eq(relativeTo, game.env.GameTooltipTextLeft2)
+	t.eq(relativePoint, 'TOPLEFT')
+	t.eq(x, 0)
+	t.truthy(y < 0 and isWholePixels(y), 'a pixel-snapped offset from the line top')
+end)
+
+t.test('a later line that widens the tooltip resizes the rules on the next Show', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip.width = 300
+	tooltip:AddLine('A much wider line from another add-on')
+	tooltip:Show()
+	t.eq(tooltip.children[1].width, 280)
+	t.eq(tooltip.children[2].width, 280)
 end)
 
 t.test('clearing the tooltip hides the rules; a rebuild reuses them', function()
