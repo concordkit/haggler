@@ -9,13 +9,16 @@
 	  Advice.forItem(value, item?) -> BagAdvice|nil   what to do with an item in the bags
 	  Advice.isMarketLow(lowest, typical) -> boolean
 
-	BagAdvice = { decision = 'post'|'sell'|'wait'|'undecided', code }, checked in this order:
+	BagAdvice = { decision = 'post'|'sell'|'wait'|'undecided', code, underTypicalPercent?,
+	              gainOverVendor? }, checked in this order:
 	  undecided  the value is a guess (low or no confidence: lowConfidence) or nothing pays
 	             (noPrice)
 	  wait       the lowest listing is WAIT_UNDER_TYPICAL_PERCENT or more under the 30-day median
 	             and listing at that median would net more than the vendor, measured as Post
 	             measures the AH (Value's typicalAhNet: the cut, the deposit and the sell chance)
-	             (marketLow)
+	             (marketLow). A wait carries its reason: underTypicalPercent, the whole percent the
+	             lowest listing is under the median, and gainOverVendor, copper the stack nets at
+	             the median over the vendor (typicalAhNet - vendorNet)
 	  post       the AH nets more than the vendor (ah), as Value's opportunity picks it
 	  sell       the vendor pays at least as much (vendor)
 	A bound or quest item gets none: it cannot go to the AH.
@@ -52,7 +55,7 @@ Advice.WAIT_UNDER_TYPICAL_PERCENT = 25
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local hold, relist, confidenceOf, isFinitePositive, isFiniteNonNegative, percentApart, claimPendingPost
-local isWorthWaiting
+local isWorthWaiting, vendorNetOf
 
 --- Advice for one listed auction.
 --- @param auction table see the file header
@@ -146,7 +149,12 @@ function Advice.forItem(value, item)
 		return { decision = 'undecided', code = 'noPrice' }
 	end
 	if Advice.isMarketLow(value.lowestListed, value.typicalPrice) and isWorthWaiting(value) then
-		return { decision = 'wait', code = 'marketLow' }
+		return {
+			decision = 'wait',
+			code = 'marketLow',
+			underTypicalPercent = percentApart(value.typicalPrice, value.lowestListed),
+			gainOverVendor = value.typicalAhNet - vendorNetOf(value),
+		}
 	end
 	if value.source == 'ah' then
 		return { decision = 'post', code = 'ah' }
@@ -267,8 +275,12 @@ function isWorthWaiting(value)
 	if type(typicalAhNet) ~= 'number' or typicalAhNet ~= typicalAhNet or math.abs(typicalAhNet) == math.huge then
 		return false
 	end
-	local vendorNet = isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
-	return typicalAhNet > vendorNet
+	return typicalAhNet > vendorNetOf(value)
+end
+
+-- The vendor net of the stack; nothing when the vendor pays nothing or the value is unreadable.
+function vendorNetOf(value)
+	return isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
 end
 
 -- Takes the first pending venture post that matches an owned entry; true when one did.

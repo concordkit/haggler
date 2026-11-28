@@ -1000,7 +1000,7 @@ t.test('lines: a wait says why on its own wrapped line under the decision', func
 			.. TooltipLines.money(12345)
 			.. ' more than the vendor'
 	)
-	t.truthy(reason.left:find(COIN_ICONS.gold, 1, true), 'money in coins')
+	t.truthy(reason.left:find(COIN_ICONS.g, 1, true), 'money in coins')
 	t.eq(reason.left:find('[.;:·]$'), nil, 'no full stop on a single sentence')
 	t.eq(reason.left:find(' · ', 1, true), nil)
 	t.eq(reason.left:find(' - ', 1, true), nil)
