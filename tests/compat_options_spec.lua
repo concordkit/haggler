@@ -189,9 +189,10 @@ t.test('registers a Settings → AddOns category with every switch and an open b
 	t.eq(scanEnabled.GetValue(), false)
 	t.eq(findSetting(game, 'HAGGLER_PRICING_ENABLED'), nil, 'an always-on module has no switch')
 	t.truthy(findSetting(game, 'HAGGLER_COMPAT_NOTICEDISMISSED'))
-	local button = registered.initializers[1]
+	local button = registered.initializers[1]:GetData()
 	t.eq(button.buttonText, 'Open Haggler')
-	button.onClick()
+	t.eq(button.name, '', 'with the section header for the credit, the button row has no label')
+	button.buttonClick()
 	t.truthy(addon.window:IsOpen())
 	t.same(addon.host.RunCommand('options'), {})
 	t.eq(registered.openedId, 42)
@@ -249,26 +250,74 @@ local function startWithCredit(prepare)
 	return game, FakeGame.startAddon(t, game)
 end
 
-t.test("the Settings entry shows AHledger's own credit", function()
-	local game, addon = startWithCredit(FakeGame.addSettingsApi)
-	local credit
+local function initializerOf(game, kind)
 	for _, initializer in ipairs(game.settingsApi.initializers) do
-		if initializer.kind == 'sectionHeader' then
-			credit = initializer.name
+		if initializer.kind == kind then
+			return initializer
 		end
 	end
-	t.eq(credit, OWN_CREDIT, 'read from AHledgerAPI.CREDIT')
+	return nil
+end
+
+t.test("the Settings entry shows AHledger's own credit", function()
+	local game, addon = startWithCredit(FakeGame.addSettingsApi)
+	t.eq(initializerOf(game, 'sectionHeader'):GetData().name, OWN_CREDIT, 'read from AHledgerAPI.CREDIT')
 	t.same(addon.errors, {})
 end)
 
-t.test('the legacy panel shows the credit too', function()
+t.test('the Settings entry reads the credit again each time the Settings panel shows', function()
+	local game, addon = startWithCredit(FakeGame.addSettingsApi)
+	game.env.AHledgerAPI = FakeGame.newAHledgerAPI({
+		market = MARKET,
+		updated = NOW - 3600,
+		rows = {},
+		credit = 'Prices from AHledger (ahledger.com), synced',
+	})
+	game.env.SettingsPanel:Show()
+	t.eq(initializerOf(game, 'sectionHeader'):GetData().name, 'Prices from AHledger (ahledger.com), synced')
+	t.same(addon.errors, {})
+end)
+
+t.test('without the section header the credit goes on the open button row, as its plain label', function()
+	local game, addon = startWithCredit(function(g)
+		FakeGame.addSettingsApi(g)
+		g.env.CreateSettingsListSectionHeaderInitializer = nil
+	end)
+	t.eq(initializerOf(game, 'sectionHeader'), nil)
+	local button = initializerOf(game, 'button')
+	t.eq(button:GetData().name, OWN_CREDIT)
+	t.eq(button:GetData().buttonText, 'Open Haggler')
+	t.eq(addon.Options.kind, 'settings')
+	t.same(addon.errors, {})
+end)
+
+t.test('with neither initializer the old panel takes over, so the credit still shows', function()
 	local added = {}
 	local _, addon = startWithCredit(function(g)
+		FakeGame.addSettingsApi(g)
+		g.env.CreateSettingsListSectionHeaderInitializer = nil
+		g.env.CreateSettingsButtonInitializer = nil
 		g.env.InterfaceOptions_AddCategory = function(panel)
 			added[#added + 1] = panel
 		end
 	end)
+	t.eq(addon.Options.kind, 'legacy')
 	t.eq(added[1].credit:GetText(), OWN_CREDIT)
+end)
+
+t.test('the legacy panel shows the credit too, read again each time it shows', function()
+	local added = {}
+	local game, addon = startWithCredit(function(g)
+		g.env.InterfaceOptions_AddCategory = function(panel)
+			added[#added + 1] = panel
+		end
+	end)
+	local panel = added[1]
+	t.eq(panel.credit:GetText(), OWN_CREDIT)
+	game.env.AHledgerAPI = nil
+	panel:Hide()
+	panel:Show()
+	t.eq(panel.credit:GetText(), addon.PriceData.DEFAULT_CREDIT, 'the rendered panel falls back to the default line')
 	t.same(addon.errors, {})
 end)
 

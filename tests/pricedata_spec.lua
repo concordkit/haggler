@@ -122,12 +122,13 @@ t.test('the status is available, with AHledger credit and market', function()
 	t.eq(newSource({ credit = string.rep('x', 120) }):Status().credit, string.rep('x', 120))
 end)
 
-t.test('the credit comes only with a price that used an AHledger figure', function()
-	local service = newService(newSource())
+t.test('a price says whether it used an AHledger figure', function()
 	t.eq(Rules.evaluate(MEDIAN_RULE, LINEN, contextWith(newSource())).usesPriceSource, true)
 	t.eq(Rules.evaluate(VENDOR_RULE, LINEN, contextWith(newSource())).usesPriceSource, false)
-	t.eq(service:Quote(LINEN, { 'median' }).credit, 'Prices from AHledger (ahledger.com)')
-	t.eq(service:Quote(SWORD, { 'median' }).credit, nil, 'AHledger has no price for it')
+end)
+
+t.test('a quote carries no credit: the options panel and the window footer show it', function()
+	t.eq(newService(newSource()):Quote(LINEN, { 'median' }).credit, nil)
 end)
 
 t.test('the table reports its time, size and snapshot flag', function()
@@ -244,7 +245,6 @@ t.test('broken: a scan price is low, naming the failure, with no credit', functi
 		{ code = 'priceSourceFailing', level = 'low', text = "AHledger calls fail, so only Haggler's own scans count" }
 	)
 	t.eq(price.confidence.level, 'low')
-	t.eq(newService(newSource({ mode = 'broken' })):Quote(LINEN, { 'minimum' }).credit, nil)
 end)
 
 t.test('a GetPrice that throws while the table answers is low too', function()
@@ -344,7 +344,6 @@ t.test('a market AHledger has no table for is low, with its own reason and no cr
 		level = 'low',
 		text = "AHledger has no prices for forever/normal/alliance/us, so only Haggler's own scans count",
 	})
-	t.eq(newService(source):Quote(LINEN, { 'minimum' }).credit, nil)
 end)
 
 t.test('no synced table but AHledger answers from your own scan: no "no prices" next to its figure', function()
@@ -454,7 +453,6 @@ t.test('a Haggler-owned source plugs into the service with the same shape', func
 		itemInfo = stackOfTwenty,
 	})
 	t.eq(service:Get(LINEN, 'median').copper, 77)
-	t.eq(service:Quote(LINEN, { 'median' }).credit, 'Own prices')
 	t.same(service:Ages(), { tableAge = 60, isSnapshot = false })
 end)
 
@@ -544,7 +542,8 @@ t.test('absent: the tooltip shows no credit, and the low marker names the reason
 	local lines = game:ShowItemTooltip(LINEN)
 	t.eq(#lines, 7, 'Buy, its separator, Sell with its low reason, and the collapsed closing separator')
 	t.truthy(lines[1].right:find('just now$'), 'the scan age')
-	t.truthy(lines[4].right:find('no data$'), 'no price source data')
+	t.truthy(lines[4].right:find('just now$'), "the price came from Haggler's own scan, so its age is the scan's")
+	t.eq(lines[4].right:find('no data', 1, true), nil, 'never no data next to a real price')
 	t.eq(lines[6].left, "Low confidence, AHledger is not loaded, so only Haggler's own scans count")
 	for _, line in ipairs(lines) do
 		t.eq(tostring(line.left):find('Prices from', 1, true), nil, 'no credit in the tooltip')

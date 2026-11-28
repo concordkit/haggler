@@ -11,14 +11,17 @@
 	The lines come in sections with a separator line ({ kind = 'separator' }, which the host
 	draws as a rule) between each two. A section without rows is left out, separator and all.
 
-	Buy: a header (the shopping cart) with the age of the AH scan after the search icon, then
-	what one unit costs to buy: "Auction house (each)", the lowest listing, never a total.
-	Without a scan the listing is the price source's, and the header shows its age after the
-	plug icon instead. A "Vendor (each)" row is meant to go above the AH row once its source is
-	settled (buySection).
+	Buy: a header (the shopping cart) with the age of the data the lowest listing came from,
+	then what one unit costs to buy: "Auction house (each)", the lowest listing, never a total.
+	A listing from the player's own scan shows the search icon and the age of the scan that
+	holds the item; one from AHledger (no scan minimum for the item) shows the plug icon and
+	the age of AHledger's row. A "Vendor (each)" row is meant to go above the AH row once its
+	source is settled (buySection).
 
-	Sell: a header (the module icon) with the age of the price source's data after the plug
-	icon; for a bag slot a Signal line with the decision (Advice.forItem's) as its glyph and
+	Sell: a header (the module icon) with the age of the default price's own source: the search
+	icon for Haggler's scans, the plug icon for AHledger, nothing for other sources (vendor,
+	craft cost, realized) or no price. An icon without a known age stands alone; no header says
+	"no data". For a bag slot a Signal line with the decision (Advice.forItem's) as its glyph and
 	word; then the default rule's price as "Price (each)" and "Price × N" for the hovered stack,
 	or one "Price" line for a single item. Details come last: a Wait says why in short label and
 	value rows (small, indented, muted): how far under the usual price the lowest listing is,
@@ -54,7 +57,6 @@ TooltipLines.BUY_ICON = 'shopping-cart'
 TooltipLines.BUY_FALLBACK = 'Buy'
 TooltipLines.SCAN_AGE_ICON = 'search'
 TooltipLines.TABLE_AGE_ICON = 'plug'
-TooltipLines.NO_AGE = 'no data'
 TooltipLines.AUCTION_HOUSE_LABEL = 'Auction house'
 TooltipLines.PRICE_LABEL = 'Price'
 TooltipLines.SIGNAL_LABEL = 'Signal'
@@ -72,7 +74,12 @@ local REASON_INDENT_TOKEN = 'space.3'
 -- A unit price says each; a stack reads ' × 12', the DS quantity format.
 TooltipLines.EACH_SUFFIX = ' (each)'
 TooltipLines.QUANTITY_MARK = ' × '
+-- A count in its own column carries the sign too: '× 60'.
+TooltipLines.COUNT_MARK = '× '
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
+TooltipLines.OWN_SALES_VALUE = 'Own scans'
+-- The price sources a header can name by icon, keyed by Price.source and facts.lowestListedSource.
+local SOURCE_AGE_ICONS = { scan = TooltipLines.SCAN_AGE_ICON, ahledger = TooltipLines.TABLE_AGE_ICON }
 local SECONDS_PER_HOUR = 3600
 local SECONDS_PER_DAY = 86400
 local COPPER_PER_SILVER = 100
@@ -96,9 +103,9 @@ local LINE_HEIGHT_ICON = 0
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local appendSection, buySection, sellSection, detailSection, buyHeaderLine, sellHeaderLine, auctionHouseRow
-local sellPriceRows, priceRow, ageText, traceLines, reasonLines, salesLine, listingsLine, vendorLine
+local sellPriceRows, priceRow, ageText, traceLines, reasonLines, salesLines, listingsLines, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, levelIcon, topLowReason
-local lowReasonLine, capitalized, iconSetFor, signalLine, waitReasonRows, reasonRow, stackSuffix
+local lowReasonLine, capitalized, iconSetFor, signalLine, waitReasonRows, reasonRow, stackSuffix, detailRow
 -- One icon set per theme, built on first use instead of on every hover.
 local iconSetsByTheme = setmetatable({}, { __mode = 'k' })
 
@@ -194,7 +201,9 @@ function appendSection(lines, section)
 end
 
 -- The header and what a unit costs to buy; nothing when no row has a figure. Each row builder
--- returns a line or nil; a vendor row goes first once its source is settled.
+-- returns a line or nil. A "Vendor (each)" row goes first once the user settles where a vendor's
+-- buy price comes from. Never feed it facts.vendor or itemInfo.vendorPrice: that is what a vendor
+-- pays the player (the sell price), not what buying from one costs.
 function buySection(quote, view)
 	local rows = {}
 	for _, buildRow in ipairs({ auctionHouseRow }) do
@@ -206,13 +215,13 @@ function buySection(quote, view)
 	if #rows == 0 then
 		return {}
 	end
-	table.insert(rows, 1, buyHeaderLine(quote.ages or {}, view))
+	table.insert(rows, 1, buyHeaderLine(quote.facts, view))
 	return rows
 end
 
 function sellSection(quote, advice, view)
 	local main = defaultEntry(quote.prices)
-	local lines = { sellHeaderLine(quote.ages or {}, view) }
+	local lines = { sellHeaderLine(main and main.price, view) }
 	local signal = signalLine(advice and advice.decision, view)
 	if signal then
 		lines[#lines + 1] = signal
@@ -243,10 +252,10 @@ function detailSection(quote, options, view)
 	end
 	reasonLines(detail, quote.prices, view)
 	if options.detailSales ~= false then
-		detail[#detail + 1] = salesLine(quote.facts, view)
+		salesLines(detail, quote.facts, view)
 	end
 	if options.detailListings ~= false then
-		detail[#detail + 1] = listingsLine(quote.facts, view)
+		listingsLines(detail, quote.facts, view)
 	end
 	if options.detailVendor ~= false and quote.facts.vendor and quote.facts.vendor > 0 then
 		detail[#detail + 1] = vendorLine(quote.facts, view)
@@ -257,11 +266,11 @@ function detailSection(quote, options, view)
 	return detail
 end
 
--- The scan's age when there is a scan; else the listing is the price source's, and so is its age.
-function buyHeaderLine(ages, view)
+-- The age of the data the lowest listing came from: the item's scan, or AHledger's row.
+function buyHeaderLine(facts, view)
 	local cart = view.icons:Inline(TooltipLines.BUY_ICON, LINE_HEIGHT_ICON, 'color.text.accent')
-	local right = ages.scanAge and ageText(TooltipLines.SCAN_AGE_ICON, ages.scanAge, view)
-		or ageText(TooltipLines.TABLE_AGE_ICON, ages.tableAge, view)
+	local isFromScan = facts.lowestListedSource == 'scan'
+	local right = isFromScan and ageText('scan', facts.scanAge, view) or ageText('ahledger', facts.rowAge, view)
 	return {
 		left = cart ~= '' and cart or TooltipLines.BUY_FALLBACK,
 		right = right,
@@ -270,20 +279,29 @@ function buyHeaderLine(ages, view)
 	}
 end
 
-function sellHeaderLine(ages, view)
+-- The age of the price's own source; no right side for a source without a market age.
+function sellHeaderLine(price, view)
 	return {
 		left = '|T' .. TooltipLines.TITLE_ICON_TEXTURE .. ':' .. LINE_HEIGHT_ICON .. '|t',
-		right = ageText(TooltipLines.TABLE_AGE_ICON, ages.tableAge, view),
+		right = price and ageText(price.source, price.ageSeconds, view) or nil,
 		color = color(view, 'color.text.accent'),
 		rightColor = color(view, 'color.text.muted'),
 	}
 end
 
--- The age after its source's icon; the icon is left out on a client without the atlas.
-function ageText(iconName, seconds, view)
-	local text = seconds and TooltipLines.age(seconds) or TooltipLines.NO_AGE
+-- The age after its source's icon; nil for a source no icon names. Without a known age the icon
+-- stands alone, and on a client without the atlas the age does.
+function ageText(source, seconds, view)
+	local iconName = SOURCE_AGE_ICONS[source]
+	if not iconName then
+		return nil
+	end
+	local text = type(seconds) == 'number' and TooltipLines.age(seconds) or nil
 	local icon = view.icons:Inline(iconName, LINE_HEIGHT_ICON, 'color.text.muted')
-	return icon ~= '' and (icon .. ' ' .. text) or text
+	if icon == '' then
+		return text
+	end
+	return text and (icon .. ' ' .. text) or icon
 end
 
 -- The lowest listing a unit, never the stack: buying is per unit.
@@ -439,38 +457,41 @@ function reasonLines(detail, entries, view)
 	end
 end
 
-function salesLine(facts, view)
+-- Sales a day, and a row of its own when the count is the player's own.
+function salesLines(detail, facts, view)
 	local right = 'unknown'
 	if facts.salesPerDay then
-		right = string.format('%.1f', facts.salesPerDay):gsub('%.0$', '')
-		if facts.salesSource == 'own' then
-			right = right .. ' · own scans'
-		end
+		right = (string.format('%.1f', facts.salesPerDay):gsub('%.0$', ''))
 	end
+	detail[#detail + 1] = detailRow('Sold a day', right, view)
+	if facts.salesPerDay and facts.salesSource == 'own' then
+		detail[#detail + 1] = detailRow('Sales from', TooltipLines.OWN_SALES_VALUE, view)
+	end
+end
+
+-- Units listed in the DS quantity format, and how many price levels they sit at.
+function listingsLines(detail, facts, view)
+	if not facts.listedUnits then
+		detail[#detail + 1] = detailRow('Listed', 'no scan', view)
+		return
+	end
+	detail[#detail + 1] = detailRow('Listed', TooltipLines.COUNT_MARK .. facts.listedUnits, view)
+	detail[#detail + 1] = detailRow('Price levels', tostring(facts.levelCount or 0), view)
+end
+
+function detailRow(label, value, view)
 	return {
-		left = 'Sold a day',
-		right = right,
+		left = label,
+		right = value,
 		color = color(view, 'color.text.muted'),
 		rightColor = color(view, 'color.text.secondary'),
 	}
 end
 
-function listingsLine(facts, view)
-	local right = 'no scan'
-	if facts.listedUnits then
-		right = string.format('%d units · %d prices', facts.listedUnits, facts.levelCount or 0)
-	end
-	return {
-		left = 'Listed',
-		right = right,
-		color = color(view, 'color.text.muted'),
-		rightColor = color(view, 'color.text.secondary'),
-	}
-end
-
+-- What a vendor pays for the stack, labelled with the count as the other stack rows are.
 function vendorLine(facts, view)
 	return {
-		left = 'Vendor',
+		left = 'Vendor' .. stackSuffix(view.stackCount),
 		right = TooltipLines.money(facts.vendor * view.stackCount),
 		color = color(view, 'color.text.muted'),
 		rightColor = color(view, 'color.text.secondary'),

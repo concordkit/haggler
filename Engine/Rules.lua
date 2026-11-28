@@ -37,8 +37,9 @@
 	but AHledger answered from the player's own scan), marketMismatch (info, level high: AHledger
 	uses another market) and whatever ctx.sales adds (ownSalesThin, trollBuys).
 
-	A Price also says whether any AHledger figure went into it (usesPriceSource), so the credit
-	shows only with prices that used AHledger, and which inputs it actually read (inputs, a set):
+	A Price also says whether any AHledger figure went into it (usesPriceSource), so the window
+	footer shows the credit only with prices that used AHledger (the options panel always shows
+	it, the tooltip never), and which inputs it actually read (inputs, a set):
 	  ahledger (any AHledger figure: a row base, its lowest buyout, its sold a day) · scan (the
 	  player's own scan depth) · ownSales (the player's own sales a day) · vendor · craftCost ·
 	  realized

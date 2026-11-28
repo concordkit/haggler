@@ -3,7 +3,11 @@
 	module (each module's Enabled first) as a checkbox bound to the host's settings, so the
 	panel, /hag and the Haggler window always agree, and a button that opens the Haggler window.
 	It also carries the price source's credit (AHledgerAPI.CREDIT, through PriceData), which
-	AHledger's terms ask for where its prices appear; the item tooltip does not.
+	AHledger's terms ask for where its prices appear; the item tooltip does not. The credit is
+	read again each time the panel shows, so a source that answers late still gets its own line.
+	It sits on a section header row; a client without that initializer gets it as the plain
+	label of the open button's row, and one without either gets the old panel, where it is a
+	muted line under the title.
 
 	Clients with the Settings API get a vertical-layout category; the registration runs in
 	pcall, and when it fails, or the client has no Settings API, an old Interface Options panel
@@ -25,7 +29,7 @@ local ROW_HEIGHT = 36
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local registerCategory, registerWithSettingsApi, registerLegacyPanel, addOpenButton, moduleLabel, openWindow
-local refreshLegacyPanel, addCredit
+local refreshLegacyPanel, addCredit, refreshCredit, setInitializerName, hookSettingsPanelShow
 
 --- The on/off switches of every module, in module order and each module's schema order.
 --- @param settings table the host's settings store (Modules, Schema)
@@ -94,6 +98,7 @@ function registerCategory()
 		local ok, result = pcall(registerWithSettingsApi, api, entries)
 		if ok then
 			Options.category, Options.kind = result, 'settings'
+			hookSettingsPanelShow()
 			return
 		end
 		wow:Print('the Settings entry failed (' .. tostring(result) .. '); using the old options panel.')
@@ -122,29 +127,63 @@ function registerWithSettingsApi(api, entries)
 		)
 		createCheckbox(category, setting, nil)
 	end
-	addOpenButton(layout)
-	addCredit(layout)
+	local button = addOpenButton(layout)
+	Options.creditInitializer = addCredit(layout) or button
+	if not Options.creditInitializer then
+		-- Raised so registerCategory falls back to the old panel, which can show the credit.
+		error('no initializer can show the credit')
+	end
+	refreshCredit()
 	api.RegisterAddOnCategory(category)
 	return category
 end
 
--- The credit as a line of the category; a client without the initializer leaves it out, as it
--- does the button.
+-- The credit as a section header row of the category, or nil on a client without one.
 function addCredit(layout)
 	local createHeader = ns.wow:Global('CreateSettingsListSectionHeaderInitializer')
 	if type(createHeader) ~= 'function' or type(layout) ~= 'table' or type(layout.AddInitializer) ~= 'function' then
-		return
+		return nil
 	end
-	layout:AddInitializer(createHeader(Options.credit()))
+	local initializer = createHeader(Options.credit())
+	layout:AddInitializer(initializer)
+	return initializer
 end
 
--- The button is a nicety: a client without the initializer still gets the switches.
+-- The button is a nicety: a client without the initializer still gets the switches. Returns
+-- the initializer, whose row label carries the credit when no section header can.
 function addOpenButton(layout)
 	local createButton = ns.wow:Global('CreateSettingsButtonInitializer')
 	if type(createButton) ~= 'function' or type(layout) ~= 'table' or type(layout.AddInitializer) ~= 'function' then
-		return
+		return nil
 	end
-	layout:AddInitializer(createButton('', 'Open Haggler', openWindow, 'Open the Haggler window', true))
+	local initializer = createButton('', 'Open Haggler', openWindow, 'Open the Haggler window', true)
+	layout:AddInitializer(initializer)
+	return initializer
+end
+
+-- Puts the current credit on its row (Settings API) or its text (old panel).
+function refreshCredit()
+	local credit = Options.credit()
+	if Options.creditInitializer then
+		setInitializerName(Options.creditInitializer, credit)
+	end
+	if Options.legacyCredit then
+		Options.legacyCredit:SetText(credit)
+	end
+end
+
+-- An initializer's row reads its data's name when it is drawn, so a new name shows next time.
+function setInitializerName(initializer, name)
+	local data = type(initializer) == 'table' and type(initializer.GetData) == 'function' and initializer:GetData()
+		or nil
+	if type(data) == 'table' then
+		data.name = name
+	end
+end
+
+-- The Settings window draws the rows when it opens; the credit is refreshed just before.
+function hookSettingsPanelShow()
+	ns.wow:HookFrameScript(ns.wow:Global('SettingsPanel'), 'OnShow', refreshCredit)
 end
 
 function registerLegacyPanel(entries)
@@ -157,8 +196,8 @@ function registerLegacyPanel(entries)
 	title:SetText(Options.CATEGORY_NAME)
 	local credit = ui:Text(panel, 12, 'color.text.muted')
 	credit:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-	credit:SetText(Options.credit())
 	panel.credit = credit
+	Options.legacyCredit = credit
 	local openButton = ui:Button(panel, 'Open Haggler', 'primary')
 	openButton:SetPoint('TOPLEFT', credit, 'BOTTOMLEFT', 0, -12)
 	openButton:OnClick(openWindow)
@@ -183,6 +222,7 @@ function registerLegacyPanel(entries)
 end
 
 function refreshLegacyPanel(panel)
+	refreshCredit()
 	local settings = ns.host.Settings
 	for _, toggle in ipairs(panel.toggles) do
 		local isOn = settings:Get(toggle.entry.moduleKey, toggle.entry.key) == true

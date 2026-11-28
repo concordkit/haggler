@@ -35,8 +35,8 @@ local HEADER_ICON = '|T' .. tocIconTexture() .. ':0|t'
 local function price(copper, level, reasons, trace)
 	return {
 		copper = copper,
-		ageSeconds = 60,
-		source = 'scan',
+		ageSeconds = 3 * 3600,
+		source = 'ahledger',
 		step = 1,
 		confidence = { level = level or 'high', reasons = reasons or {} },
 		trace = trace or { { kind = 'base', label = 'scan lowest', copper = copper } },
@@ -56,6 +56,9 @@ local function quote(options)
 			levelCount = 2,
 			levels = { { price = 90, qty = 20 }, { price = 99, qty = 40 } },
 			lowestListed = 90,
+			lowestListedSource = 'scan',
+			scanAge = 12 * 60,
+			rowAge = 5 * 3600,
 			vendor = 13,
 		},
 		ages = options.ages or { scanAge = 12 * 60, tableAge = 3 * 3600 },
@@ -242,12 +245,43 @@ t.test('a rule without a price says so on one Price line', function()
 	t.same({ unpack(texts(lines), 5) }, { 'Price | no price' })
 end)
 
-t.test('missing data is named in the header, after its icon', function()
-	local lines = build({ quote = quote({ ages = {} }) })
-	t.eq(lines[1].right, PLUG_ICON .. ' no data', 'no scan: the listing comes from the price source')
-	t.eq(lines[4].right, PLUG_ICON .. ' no data')
-	local unscanned = build({ quote = quote({ ages = { tableAge = 7200 } }) })
-	t.eq(unscanned[1].right, PLUG_ICON .. ' 2 h', 'the Buy age is the price source age without a scan')
+t.test('Buy header: a listing from AHledger shows the plug and its row age, never the scan age', function()
+	local facts = { lowestListed = 280, lowestListedSource = 'ahledger', rowAge = 7200 }
+	local lines = build({ quote = quote({ facts = facts, ages = { scanAge = 60, tableAge = 600 } }) })
+	t.eq(lines[1].right, PLUG_ICON .. ' 2 h', 'a scan exists but this item is not in it')
+	t.eq(lines[2].right, coins('2s 80c'))
+end)
+
+t.test("Buy header: a listing from the scan shows the search icon and the item's own scan age", function()
+	local facts = { lowestListed = 90, lowestListedSource = 'scan', scanAge = 300, rowAge = 7200 }
+	local lines = build({ quote = quote({ facts = facts, ages = { scanAge = 60, tableAge = 600 } }) })
+	t.eq(lines[1].right, SEARCH_ICON .. ' 5 min')
+end)
+
+t.test("Sell header: the age of the price's own source, search for a scan, plug for AHledger", function()
+	local scanned = quote({
+		prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, price = price(94) } },
+	})
+	scanned.prices[1].price.source, scanned.prices[1].price.ageSeconds = 'scan', 300
+	t.eq(build({ quote = scanned })[4].right, SEARCH_ICON .. ' 5 min')
+	t.eq(build({ quote = quote() })[4].right, PLUG_ICON .. ' 3 h')
+end)
+
+t.test('no age next to a source never reads no data: the icon stands alone, or nothing at all', function()
+	local noRowAge = build({ quote = quote({ facts = { lowestListed = 90, lowestListedSource = 'ahledger' } }) })
+	t.eq(noRowAge[1].right, PLUG_ICON)
+	local vendorPriced = quote()
+	vendorPriced.prices[1].price.source = 'vendor'
+	t.eq(build({ quote = vendorPriced })[4].right, nil, 'a vendor price has no market age')
+	local unpriced = build({
+		quote = quote({
+			prices = { { ruleId = 'realistic', name = 'Realistic', isDefault = true, reason = 'no data' } },
+		}),
+	})
+	t.eq(unpriced[4].right, nil, 'no price, no age')
+	for _, line in ipairs(texts(build({ quote = quote({ ages = {} }) }))) do
+		t.eq(line:find('no data', 1, true), nil, line)
+	end
 end)
 
 t.test('an item Haggler knows nothing about gets no lines', function()
@@ -297,8 +331,9 @@ t.test('detail: the trace, reasons, sales, listings, vendor and sell time with i
 		MEDIUM_ICON .. ' Medium confidence, AHledger data is 30 hours old',
 		LOW_ICON .. ' Median: low confidence, under 1 sale a day',
 		'Sold a day | 45',
-		'Listed | 60 units · 2 prices',
-		'Vendor | ' .. coins('2s 60c'),
+		'Listed | × 60',
+		'Price levels | 2',
+		'Vendor × 20 | ' .. coins('2s 60c'),
 		'Sell time | ~21 h', -- (20 listed under 98c + 20) / 45 a day
 		'  ' .. TooltipLines.SELL_TIME_NOTE,
 	})
@@ -362,7 +397,8 @@ end)
 t.test('the sales line says when sales a day is the own count', function()
 	local facts = { salesPerDay = 12.5, salesSource = 'own', listedUnits = 3, levelCount = 1 }
 	local lines = build({ isDetail = true, quote = quote({ facts = facts }) })
-	t.eq(find(lines, 'Sold a day'), 'Sold a day | 12.5 · own scans')
+	t.eq(find(lines, 'Sold a day'), 'Sold a day | 12.5')
+	t.eq(find(lines, 'Sales from'), 'Sales from | Own scans')
 end)
 
 t.test('the sell-time note can be switched off', function()
@@ -870,6 +906,24 @@ t.test('a separator line between sections is a blank line with its own rule, lik
 	t.same(shownRuleLines(game, tooltip), { 2, 5 }, 'a rebuild reuses the rules')
 end)
 
+t.test('leading, trailing and doubled separators collapse; only separators is no block at all', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	local sep = { kind = 'separator' }
+	tooltips:AddProvider('haggler', function()
+		return { sep, sep, { left = 'Buy' }, sep, sep, { left = 'Price' }, sep }
+	end)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Buy', ' ', 'Price', '' })
+	t.same(shownRuleLines(game, tooltip), { 2, 4 })
+	local _, only = newRegistry()
+	only:AddProvider('haggler', function()
+		return { sep, sep }
+	end)
+	t.same(only:Lines(LINEN, { stackCount = 1 }), {}, 'separators alone are not a usable block')
+end)
+
 t.test('a tooltip without OnTooltipCleared draws no separator line between sections', function()
 	local game, tooltips = newRegistry()
 	game.env.GameTooltip.scriptNames.OnTooltipCleared = nil
@@ -1310,7 +1364,6 @@ local WAIT = {
 	code = 'marketLow',
 	underTypicalPercent = 32,
 	gainOverVendor = 12345,
-	gainOverVendorEach = 617,
 }
 
 -- The Sell section's small reason rows, as { label, value } pairs.

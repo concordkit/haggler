@@ -66,7 +66,7 @@ local SPACER_TEXTURE = 'Interface\\AddOns\\Haggler\\media\\spacer.png'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local drawLine, isUsableLine, isBlankText, canDrawSeparators, releaseSeparators, ruleOffset, restoreFonts
-local indentedText, isRestylable, restoreFont
+local indentedText, isRestylable, restoreFont, withoutStraySeparators
 
 local TooltipMethods = {}
 TooltipMethods.__index = TooltipMethods
@@ -133,7 +133,7 @@ function TooltipMethods:Lines(itemId, info)
 			end
 		end
 	end
-	return lines
+	return withoutStraySeparators(lines)
 end
 
 --- Draws the providers' lines on a tooltip; shows it again only when lines were added.
@@ -459,6 +459,25 @@ end
 
 function isUsableLine(line)
 	return type(line) == 'table' and (type(line.left) == 'string' or line.kind == Tooltip.SEPARATOR_KIND)
+end
+
+-- A separator only between two text lines: leading, trailing and doubled ones go, and a list of
+-- separators alone is no lines at all.
+function withoutStraySeparators(lines)
+	local kept = {}
+	local hasPendingSeparator = false
+	for _, line in ipairs(lines) do
+		if line.kind == Tooltip.SEPARATOR_KIND then
+			hasPendingSeparator = #kept > 0
+		else
+			if hasPendingSeparator then
+				kept[#kept + 1] = { kind = Tooltip.SEPARATOR_KIND }
+				hasPendingSeparator = false
+			end
+			kept[#kept + 1] = line
+		end
+	end
+	return kept
 end
 
 function isBlankText(text)
