@@ -22,18 +22,23 @@ end)
 function onAddonLoaded()
 	HagglerDB = HagglerDB or {}
 	HagglerCharDB = HagglerCharDB or {}
-	local store, reason = ns.Store.open(HagglerDB, HagglerCharDB, { now = ns.wow:Now() })
+	local store = ns.Store.open(HagglerDB, HagglerCharDB, { now = ns.wow:Now() })
 	if not store then
-		ns.wow:Print('Saved data is from a newer Haggler (' .. reason .. '); update the add-on. Nothing was changed.')
+		ns.wow:Print('Saved data is from a newer Haggler. Update the add-on. Nothing was changed.')
 		return
 	end
 	ns.store = store
-	HagglerArchiveDB = HagglerArchiveDB or {}
-	-- A newer archive is left untouched and nothing is archived (ns.archiveDb stays nil).
-	if not ns.ScanArchive.open(HagglerArchiveDB) then
-		ns.wow:Print('The scan history is from a newer Haggler; update the add-on. It is kept as it is.')
+	-- Anything but a table (a hand edit, a broken file) holds no history worth keeping.
+	if type(HagglerArchiveDB) ~= 'table' then
+		HagglerArchiveDB = {}
+	end
+	-- A refused archive is left untouched and nothing is archived (ns.archiveDb stays nil).
+	local archiveDb = ns.ScanArchive.open(HagglerArchiveDB)
+	if archiveDb then
+		ns.archiveDb = archiveDb
 	else
-		ns.archiveDb = HagglerArchiveDB
+		-- Non-tables were replaced above, so the one refusal left is a newer schema.
+		ns.wow:Print("Haggler's scan history is from a newer Haggler. Update the add-on. It is kept as it is.")
 	end
 	-- The merchant record has its own schema; a newer one is left untouched (ns.vendorDb nil).
 	local vendorDb, vendorReason = ns.VendorStore.open(HagglerArchiveDB)
