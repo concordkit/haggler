@@ -39,12 +39,14 @@
 	skipped; a broken entry reads as none; never an error.
 
 	Retention (prune, after each save): an entry dated more than FUTURE_TOLERANCE_SECONDS after
-	now (a clock that ran ahead) is dropped. Each market's newest entry always stays: it wins its
-	slot or day whatever its count, and the size cap never takes it. Of the rest, within
-	recentDays the fullest scan of each six-hour slot is kept, older ones the fullest scan of
-	each day (ties go to the later scan), then the oldest entries go first until the archive
-	fits maxBytes. Days and slots are UTC, as Sales counts days. At the default 32 MB one market holds
-	the 12 slot scans of the last 3 days (about 9.4 MB) and about 29 days before that, daily.
+	now (a clock that ran ahead) is dropped. Within recentDays the fullest scan of each six-hour
+	slot is kept, older ones the fullest scan of each day (ties go to the later scan), then the
+	oldest entries go first until the archive fits maxBytes. Each market's newest entry at or
+	before now (the newest of all when none is) always stays, in addition to its bucket's
+	fullest, and the size cap never takes it; once a later scan arrives, its bucket keeps the
+	fullest as usual. Days and slots are UTC, as Sales counts days. At the default 32 MB one
+	market holds the 12 slot scans of the last 3 days (about 9.4 MB) and about 29 days before
+	that, daily.
 
 	  ScanArchive.open(db)                          -> db | nil, 'newer schema' | 'not a table'
 	  ScanArchive.newEntryBuilder(snapshot)         -> builder | nil, reason; :Step, :Result
@@ -230,13 +232,14 @@ function ScanArchive.prune(db, now, options)
 	local recentDays = isFinitePositive(options.recentDays) and options.recentDays or ScanArchive.DEFAULT_RECENT_DAYS
 	local maxBytes = isFinitePositive(options.maxBytes) and options.maxBytes
 		or ScanArchive.DEFAULT_MAX_MB * ScanArchive.BYTES_PER_MB
-	local dropped = 0
+	local dropped, newestByMarket = 0, {}
 	for marketKey, entries in pairs(db.markets) do
-		local kept, droppedHere = downsample(entries, now, now - recentDays * DAY_SECONDS)
+		local kept, droppedHere, newest = downsample(entries, now, now - recentDays * DAY_SECONDS)
 		db.markets[marketKey] = #kept > 0 and kept or nil
+		newestByMarket[marketKey] = newest
 		dropped = dropped + droppedHere
 	end
-	return dropped + enforceBudget(db.markets, maxBytes)
+	return dropped + enforceBudget(db.markets, maxBytes, newestByMarket)
 end
 
 --- Every record of a market between two times, one table per item per scan, oldest scan
@@ -399,35 +402,35 @@ function parseRecord(text)
 	return record
 end
 
--- The entries worth keeping, oldest first, and how many went. The newest entry wins its
--- bucket, so the scan just recorded is never the one dropped.
+-- The entries worth keeping, oldest first, how many went, and the protected newest entry:
+-- each bucket keeps its fullest scan, and the newest is kept beside it.
 function downsample(entries, now, recentFrom)
 	if type(entries) ~= 'table' then
-		return {}, 0
+		return {}, 0, nil
 	end
 	local latestAllowed = now + ScanArchive.FUTURE_TOLERANCE_SECONDS
-	local newest = newestOf(entries, latestAllowed)
+	local newest = newestOf(entries, now) or newestOf(entries, latestAllowed)
 	local bestByBucket, total = {}, 0
 	for _, entry in ipairs(entries) do
 		total = total + 1
-		if isUsableEntry(entry) and entry.at <= latestAllowed then
+		if isUsableEntry(entry) and entry.at <= latestAllowed and entry ~= newest then
 			local bucket = bucketOf(entry.at, recentFrom)
-			local best = bestByBucket[bucket]
-			if entry == newest or (best ~= newest and isBetterEntry(entry, best)) then
+			if isBetterEntry(entry, bestByBucket[bucket]) then
 				bestByBucket[bucket] = entry
 			end
 		end
 	end
-	local kept = {}
+	local kept = { newest }
 	for _, entry in pairs(bestByBucket) do
 		kept[#kept + 1] = entry
 	end
 	table.sort(kept, function(a, b)
 		return a.at < b.at
 	end)
-	return kept, total - #kept
+	return kept, total - #kept, newest
 end
 
+-- The newest usable entry dated at or before latestAllowed, or nil.
 function newestOf(entries, latestAllowed)
 	local newest
 	for _, entry in ipairs(entries) do
@@ -479,8 +482,9 @@ function isBetterEntry(entry, best)
 	return entry.at > best.at
 end
 
--- Drops the oldest entries, never a market's newest, until the archive fits; returns how many.
-function enforceBudget(markets, maxBytes)
+-- Drops the oldest entries, never a market's protected newest, until the archive fits;
+-- returns how many.
+function enforceBudget(markets, maxBytes, newestByMarket)
 	local total = 0
 	for _, entries in pairs(markets) do
 		for _, entry in ipairs(entries) do
@@ -489,17 +493,19 @@ function enforceBudget(markets, maxBytes)
 	end
 	local dropped = 0
 	while total > maxBytes do
-		local oldestEntries
-		for _, entries in pairs(markets) do
-			local isCandidate = #entries > 1 and (oldestEntries == nil or entries[1].at < oldestEntries[1].at)
-			if isCandidate then
-				oldestEntries = entries
+		local oldestEntries, oldestIndex
+		for marketKey, entries in pairs(markets) do
+			-- Entries are oldest first, so the oldest one that may go is the first or second.
+			local index = entries[1] == newestByMarket[marketKey] and 2 or 1
+			local entry = entries[index]
+			if entry and (oldestEntries == nil or entry.at < oldestEntries[oldestIndex].at) then
+				oldestEntries, oldestIndex = entries, index
 			end
 		end
 		if not oldestEntries then
 			break
 		end
-		total = total - ScanArchive.entryBytes(table.remove(oldestEntries, 1))
+		total = total - ScanArchive.entryBytes(table.remove(oldestEntries, oldestIndex))
 		dropped = dropped + 1
 	end
 	return dropped

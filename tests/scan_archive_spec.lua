@@ -450,28 +450,31 @@ t.test('open answers a non-table with a reason, never an error', function()
 	end
 end)
 
-t.test("a market's newest scan stays even when an older one in its slot is fuller", function()
+t.test("a market's newest scan stays beside its slot's fullest, which the slot keeps", function()
 	local db = ScanArchive.open({})
 	local today = math.floor(NOW / DAY) * DAY
-	ScanArchive.record(db, MARKET, fakeEntry(today + 10 * 3600, 10))
-	ScanArchive.record(db, MARKET, fakeEntry(today + 11 * 3600, 9))
-	ScanArchive.prune(db, today + 11 * 3600, { recentDays = 3, maxBytes = 2 ^ 30 })
-	t.same(ats(db, MARKET), { today + 11 * 3600 })
-	-- Once a later scan arrives, the earlier slot keeps what it kept.
-	ScanArchive.record(db, MARKET, fakeEntry(today + 13 * 3600, 1))
-	ScanArchive.prune(db, today + 13 * 3600, { recentDays = 3, maxBytes = 2 ^ 30 })
-	t.same(ats(db, MARKET), { today + 11 * 3600, today + 13 * 3600 })
+	local fullest, newest, later = today + 12 * 3600, today + 13 * 3600 + 1800, today + 19 * 3600
+	ScanArchive.record(db, MARKET, fakeEntry(fullest, 48))
+	ScanArchive.record(db, MARKET, fakeEntry(newest, 30))
+	ScanArchive.prune(db, newest, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { fullest, newest }, 'the newest is kept in addition to the fullest')
+	-- Once a later scan arrives, the slot keeps its fullest scan as usual.
+	ScanArchive.record(db, MARKET, fakeEntry(later, 1))
+	ScanArchive.prune(db, later, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { fullest, later })
 end)
 
-t.test('an entry more than a day ahead of now is dropped and never protected as newest', function()
+t.test('only the newest scan at or before now is protected; far-future entries are dropped', function()
 	local db = ScanArchive.open({})
 	ScanArchive.record(db, MARKET, fakeEntry(NOW - 2 * DAY, 5))
 	ScanArchive.record(db, MARKET, fakeEntry(NOW, 5))
 	ScanArchive.record(db, MARKET, fakeEntry(NOW + 3600, 5))
 	ScanArchive.record(db, MARKET, fakeEntry(NOW + 2 * DAY, 50))
+	ScanArchive.prune(db, NOW, { recentDays = 3, maxBytes = 2 ^ 30 })
+	t.same(ats(db, MARKET), { NOW - 2 * DAY, NOW, NOW + 3600 }, 'past a day ahead it is gone')
 	local entryBytes = ScanArchive.entryBytes(fakeEntry(NOW, 5))
 	ScanArchive.prune(db, NOW, { recentDays = 3, maxBytes = entryBytes })
-	t.same(ats(db, MARKET), { NOW + 3600 }, 'within a day ahead it is the newest; past it, gone')
+	t.same(ats(db, MARKET), { NOW }, 'an entry ahead of now cannot take the protection')
 end)
 
 t.test('the slot and day edge sits exactly at recentFrom', function()

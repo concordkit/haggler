@@ -32,11 +32,14 @@ function onAddonLoaded()
 	if type(HagglerArchiveDB) ~= 'table' then
 		HagglerArchiveDB = {}
 	end
-	-- A newer archive is left untouched and nothing is archived (ns.archiveDb stays nil).
-	if not ns.ScanArchive.open(HagglerArchiveDB) then
+	-- A refused archive is left untouched and nothing is archived (ns.archiveDb stays nil).
+	local archiveDb, archiveReason = ns.ScanArchive.open(HagglerArchiveDB)
+	if archiveDb then
+		ns.archiveDb = archiveDb
+	elseif archiveReason == 'newer schema' then
 		ns.wow:Print('The scan history is from a newer Haggler; update the add-on. It is kept as it is.')
 	else
-		ns.archiveDb = HagglerArchiveDB
+		ns.wow:Print('The scan history could not be opened (' .. tostring(archiveReason) .. '); it is kept as it is.')
 	end
 	ns.host.Start(store:Settings())
 	ns.wow:RegisterSlash(function(text)
