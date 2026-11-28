@@ -44,6 +44,7 @@ local function withFakeGame(run)
 	rawset(_G, 'SLASH_HAGGLER1', nil)
 	rawset(_G, 'HagglerDB', nil)
 	rawset(_G, 'HagglerCharDB', nil)
+	rawset(_G, 'HagglerArchiveDB', nil)
 	if not ok then
 		error(err, 0)
 	end

@@ -5,7 +5,7 @@
 ## IconTexture: Interface\AddOns\Haggler\media\icon.png
 ## Category: Concord
 ## Author: Eiluviann
-## SavedVariables: HagglerDB
+## SavedVariables: HagglerDB, HagglerArchiveDB
 ## SavedVariablesPerCharacter: HagglerCharDB
 ## X-Category: Auction & Economy
 ## X-Credit: Prices from AHledger (https://ahledger.com)
@@ -45,6 +45,7 @@ Engine\Rules.lua
 Engine\Store.lua
 Engine\ScanStore.lua
 Engine\Sales.lua
+Engine\ScanArchive.lua
 Engine\Scan.lua
 Engine\PriceContext.lua
 Engine\PriceService.lua

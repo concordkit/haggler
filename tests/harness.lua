@@ -15,6 +15,7 @@ local ADDON_FILES = {
 	'Engine/Store.lua',
 	'Engine/ScanStore.lua',
 	'Engine/Sales.lua',
+	'Engine/ScanArchive.lua',
 	'Engine/Scan.lua',
 	'Engine/PriceContext.lua',
 	'Engine/PriceService.lua',

@@ -1,7 +1,8 @@
 --[[
-	Haggler.lua: the bootstrap, loaded last. It opens the saved data once the game has loaded
-	it, starts the host and registers /hag (plain /hag opens the Haggler window). Init.lua made
-	the shared services, and the features registered their modules with ns.host before this runs.
+	Haggler.lua: the bootstrap, loaded last. It opens the saved data (and the scan history,
+	HagglerArchiveDB) once the game has loaded it, starts the host and registers /hag (plain
+	/hag opens the Haggler window). Init.lua made the shared services, and the features
+	registered their modules with ns.host before this runs.
 ]]
 local addonName, ns = ...
 
@@ -27,6 +28,13 @@ function onAddonLoaded()
 		return
 	end
 	ns.store = store
+	HagglerArchiveDB = HagglerArchiveDB or {}
+	-- A newer archive is left untouched and nothing is archived (ns.archiveDb stays nil).
+	if not ns.ScanArchive.open(HagglerArchiveDB) then
+		ns.wow:Print('The scan history is from a newer Haggler; update the add-on. It is kept as it is.')
+	else
+		ns.archiveDb = HagglerArchiveDB
+	end
 	ns.host.Start(store:Settings())
 	ns.wow:RegisterSlash(function(text)
 		-- A plain /hag opens and closes the window; with the window off it lists the commands.

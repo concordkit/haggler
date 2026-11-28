@@ -1281,10 +1281,12 @@ function FakeGame.startAddon(t, game, beforeStart)
 	for _, path in ipairs(FakeGame.FEATURE_FILES) do
 		assert(loadfile(path))('Haggler', ns)
 	end
-	-- game.savedDb / game.savedCharDb carry saved variables across a simulated /reload.
+	-- game.savedDb / game.savedCharDb / game.savedArchiveDb carry saved variables across a simulated /reload.
 	game.savedDb = game.savedDb or {}
 	game.savedCharDb = game.savedCharDb or {}
+	game.savedArchiveDb = game.savedArchiveDb or {}
 	ns.store = assert(ns.Store.open(game.savedDb, game.savedCharDb))
+	ns.archiveDb = ns.ScanArchive.open(game.savedArchiveDb)
 	if beforeStart then
 		beforeStart(ns)
 	end
