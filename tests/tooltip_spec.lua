@@ -489,12 +489,22 @@ t.test('modifiers reach the providers; a forbidden tooltip is skipped', function
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
 end)
 
-local SPACER_16 = '|TInterface\\Common\\spacer:1:16|t'
+local SPACER_16 = '|TInterface\\AddOns\\Haggler\\media\\spacer.png:1:16|t'
 
 local function lineFonts(game, tooltip, index)
 	local left = game.env[tooltip.name .. 'TextLeft' .. index]
 	local right = game.env[tooltip.name .. 'TextRight' .. index]
 	return left:GetFontObject(), right:GetFontObject()
+end
+
+local function lineColors(game, tooltip, index)
+	local left = game.env[tooltip.name .. 'TextLeft' .. index]
+	local right = game.env[tooltip.name .. 'TextRight' .. index]
+	return { left:GetTextColor() }, { right:GetTextColor() }
+end
+
+local function runPostCall(game, tooltip)
+	game.postCalls[1].handler(tooltip, { id = LINEN })
 end
 
 local function withSupportingRow(tooltips)
@@ -505,7 +515,7 @@ local function withSupportingRow(tooltips)
 				left = 'Market',
 				right = 'Steady',
 				color = { r = 0.5, g = 0.5, b = 0.5 },
-				rightColor = { r = 0.5, g = 0.5, b = 0.5 },
+				rightColor = { r = 0.4, g = 0.4, b = 0.4 },
 				textSize = 'small',
 				indent = 16,
 			},
@@ -519,24 +529,38 @@ t.test('a small line draws in the client small tooltip font, both columns, inden
 	withSupportingRow(tooltips)
 	local tooltip = game.env.GameTooltip
 	local lines = game:ShowItemTooltip(LINEN)
-	local small, normal = game.env.GameTooltipTextSmall, game.env.GameTooltipText
+	local small, normal, header =
+		game.env.GameTooltipTextSmall, game.env.GameTooltipText, game.env.GameTooltipHeaderText
 	t.eq(lines[2].left, SPACER_16 .. 'Market', 'the spacer is the indent')
 	t.eq(lines[2].right, 'Steady', 'the value keeps its right edge')
-	t.same(
-		{ lines[2].lr, lines[2].lg, lines[2].lb, lines[2].rr, lines[2].rg, lines[2].rb },
-		{ 0.5, 0.5, 0.5, 0.5, 0.5, 0.5 }
-	)
 	t.same({ lineFonts(game, tooltip, 2) }, { small, small })
-	t.same({ lineFonts(game, tooltip, 1) }, { normal, normal }, 'the line above keeps its font')
+	t.same(
+		{ lineColors(game, tooltip, 2) },
+		{ { 0.5, 0.5, 0.5, 1 }, { 0.4, 0.4, 0.4, 1 } },
+		'the small font keeps the line colours'
+	)
+	t.same({ lineFonts(game, tooltip, 1) }, { header, header }, 'the line above keeps its font')
 	t.same({ lineFonts(game, tooltip, 3) }, { normal, normal }, 'the line below keeps its font')
 	t.eq(lines[3].left, 'Vendor', 'no indent on other lines')
+end)
+
+t.test('the spacer texture ships with the add-on and the release keeps it', function()
+	local file = io.open('media/spacer.png', 'rb')
+	t.truthy(file, 'media/spacer.png')
+	if file then
+		file:close()
+	end
+	for line in io.lines('.pkgmeta') do
+		t.eq(line:match('^%s*%-%s*media/?$'), nil, 'media is not ignored')
+		t.eq(line:match('^%s*%-%s*media/spacer'), nil, 'the spacer is not ignored')
+	end
 end)
 
 t.test('a reused line gets its own font back: on clear, on hide and for the next item', function()
 	local game, tooltips = newRegistry()
 	withSupportingRow(tooltips)
 	local tooltip = game.env.GameTooltip
-	local normal = game.env.GameTooltipText
+	local normal, small = game.env.GameTooltipText, game.env.GameTooltipTextSmall
 	game:ShowItemTooltip(LINEN)
 	tooltip:ClearLines()
 	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'cleared')
@@ -544,7 +568,8 @@ t.test('a reused line gets its own font back: on clear, on hide and for the next
 	tooltip:AddDoubleLine('Other add-on', 'value')
 	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'another add-on line on the reused index')
 	game:ShowItemTooltip(LINEN)
-	tooltip.isShown = true
+	t.eq(tooltip.isShown, true, 'shown again')
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small }, 'small before the hide')
 	tooltip:Hide()
 	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'hidden')
 	tooltips:RemoveProvider('haggler')
@@ -555,11 +580,37 @@ t.test('a reused line gets its own font back: on clear, on hide and for the next
 	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'the next item')
 end)
 
+t.test('the next render restores a line reused without a clear, keeping its new colour', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local normal = game.env.GameTooltipText
+	game:ShowItemTooltip(LINEN)
+	-- Lines dropped and reused with no OnTooltipCleared.
+	tooltip.lines = {}
+	tooltip:AddLine('x', 1, 0, 0)
+	tooltip:AddDoubleLine('Other add-on', 'value', 0, 1, 0, 0, 0, 1)
+	runPostCall(game, tooltip)
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'restored before drawing')
+	t.same({ lineColors(game, tooltip, 2) }, { { 0, 1, 0, 1 }, { 0, 0, 1, 1 } }, 'its owner colours stay')
+end)
+
+t.test('a duplicate post-call leaves the small rows still on screen small', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local small = game.env.GameTooltipTextSmall
+	game:ShowItemTooltip(LINEN)
+	runPostCall(game, tooltip)
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small }, 'the first block')
+	t.same({ lineColors(game, tooltip, 2) }, { { 0.5, 0.5, 0.5, 1 }, { 0.4, 0.4, 0.4, 1 } })
+end)
+
 t.test('a line that was not normal before keeps its own font after the small row', function()
 	local game, tooltips = newRegistry()
 	withSupportingRow(tooltips)
 	local tooltip = game.env.GameTooltip
-	local custom = { name = 'SomeAddonFont' }
+	local custom = { name = 'SomeAddonFont', path = 'Fonts\\ARIALN.TTF', size = 11 }
 	tooltip:AddLine('x')
 	tooltip:AddLine('y')
 	game.env.GameTooltipTextLeft2:SetFontObject(custom)
@@ -567,6 +618,24 @@ t.test('a line that was not normal before keeps its own font after the small row
 	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), game.env.GameTooltipTextSmall)
 	tooltip:ClearLines()
 	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), custom, 'restored to what it had')
+end)
+
+t.test('a skin font set with SetFont comes back, with or without a font object behind it', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip:AddLine('x')
+	tooltip:AddDoubleLine('y', 'z')
+	local left, right = game.env.GameTooltipTextLeft2, game.env.GameTooltipTextRight2
+	left:SetFont('Interface\\AddOns\\Skin\\font.ttf', 13, 'OUTLINE')
+	right.fontObject = nil
+	right:SetFont('Interface\\AddOns\\Skin\\font.ttf', 11, '')
+	game:ShowItemTooltip(LINEN)
+	t.eq(left:GetFontObject(), game.env.GameTooltipTextSmall)
+	tooltip:ClearLines()
+	t.same({ left:GetFont() }, { 'Interface\\AddOns\\Skin\\font.ttf', 13, 'OUTLINE' }, 'object and SetFont')
+	t.eq(left:GetFontObject(), game.env.GameTooltipText)
+	t.same({ right:GetFont() }, { 'Interface\\AddOns\\Skin\\font.ttf', 11, '' }, 'SetFont alone')
 end)
 
 t.test('a tooltip without OnTooltipCleared gets the indent but keeps its font', function()
@@ -1257,6 +1326,11 @@ t.test('module: the wait reason rows reach the tooltip small, indented and muted
 			line.left
 		)
 		t.same({ lineFonts(game, tooltip, index) }, { small, small }, line.left)
+		t.same(
+			{ lineColors(game, tooltip, index) },
+			{ { muted.r, muted.g, muted.b, 1 }, { muted.r, muted.g, muted.b, 1 } },
+			'the muted colour reaches the font strings'
+		)
 	end
 	t.same({ lineFonts(game, tooltip, decisionIndex + 4) }, { normal, normal }, 'the credit below')
 	t.same(addon.errors, {})
