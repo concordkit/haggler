@@ -113,7 +113,7 @@ end
 
 function statusLines()
 	if not ns.vendorDb then
-		return { 'The merchant record is from a newer Haggler; it is kept as it is.' }
+		return { 'The merchant record is from a newer Haggler. It is kept as it is.' }
 	end
 	local summary = ns.VendorStore.summary(ns.vendorDb)
 	local seedCount = 0

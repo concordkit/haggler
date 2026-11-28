@@ -70,6 +70,37 @@ t.test('the store sits beside the scan history without touching it', function()
 	t.eq(archive.schema, 1)
 end)
 
+t.test('the vendor cap and the scan-history cap never count each other', function()
+	local archive = {}
+	local scanDb = ns.ScanArchive.open(archive)
+	local db = VendorStore.open(archive)
+	local slots = {}
+	for index = 1, 30 do
+		slots[index] = { itemId = 1000 + index, price = 100 }
+	end
+	VendorStore.record(db, observation(ALICE, slots), NOW)
+	t.eq(ns.ScanArchive.bytes(scanDb), 0)
+	t.eq(ns.ScanArchive.prune(scanDb, NOW, { maxBytes = 1 }), 0)
+	t.truthy(db.byNpc[ALICE])
+	scanDb.markets['forever/normal/alliance/us'] =
+		{ { at = NOW, source = 'own', listings = 1, count = 1, skipped = 0, items = '1,100,1,0,0,0,0' } }
+	local before = VendorStore.bytes(db)
+	t.eq(VendorStore.prune(db, { maxBytes = 1 }), 0)
+	t.eq(VendorStore.bytes(db), before)
+	t.eq(#scanDb.markets['forever/normal/alliance/us'], 1)
+end)
+
+t.test('a newer whole file stays untouched; a newer merchant record does not stop the history', function()
+	local archive = { schema = 99, markets = {} }
+	t.eq(ns.ScanArchive.open(archive), nil)
+	t.eq(select(2, VendorStore.open(archive)), 'newer archive')
+	t.eq(archive.vendors, nil)
+	local other = { vendors = { schema = 99 } }
+	t.truthy(ns.ScanArchive.open(other))
+	t.eq(VendorStore.open(other), nil)
+	t.eq(other.vendors.schema, 99)
+end)
+
 t.test('record keeps the raw price, stack, stock and standing per vendor', function()
 	local db = openStore()
 	local saved, summary = VendorStore.record(

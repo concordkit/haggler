@@ -27,7 +27,9 @@
 	a price counts as the base price only at neutral or below, where no discount exists.
 
 	A record that does not parse strictly reads as nothing; a broken vendor reads as none; never
-	an error. open never raises, whatever the saved table holds.
+	an error. open never raises, whatever the saved table holds. It refuses, untouched, a store of
+	a newer schema and a whole HagglerArchiveDB of a newer schema than ScanArchive's. Its size
+	cap is its own: prune counts only byNpc, ScanArchive's 32 MB budget only markets.
 
 	Size: measured on a 30-item vendor, a vendor costs about 1.0 KB (30 bytes a record, about
 	120 for name, zone and the rest). The store is capped (default 512 KB, some 500 vendors):
@@ -78,10 +80,15 @@ local trimItems, offerOf, buildIndex, bump, sortedNpcIds
 --- store is replaced with an empty one; a newer schema is left untouched.
 --- @param archiveDb any HagglerArchiveDB
 --- @return table|nil db
---- @return string|nil reason 'not a table' | 'newer schema'
+--- @return string|nil reason 'not a table' | 'newer archive' (the whole file) | 'newer schema'
 function VendorStore.open(archiveDb)
 	if type(archiveDb) ~= 'table' then
 		return nil, 'not a table'
+	end
+	-- A whole file from a newer Haggler stays untouched, as the scan history leaves it.
+	local archiveSchema = tonumber(archiveDb.schema)
+	if archiveSchema and archiveSchema > ns.ScanArchive.SCHEMA then
+		return nil, 'newer archive'
 	end
 	local db = archiveDb.vendors
 	if type(db) ~= 'table' then

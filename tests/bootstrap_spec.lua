@@ -89,8 +89,9 @@ t.test('a scan history that is not a table is replaced, never raised', function(
 		local ns = loadWithBootstrap()
 		frame.onEvent(frame, 'ADDON_LOADED', 'Haggler')
 		t.truthy(ns.host.IsStarted())
-		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 1, markets = {} })
+		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 1, markets = {}, vendors = { schema = 1, byNpc = {} } })
 		t.eq(ns.archiveDb, rawget(_G, 'HagglerArchiveDB'))
+		t.eq(ns.vendorDb, rawget(_G, 'HagglerArchiveDB').vendors)
 	end)
 end)
 
@@ -101,6 +102,7 @@ t.test('a newer scan history is kept as it is and the add-on still starts', func
 		frame.onEvent(frame, 'ADDON_LOADED', 'Haggler')
 		t.truthy(ns.host.IsStarted())
 		t.eq(ns.archiveDb, nil)
+		t.eq(ns.vendorDb, nil)
 		t.same(rawget(_G, 'HagglerArchiveDB'), { schema = 9 })
 		t.truthy(
 			table
