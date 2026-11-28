@@ -7,7 +7,9 @@
 	  tooltips:AddProvider(owner, fun(itemId, info) -> Line[])     replaces the owner's provider
 	  tooltips:RemoveProvider(owner)
 	  info = { stackCount, location? = { bag, slot }, modifiers = { shift, ctrl, alt } }
-	  Line = { left, right?, color?, rightColor? }                  colours { r, g, b }
+	  Line = { left, right?, color?, rightColor?, wrap?, textSize?, indent? }   colours { r, g, b }
+	  textSize = 'small': both columns in the client's small tooltip font (GameTooltipTextSmall)
+	  indent   = UI units before the left text, drawn as the client's blank spacer texture
 
 	Providers run in the order they were added, each under pcall: one that fails adds no lines
 	and is reported, the others still draw. The client hook is installed with the first provider
@@ -22,6 +24,14 @@
 	Show of the tooltip settles it: no line after it, no rule; a blank line after it carries the
 	rule; any other line opens it up to ' ' with its own rule. A tooltip without OnTooltipCleared
 	gets the lines but no separators, since its rules could outlive their lines.
+
+	Small lines: the client keeps a line's font object until someone sets another, through
+	clears and reuse (its own AH buy dialog sets and restores GameTooltipTextLeft1 by hand). So
+	each small line's left and right font strings keep the font object they had, and get it back
+	on OnTooltipCleared, on OnHide and before the next Render; no later line, Haggler's or another
+	add-on's, inherits the small font. Like the separators, this needs OnTooltipCleared: a tooltip
+	without it gets the indent but keeps its font. The indent is text (an inline texture), so the
+	client counts it in the line's width and the tooltip widens instead of overlapping the value.
 ]]
 local _, ns = ...
 
@@ -41,9 +51,16 @@ local LINE_INSET = 10
 -- The UI's reference height: one physical pixel is 768 / screen height units at scale 1.
 local UI_REFERENCE_HEIGHT = 768
 local MONEY_FRAME_LIMIT = 20
+-- The client's own small tooltip font (Tooltip_Small, 10 against GameTooltipText's 12). The DS
+-- small sizes (font.size.xs / sm, 13) are larger than the tooltip's own text, so they cannot
+-- make a line smaller here.
+local SMALL_FONT_OBJECT = 'GameTooltipTextSmall'
+-- The client's blank texture, as its own tooltips use it to indent a line (WARDROBE_TOOLTIP_CYCLE_SPACER_ICON).
+local SPACER_TEXTURE = 'Interface\\Common\\spacer'
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local drawLine, isUsableLine, isBlankText, canDrawSeparators, releaseSeparators, ruleOffset
+local drawLine, isUsableLine, isBlankText, canDrawSeparators, releaseSeparators, ruleOffset, restoreFonts
+local indentedText
 
 local TooltipMethods = {}
 TooltipMethods.__index = TooltipMethods
@@ -129,6 +146,7 @@ function TooltipMethods:Render(tooltip, itemId, stackCount, location)
 	local separators = self:SeparatorsOf(tooltip)
 	if separators then
 		releaseSeparators(separators)
+		restoreFonts(separators)
 	end
 	if #lines == 0 then
 		return 0
@@ -138,6 +156,9 @@ function TooltipMethods:Render(tooltip, itemId, stackCount, location)
 	end
 	for _, line in ipairs(lines) do
 		drawLine(tooltip, line)
+		if separators and line.textSize == 'small' then
+			self:SetSmallFont(tooltip, separators, tooltip:NumLines())
+		end
 	end
 	if separators then
 		separators.closing = self:AddClosingSeparator(tooltip, separators)
@@ -157,9 +178,14 @@ function TooltipMethods:SeparatorsOf(tooltip)
 	end
 	local separators = false
 	if self.theme and canDrawSeparators(tooltip) then
-		local state = { rules = {}, used = {} }
+		local state = { rules = {}, used = {}, fonts = {} }
 		local isClearHooked = self.wow:HookFrameScript(tooltip, 'OnTooltipCleared', function()
 			releaseSeparators(state)
+			restoreFonts(state)
+		end)
+		-- A hidden tooltip may be reused without a clear; its lines get their fonts back too.
+		self.wow:HookFrameScript(tooltip, 'OnHide', function()
+			restoreFonts(state)
 		end)
 		local isShowHooked = isClearHooked
 			and self.wow:HookMethod(tooltip, 'Show', function()
@@ -171,6 +197,24 @@ function TooltipMethods:SeparatorsOf(tooltip)
 	end
 	self.separatorsByTooltip[tooltip] = separators
 	return separators or nil
+end
+
+--- Sets a line's left and right font strings to the client's small tooltip font, keeping the
+--- font object each had so restoreFonts can give it back.
+function TooltipMethods:SetSmallFont(tooltip, separators, index)
+	local small = self.wow:Global(SMALL_FONT_OBJECT)
+	if not small then
+		return
+	end
+	local name = tooltip:GetName()
+	for _, side in ipairs({ 'TextLeft', 'TextRight' }) do
+		local fontString = self.wow:Global(name .. side .. index)
+		if fontString and fontString.GetFontObject and fontString.SetFontObject then
+			separators.fonts[#separators.fonts + 1] =
+				{ fontString = fontString, fontObject = fontString:GetFontObject() }
+			fontString:SetFontObject(small)
+		end
+	end
 end
 
 --- The rule above the block: on the line before when that is blank, else on a new ' ' line.
@@ -355,10 +399,11 @@ end
 
 function drawLine(tooltip, line)
 	local color = line.color or WHITE
+	local left = indentedText(line.left, line.indent)
 	if line.right ~= nil then
 		local rightColor = line.rightColor or WHITE
 		tooltip:AddDoubleLine(
-			line.left,
+			left,
 			tostring(line.right),
 			color.r,
 			color.g,
@@ -368,8 +413,17 @@ function drawLine(tooltip, line)
 			rightColor.b
 		)
 	else
-		tooltip:AddLine(line.left, color.r, color.g, color.b, line.wrap == true)
+		tooltip:AddLine(left, color.r, color.g, color.b, line.wrap == true)
 	end
+end
+
+-- The text after a blank spacer texture as wide as the indent (whole UI units); no indent, as is.
+function indentedText(text, indent)
+	local width = type(indent) == 'number' and math.floor(indent) or 0
+	if width <= 0 then
+		return text
+	end
+	return '|T' .. SPACER_TEXTURE .. ':1:' .. width .. '|t' .. text
 end
 
 function isUsableLine(line)
@@ -397,6 +451,19 @@ function releaseSeparators(separators)
 	end
 	separators.used = {}
 	separators.closing = nil
+end
+
+-- Gives every small line its own font object back, newest first, so a line set twice ends on the
+-- font it had before Haggler touched it.
+function restoreFonts(separators)
+	local fonts = separators.fonts
+	for index = #fonts, 1, -1 do
+		local entry = fonts[index]
+		if entry.fontObject then
+			entry.fontString:SetFontObject(entry.fontObject)
+		end
+	end
+	separators.fonts = {}
 end
 
 -- Halfway down the line, snapped to a whole physical pixel below its top.

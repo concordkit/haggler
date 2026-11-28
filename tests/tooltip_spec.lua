@@ -478,6 +478,96 @@ t.test('modifiers reach the providers; a forbidden tooltip is skipped', function
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
 end)
 
+local SPACER_16 = '|TInterface\\Common\\spacer:1:16|t'
+
+local function lineFonts(game, tooltip, index)
+	local left = game.env[tooltip.name .. 'TextLeft' .. index]
+	local right = game.env[tooltip.name .. 'TextRight' .. index]
+	return left:GetFontObject(), right:GetFontObject()
+end
+
+local function withSupportingRow(tooltips)
+	tooltips:AddProvider('haggler', function()
+		return {
+			{ left = 'Decision', right = 'Wait' },
+			{
+				left = 'Market',
+				right = 'Steady',
+				color = { r = 0.5, g = 0.5, b = 0.5 },
+				rightColor = { r = 0.5, g = 0.5, b = 0.5 },
+				textSize = 'small',
+				indent = 16,
+			},
+			{ left = 'Vendor', right = '13c' },
+		}
+	end)
+end
+
+t.test('a small line draws in the client small tooltip font, both columns, indented by a spacer', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local lines = game:ShowItemTooltip(LINEN)
+	local small, normal = game.env.GameTooltipTextSmall, game.env.GameTooltipText
+	t.eq(lines[2].left, SPACER_16 .. 'Market', 'the spacer is the indent')
+	t.eq(lines[2].right, 'Steady', 'the value keeps its right edge')
+	t.same(
+		{ lines[2].lr, lines[2].lg, lines[2].lb, lines[2].rr, lines[2].rg, lines[2].rb },
+		{ 0.5, 0.5, 0.5, 0.5, 0.5, 0.5 }
+	)
+	t.same({ lineFonts(game, tooltip, 2) }, { small, small })
+	t.same({ lineFonts(game, tooltip, 1) }, { normal, normal }, 'the line above keeps its font')
+	t.same({ lineFonts(game, tooltip, 3) }, { normal, normal }, 'the line below keeps its font')
+	t.eq(lines[3].left, 'Vendor', 'no indent on other lines')
+end)
+
+t.test('a reused line gets its own font back: on clear, on hide and for the next item', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local normal = game.env.GameTooltipText
+	game:ShowItemTooltip(LINEN)
+	tooltip:ClearLines()
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'cleared')
+	tooltip:AddDoubleLine('Other add-on', 'value')
+	tooltip:AddDoubleLine('Other add-on', 'value')
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'another add-on line on the reused index')
+	game:ShowItemTooltip(LINEN)
+	tooltip.isShown = true
+	tooltip:Hide()
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'hidden')
+	tooltips:RemoveProvider('haggler')
+	tooltips:AddProvider('other', function()
+		return { { left = 'a' }, { left = 'b', right = 'c' } }
+	end)
+	game:ShowItemTooltip(LINEN)
+	t.same({ lineFonts(game, tooltip, 2) }, { normal, normal }, 'the next item')
+end)
+
+t.test('a line that was not normal before keeps its own font after the small row', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	local custom = { name = 'SomeAddonFont' }
+	tooltip:AddLine('x')
+	tooltip:AddLine('y')
+	game.env.GameTooltipTextLeft2:SetFontObject(custom)
+	game:ShowItemTooltip(LINEN)
+	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), game.env.GameTooltipTextSmall)
+	tooltip:ClearLines()
+	t.eq(game.env.GameTooltipTextLeft2:GetFontObject(), custom, 'restored to what it had')
+end)
+
+t.test('a tooltip without OnTooltipCleared gets the indent but keeps its font', function()
+	local game, tooltips = newRegistry()
+	withSupportingRow(tooltips)
+	local tooltip = game.env.GameTooltip
+	tooltip.scriptNames = {}
+	local lines = game:ShowItemTooltip(LINEN)
+	t.eq(lines[2].left, SPACER_16 .. 'Market')
+	t.same({ lineFonts(game, tooltip, 2) }, { game.env.GameTooltipText, game.env.GameTooltipText })
+end)
+
 t.group('tooltip separators')
 
 -- The game's tooltip once blended, near-black #0b0b0b (Concord's Theme - Banneret note).
@@ -1037,6 +1127,19 @@ t.test('lines: the wait reason rows are dimmer than the other rows, labels and v
 	t.same(lines[4].rightColor, theme:Color('color.text.primary'))
 end)
 
+t.test('lines: the wait reason rows hang off the decision, small and indented a grid step', function()
+	local lines = build({ stackCount = 20, advice = WAIT, icons = icons })
+	for index = 5, 7 do
+		t.eq(lines[index].textSize, 'small', lines[index].left)
+		t.eq(lines[index].indent, theme:Number('space.3'), lines[index].left)
+	end
+	t.eq(theme:Number('space.3'), 16, 'a whole grid step')
+	for index = 1, 4 do
+		t.eq(lines[index].textSize, nil, lines[index].left)
+		t.eq(lines[index].indent, nil, lines[index].left)
+	end
+end)
+
 t.test('lines: the wait gain follows the view, a unit in the unit view as the prices do', function()
 	local each = build({ stackCount = 20, advice = WAIT, icons = icons, isUnitView = true })
 	t.same(reasonRows(each)[3], { 'Over vendor' .. TooltipLines.EACH_SUFFIX, '+' .. TooltipLines.money(617) })
@@ -1095,5 +1198,45 @@ t.test('module: a bag slot tooltip says why its item waits', function()
 	addon.Advice.forItem = forItem
 	t.truthy(find(lines, 'Wait'), 'the decision')
 	t.truthy(find(lines, '32% under usual'), 'and why')
+	t.same(addon.errors, {})
+end)
+
+t.test('module: the wait reason rows reach the tooltip small, indented and muted', function()
+	local game, addon = startWithTable()
+	game.containerItems['0:3'] = { itemID = LINEN, stackCount = 20 }
+	local tooltip = game.env.GameTooltip
+	tooltip.owner = bagSlot(0, 3)
+	local forItem = addon.Advice.forItem
+	addon.Advice.forItem = function()
+		return WAIT
+	end
+	local lines = game:ShowItemTooltip(LINEN)
+	addon.Advice.forItem = forItem
+	local muted, secondary = theme:Color('color.text.muted'), theme:Color('color.text.secondary')
+	local small, normal = game.env.GameTooltipTextSmall, game.env.GameTooltipText
+	local decisionIndex
+	for index, line in ipairs(lines) do
+		if line.left == TooltipLines.DECISION_LABEL then
+			decisionIndex = index
+		end
+	end
+	t.truthy(decisionIndex, 'a Decision line')
+	t.same(
+		{ lines[decisionIndex].lr, lines[decisionIndex].lg, lines[decisionIndex].lb },
+		{ secondary.r, secondary.g, secondary.b }
+	)
+	t.same({ lineFonts(game, tooltip, decisionIndex) }, { normal, normal })
+	t.same({ lineFonts(game, tooltip, decisionIndex - 1) }, { normal, normal }, 'the price row above')
+	for index = decisionIndex + 1, decisionIndex + 3 do
+		local line = lines[index]
+		t.eq(line.left:sub(1, #SPACER_16), SPACER_16, line.left)
+		t.same(
+			{ line.lr, line.lg, line.lb, line.rr, line.rg, line.rb },
+			{ muted.r, muted.g, muted.b, muted.r, muted.g, muted.b },
+			line.left
+		)
+		t.same({ lineFonts(game, tooltip, index) }, { small, small }, line.left)
+	end
+	t.same({ lineFonts(game, tooltip, decisionIndex + 4) }, { normal, normal }, 'the credit below')
 	t.same(addon.errors, {})
 end)

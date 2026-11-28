@@ -350,6 +350,15 @@ local function lineFontString(game, tooltip, index, side)
 	function fontString:GetHeight()
 		return LINE_HEIGHT
 	end
+	-- Like the client, a line keeps the font object last set on it until someone sets another:
+	-- clearing or reusing the line does not reset it.
+	fontString.fontObject = game.env.GameTooltipText
+	function fontString:SetFontObject(fontObject)
+		self.fontObject = fontObject
+	end
+	function fontString:GetFontObject()
+		return self.fontObject
+	end
 	game.env[globalName] = fontString
 	return fontString
 end
@@ -386,8 +395,12 @@ local function newTooltip(game, name)
 		end
 	end
 	function tooltip:Hide()
+		local wasShown = self.isShown
 		self.isShown = false
 		self.hiddenCount = (self.hiddenCount or 0) + 1
+		if wasShown and self.scripts.OnHide then
+			self.scripts.OnHide(self)
+		end
 	end
 	function tooltip:AddLine(text, r, g, b, wrap)
 		addLine({ left = text, r = r, g = g, b = b, wrap = wrap })
@@ -1054,6 +1067,9 @@ function FakeGame.new(options)
 			end,
 		}
 	end
+	-- The client's tooltip font objects (Tooltip_Med, Friz 12, and Tooltip_Small, Friz 10).
+	env.GameTooltipText = { name = 'GameTooltipText', size = 12 }
+	env.GameTooltipTextSmall = { name = 'GameTooltipTextSmall', size = 10 }
 	env.GameTooltip = newTooltip(game, 'GameTooltip')
 	env.ItemRefTooltip = newTooltip(game, 'ItemRefTooltip')
 	game.env = env
