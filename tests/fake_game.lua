@@ -350,6 +350,40 @@ local function lineFontString(game, tooltip, index, side)
 	function fontString:GetHeight()
 		return LINE_HEIGHT
 	end
+	-- Like the client, a line keeps the font last set on it until someone sets another: clearing
+	-- or reusing the line does not reset it. Line 1 starts on the header font, as the template
+	-- sets it (textLeft1Font).
+	fontString.fontObject = index == 1 and game.env.GameTooltipHeaderText or game.env.GameTooltipText
+	fontString.textColor = { 1, 1, 1, 1 }
+	-- Like the client, SetFontObject also takes the font object's colour and drops a SetFont.
+	function fontString:SetFontObject(fontObject)
+		self.fontObject, self.font = fontObject, nil
+		local color = fontObject and fontObject.color or { 1, 1, 1 }
+		self.textColor = { color[1], color[2], color[3], 1 }
+	end
+	function fontString:GetFontObject()
+		return self.fontObject
+	end
+	-- A skin may SetFont a line directly; GetFontObject still names the object it had, if any.
+	function fontString:SetFont(path, size, flags)
+		self.font = { path, size, flags or '' }
+		return true
+	end
+	function fontString:GetFont()
+		if self.font then
+			return self.font[1], self.font[2], self.font[3]
+		end
+		local object = self.fontObject
+		if object then
+			return object.path, object.size, object.flags or ''
+		end
+	end
+	function fontString:SetTextColor(r, g, b, a)
+		self.textColor = { r, g, b, a or 1 }
+	end
+	function fontString:GetTextColor()
+		return unpack(self.textColor)
+	end
 	game.env[globalName] = fontString
 	return fontString
 end
@@ -366,10 +400,13 @@ local function newTooltip(game, name)
 		width = 240,
 		scriptNames = { OnTooltipSetItem = true, OnTooltipCleared = true, OnShow = true, OnHide = true },
 	}
+	-- Like the client, adding a line sets its font strings' colours (white when none is given).
 	local function addLine(line)
 		tooltip.lines[#tooltip.lines + 1] = line
-		lineFontString(game, tooltip, #tooltip.lines, 'left')
-		lineFontString(game, tooltip, #tooltip.lines, 'right')
+		local left = lineFontString(game, tooltip, #tooltip.lines, 'left')
+		local right = lineFontString(game, tooltip, #tooltip.lines, 'right')
+		left:SetTextColor(line.r or line.lr or 1, line.g or line.lg or 1, line.b or line.lb or 1)
+		right:SetTextColor(line.rr or 1, line.rg or 1, line.rb or 1)
 	end
 	function tooltip:SetOwner(owner, anchor)
 		self.owner, self.anchor = owner, anchor
@@ -386,8 +423,12 @@ local function newTooltip(game, name)
 		end
 	end
 	function tooltip:Hide()
+		local wasShown = self.isShown
 		self.isShown = false
 		self.hiddenCount = (self.hiddenCount or 0) + 1
+		if wasShown and self.scripts.OnHide then
+			self.scripts.OnHide(self)
+		end
 	end
 	function tooltip:AddLine(text, r, g, b, wrap)
 		addLine({ left = text, r = r, g = g, b = b, wrap = wrap })
@@ -430,6 +471,7 @@ local function newTooltip(game, name)
 	end
 	function tooltip:Show()
 		self.shownCount = self.shownCount + 1
+		self.isShown = true
 	end
 	function tooltip:IsShown()
 		return self.isShown
@@ -1054,6 +1096,13 @@ function FakeGame.new(options)
 			end,
 		}
 	end
+	-- The client's tooltip font objects (Tooltip_Med, Friz 12, and Tooltip_Small, Friz 10).
+	-- The client's tooltip font objects (Tooltip_Med, Friz 12; Tooltip_Small, Friz 10; the header
+	-- 14), all white.
+	local friz = 'Fonts\\FRIZQT__.TTF'
+	env.GameTooltipHeaderText = { name = 'GameTooltipHeaderText', path = friz, size = 14, color = { 1, 1, 1 } }
+	env.GameTooltipText = { name = 'GameTooltipText', path = friz, size = 12, color = { 1, 1, 1 } }
+	env.GameTooltipTextSmall = { name = 'GameTooltipTextSmall', path = friz, size = 10, color = { 1, 1, 1 } }
 	env.GameTooltip = newTooltip(game, 'GameTooltip')
 	env.ItemRefTooltip = newTooltip(game, 'ItemRefTooltip')
 	game.env = env
