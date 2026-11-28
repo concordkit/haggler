@@ -6,21 +6,26 @@
 	  prices:BuyPrice(itemId) -> BuyPrice | nil
 
 	  BuyPrice = { price, stackPrice, stack, source = 'seen'|'seed', vendorCount,
-	               cheapestVendor?, ageSeconds?, isLimited, isBasePrice?, isVendorConfirmed? }
+	               cheapestVendor?, ageSeconds?, isLimited, isBasePrice, isVendorConfirmed? }
 
 	price is copper for one unit (stackPrice / stack, so a fraction for items sold in stacks of
-	many, like arrows). Reads at base price (isBasePrice) beat discounted ones from any vendor,
-	so a read by an exalted character never becomes the price another character sees. Among
-	them the cheapest one with unlimited stock wins, or the cheapest limited one when none is
-	unlimited. Only when every read is discounted (or of unknown standing) does a discounted
-	price come back, with isBasePrice false. vendorCount says how many vendors sell it now
-	(seen offers only; 0 from the seed). An offer that is gone or asks a currency or item
-	beside copper is not a copper price and is left out. cheapestVendor = { npcId, name?, zone?,
-	mapId?, faction?, reaction? }; ageSeconds is how long ago that offer was seen. isBasePrice
-	is true when the character that made the read was neutral or below with the vendor (no
-	discount possible), always true from the seed. Consumers must check isBasePrice: false means
-	the price may be below what a character without that standing pays. isVendorConfirmed is true when Questie's item data lists a vendor, nil
-	when it cannot say.
+	many, like arrows). A vendor's base price (a read at or below
+	VendorStore.BASE_PRICE_MAX_REACTION, kept beside later discounted reads) beats discounted
+	prices from any vendor, so a read by an exalted character never becomes the price another
+	character sees. Among base prices the cheapest vendor with unlimited stock wins, or the
+	cheapest limited one when none is unlimited; at the same price an unlimited vendor goes
+	first. When every seen price is discounted (or of unknown standing), the seed's base price
+	comes back if it has the item (source 'seed'), else the discounted price with isBasePrice
+	false. Consumers must check isBasePrice: false means the price may be below what a
+	character without that standing pays.
+
+	vendorCount says how many seen vendors sell it now, with a seed price too. isLimited is true
+	only when no seen vendor that sells it now has unlimited stock (from the seed alone, the
+	seed's flag). An offer that is gone or asks a currency or item beside copper is not a copper
+	price and is left out. cheapestVendor = { npcId, name?, zone?, mapId?, faction?, reaction? },
+	the vendor the price came from (reaction: its latest read); ageSeconds is how long ago that
+	price was read. isVendorConfirmed is true when Questie's item data lists a vendor, nil when
+	it cannot say.
 ]]
 local _, ns = ...
 
@@ -31,7 +36,7 @@ local Methods = {}
 Methods.__index = Methods
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local isWholePositive, isUsableOffer, cheapestOffer, seedEntry
+local isWholePositive, isUsableOffer, cheapestOffer, isEveryLimited, seedEntry
 
 --- @param deps table { db = fun(): table|nil, seed = table|nil, now = fun(): number,
 ---   isVendorSold = fun(itemId): boolean|nil }
@@ -59,7 +64,8 @@ function Methods:BuyPrice(itemId)
 	end
 	local isVendorConfirmed = deps.isVendorSold and deps.isVendorSold(itemId) == true or nil
 	local offer = cheapestOffer(usable)
-	if offer then
+	local stackPrice, stack = seedEntry(deps.seed, itemId)
+	if offer and (offer.isBasePrice or not stackPrice) then
 		return {
 			price = offer.unitPrice,
 			stackPrice = offer.price,
@@ -74,23 +80,26 @@ function Methods:BuyPrice(itemId)
 				faction = offer.faction,
 				reaction = offer.reaction,
 			},
-			ageSeconds = math.max(0, deps.now() - offer.seenAt),
-			isLimited = offer.isLimited,
+			ageSeconds = math.max(0, deps.now() - offer.priceSeenAt),
+			isLimited = isEveryLimited(usable),
 			isBasePrice = offer.isBasePrice,
 			isVendorConfirmed = isVendorConfirmed,
 		}
 	end
-	local stackPrice, stack = seedEntry(deps.seed, itemId)
 	if not stackPrice then
 		return nil
+	end
+	local isLimited = type(deps.seed.limited) == 'table' and deps.seed.limited[itemId] == true
+	if #usable > 0 then
+		isLimited = isEveryLimited(usable)
 	end
 	return {
 		price = stackPrice / stack,
 		stackPrice = stackPrice,
 		stack = stack,
 		source = 'seed',
-		vendorCount = 0,
-		isLimited = type(deps.seed.limited) == 'table' and deps.seed.limited[itemId] == true,
+		vendorCount = #usable,
+		isLimited = isLimited,
 		isBasePrice = true,
 		isVendorConfirmed = isVendorConfirmed,
 	}
@@ -121,6 +130,15 @@ function cheapestOffer(offers)
 		end
 	end
 	return preferred[1]
+end
+
+function isEveryLimited(offers)
+	for _, offer in ipairs(offers) do
+		if not offer.isLimited then
+			return false
+		end
+	end
+	return true
 end
 
 -- A seed row: copper, or { copper, units }. Anything else reads as none.

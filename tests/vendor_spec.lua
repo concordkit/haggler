@@ -281,14 +281,61 @@ t.test('buyPrice falls to the cheapest limited vendor when none is unlimited', f
 	t.eq(price.isBasePrice, false)
 end)
 
-t.test('each read keeps the standing of the character that made it', function()
+t.test('a discounted or unknown read never erases a vendor base price', function()
 	local db = openStore()
 	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 8 } }, { reaction = 8 }), NOW)
-	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, 8)
+	local first = VendorStore.vendorItems(db, ALICE)[THREAD]
+	t.eq(first.reaction, 8)
+	t.eq(first.basePrice, nil)
+	t.eq(VendorStore.offers(db, THREAD)[1].isBasePrice, false)
 	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }, { reaction = 4 }), NOW + 1)
 	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, 4)
-	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 10 } }), NOW + 2)
-	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].reaction, nil)
+	-- An exalted read, then one of unknown standing: the latest price moves, the base stays.
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 8, available = 4 } }, { reaction = 8 }),
+		NOW + 2
+	)
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 9, available = 3 } }), NOW + 3)
+	local record = VendorStore.vendorItems(db, ALICE)[THREAD]
+	t.eq(record.reaction, nil)
+	t.eq(record.price, 9)
+	t.eq(record.available, 3)
+	t.eq(record.seenAt, NOW + 3)
+	t.eq(record.basePrice, 10)
+	t.eq(record.baseStack, 1)
+	t.eq(record.baseSeenAt, NOW + 1)
+	local offer = VendorStore.offers(db, THREAD)[1]
+	t.eq(offer.price, 10)
+	t.eq(offer.unitPrice, 10)
+	t.eq(offer.isBasePrice, true)
+	t.eq(offer.priceSeenAt, NOW + 1)
+	t.eq(offer.latestPrice, 9)
+	t.eq(offer.seenAt, NOW + 3)
+	local price = pricesOf(db):BuyPrice(THREAD)
+	t.eq(price.price, 10)
+	t.eq(price.isBasePrice, true)
+	t.eq(price.ageSeconds, 600 - 1)
+	-- Gone still applies to the kept base.
+	VendorStore.record(db, observation(ALICE, { { itemId = FLUX, price = 9 } }, { reaction = 8 }), NOW + 4)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].goneAt, NOW + 4)
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, 10)
+	-- A later base read replaces the kept base and needs none beside it.
+	VendorStore.record(db, observation(ALICE, { { itemId = THREAD, price = 11 } }, { reaction = 3 }), NOW + 5)
+	local rebased = VendorStore.vendorItems(db, ALICE)[THREAD]
+	t.eq(rebased.price, 11)
+	t.eq(rebased.basePrice, nil)
+	t.eq(VendorStore.offers(db, THREAD)[1].price, 11)
+end)
+
+t.test('a broken kept base price drops only the base price', function()
+	local db = openStore()
+	db.byNpc[ALICE] = { firstSeenAt = NOW, seenAt = NOW, items = '2320,9,1,-1,2000000,,8,,0,1,2000000' }
+	local record = VendorStore.vendorItems(db, ALICE)[THREAD]
+	t.eq(record.price, 9)
+	t.eq(record.basePrice, nil)
+	db.byNpc[ALICE].items = '2320,9,1,-1,2000000,,8,,10,1,1999999'
+	t.eq(VendorStore.vendorItems(db, ALICE)[THREAD].basePrice, 10)
 end)
 
 t.test('a base-price read beats a cheaper discounted read from any vendor', function()
@@ -305,7 +352,8 @@ t.test('a base-price read beats a cheaper discounted read from any vendor', func
 	t.eq(price.cheapestVendor.name, 'Bob')
 	t.eq(price.isBasePrice, true)
 	t.eq(price.vendorCount, 2)
-	-- A limited base-price offer still beats an unlimited discounted one.
+	-- A limited base-price offer still sets the price over an unlimited discounted one, but the
+	-- item is not limited while any vendor sells it without a limit.
 	VendorStore.record(
 		db,
 		observation(BOB, { { itemId = THREAD, price = 12, available = 3 } }, { name = 'Bob', reaction = 3 }),
@@ -313,11 +361,29 @@ t.test('a base-price read beats a cheaper discounted read from any vendor', func
 	)
 	local limited = pricesOf(db):BuyPrice(THREAD)
 	t.eq(limited.price, 12)
-	t.eq(limited.isLimited, true)
+	t.eq(limited.cheapestVendor.name, 'Bob')
+	t.eq(limited.isLimited, false)
 	t.eq(limited.isBasePrice, true)
 end)
 
-t.test('with only discounted reads the discounted price comes back, flagged', function()
+t.test('isLimited counts every usable vendor; at one price the unlimited vendor wins', function()
+	local db = openStore()
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 10, available = 2 } }, { name = 'Alice', reaction = 4 }),
+		NOW
+	)
+	local only = pricesOf(db):BuyPrice(THREAD)
+	t.eq(only.isLimited, true)
+	-- Bob's npc id sorts after Alice's, at the same price and without a limit.
+	VendorStore.record(db, observation(BOB, { { itemId = THREAD, price = 10 } }, { name = 'Bob', reaction = 4 }), NOW)
+	local price = pricesOf(db):BuyPrice(THREAD)
+	t.eq(price.cheapestVendor.name, 'Bob')
+	t.eq(price.isLimited, false)
+	t.eq(VendorStore.offers(db, THREAD)[1].npcId, BOB)
+end)
+
+t.test('with only discounted reads the seed base price comes back with the seen count', function()
 	local db = openStore()
 	VendorStore.record(
 		db,
@@ -326,10 +392,28 @@ t.test('with only discounted reads the discounted price comes back, flagged', fu
 	)
 	VendorStore.record(db, observation(BOB, { { itemId = THREAD, price = 9 } }, { name = 'Bob' }), NOW)
 	local price = pricesOf(db, { build = 'test', items = { [THREAD] = 10 } }):BuyPrice(THREAD)
+	t.eq(price.source, 'seed')
+	t.eq(price.price, 10)
+	t.eq(price.isBasePrice, true)
+	t.eq(price.vendorCount, 2)
+	t.eq(price.isLimited, false)
+	t.eq(price.cheapestVendor, nil)
+end)
+
+t.test('with only discounted reads and no seed entry the discounted price comes back, flagged', function()
+	local db = openStore()
+	VendorStore.record(
+		db,
+		observation(ALICE, { { itemId = THREAD, price = 8 } }, { name = 'Alice', reaction = 8 }),
+		NOW
+	)
+	VendorStore.record(db, observation(BOB, { { itemId = THREAD, price = 9 } }, { name = 'Bob' }), NOW)
+	local price = pricesOf(db, { build = 'test', items = { [FLUX] = 10 } }):BuyPrice(THREAD)
 	t.eq(price.source, 'seen')
 	t.eq(price.price, 8)
 	t.eq(price.cheapestVendor.reaction, 8)
 	t.eq(price.isBasePrice, false)
+	t.eq(price.vendorCount, 2)
 end)
 
 t.test('buyPrice gives the unit price of a stack', function()
@@ -347,7 +431,11 @@ t.test('seen prices beat the seed; gone and extended-cost offers fall back to it
 	local db = openStore()
 	VendorStore.record(
 		db,
-		observation(ALICE, { { itemId = THREAD, price = 10 }, { itemId = FLUX, price = 50, hasExtendedCost = true } }),
+		observation(
+			ALICE,
+			{ { itemId = THREAD, price = 10 }, { itemId = FLUX, price = 50, hasExtendedCost = true } },
+			{ reaction = 4 }
+		),
 		NOW
 	)
 	local prices = pricesOf(db, seed)
@@ -485,8 +573,16 @@ t.test('MERCHANT_SHOW records the open merchant after a frame', function()
 	t.same(items[TOKEN_ITEM].costs, { { kind = 'currency', id = 1901, count = 50 } })
 	t.eq(game.savedArchiveDb.vendors, addon.vendorDb)
 	t.same(addon.errors, {})
-	local price = addon.host.Get('vendorPrices', 1).buyPrice(THREAD)
+	-- A friendly read may be discounted, so the seed's base price answers, counting the vendor.
+	local buyPrice = addon.host.Get('vendorPrices', 1).buyPrice
+	t.eq(buyPrice(THREAD).source, 'seed')
+	t.eq(buyPrice(THREAD).vendorCount, 1)
+	game.merchantNpc.reaction = 4
+	game:Fire('MERCHANT_UPDATE')
+	game:NextFrame()
+	local price = buyPrice(THREAD)
 	t.eq(price.source, 'seen')
+	t.eq(price.isBasePrice, true)
 	t.eq(price.cheapestVendor.name, 'Tharynn Bouden')
 end)
 
