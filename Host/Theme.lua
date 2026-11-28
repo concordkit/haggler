@@ -8,8 +8,9 @@
 	  theme:Hex(name)   -> 'ffrrggbb' for |c escapes
 	  theme:Wrap(name, text) -> text in that colour
 	  theme:Number(name) -> number, e.g. 'focus.ringWidth'; 0 when no theme in the chain has it
-	  theme:Face(name)   -> font file path, e.g. 'font.face.heading'; the body face when the
-	      chain has no such face, and FALLBACK_FACE when it has no body face either
+	  theme:Face(name)   -> font file path, e.g. 'font.face.heading'. Fallback order: the token
+	      in this theme's chain, the same token in the default theme, the body face (this chain,
+	      then the default theme), then FALLBACK_FACE, the client's Arial Narrow
 ]]
 local _, ns = ...
 
@@ -24,7 +25,7 @@ Theme.FALLBACK_FACE = 'Fonts\\ARIALN.TTF'
 local MAX_EXTENDS_DEPTH = 8
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local findToken, toColor, toHexByte
+local findToken, findFace, toColor, toHexByte
 
 local ThemeMethods = {}
 ThemeMethods.__index = ThemeMethods
@@ -74,19 +75,14 @@ function ThemeMethods:Number(name)
 	return type(value) == 'number' and value or 0
 end
 
---- A font face token; a missing one reads as the body face, so a renamed token still draws text.
+--- A font face token. A missing one reads as the same token in the default theme, then as the
+--- body face, then as FALLBACK_FACE, so a renamed token still draws text.
 --- @param name string token name, e.g. 'font.face.heading'
 --- @return string font file path
 function ThemeMethods:Face(name)
-	return self:faceOrNil(name) or self:faceOrNil(Theme.BODY_FACE) or Theme.FALLBACK_FACE
-end
-
-function ThemeMethods:faceOrNil(name)
-	local value = findToken(self.themes, self.key, name)
-	if type(value) ~= 'string' or value == '' then
-		value = findToken(self.themes, Theme.DEFAULT_THEME, name)
-	end
-	return type(value) == 'string' and value ~= '' and value or nil
+	return findFace(self.themes, self.key, name)
+		or findFace(self.themes, self.key, Theme.BODY_FACE)
+		or Theme.FALLBACK_FACE
 end
 
 -- Helpers ---------------------------------------------------------------------------------
@@ -104,6 +100,15 @@ function findToken(themes, key, name)
 		key = theme.extends
 	end
 	return nil
+end
+
+-- A face path from this theme's chain, else from the default theme's; nil when neither has one.
+function findFace(themes, key, name)
+	local value = findToken(themes, key, name)
+	if type(value) ~= 'string' or value == '' then
+		value = findToken(themes, Theme.DEFAULT_THEME, name)
+	end
+	return type(value) == 'string' and value ~= '' and value or nil
 end
 
 function toColor(value)

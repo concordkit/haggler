@@ -51,6 +51,24 @@ t.test('a missing face token falls back to the body face, never to nil', functio
 	t.eq(ns.Theme.new({ themes = {} }):Face('font.face.heading'), ns.Theme.FALLBACK_FACE)
 end)
 
+t.test('a non-default theme falls back to the default theme token, then the body face, then Arial Narrow', function()
+	local ns = t.loadAddon()
+	local tokens = {
+		themes = {
+			banneret = { tokens = { ['font.face.heading'] = 'default-heading', ['font.face.body'] = 'default-body' } },
+			other = { tokens = { ['font.face.body'] = 'other-body' } },
+			bare = { tokens = {} },
+		},
+	}
+	local other = ns.Theme.new(tokens, 'other')
+	t.eq(other:Face('font.face.heading'), 'default-heading', 'same token in the default theme first')
+	t.eq(other:Face('font.face.display'), 'other-body', 'then the theme own body face')
+	t.eq(ns.Theme.new(tokens, 'bare'):Face('font.face.display'), 'default-body', 'then the default body face')
+	local noBody = ns.Theme.new({ themes = { banneret = { tokens = {} }, other = { tokens = {} } } }, 'other')
+	t.eq(noBody:Face('font.face.heading'), ns.Theme.FALLBACK_FACE)
+	t.eq(ns.Theme.FALLBACK_FACE, 'Fonts\\ARIALN.TTF')
+end)
+
 t.test('every add-on font a theme names ships in media/fonts with a licence beside it', function()
 	local ns = t.loadAddon()
 	local checked = 0
@@ -115,4 +133,17 @@ t.test('the margin band tokens live outside the generated file', function()
 	for _, name in ipairs({ 'money.gainStrong', 'money.gainTint', 'money.lossTint' }) do
 		t.truthy(theme:Color(name) ~= ns.Theme.FALLBACK_COLOR, name)
 	end
+end)
+
+t.test('a local token never replaces a value the DS already sets', function()
+	local dsValue = { 0.1, 0.2, 0.3, 1 }
+	local ns = {
+		Tokens = { themes = { banneret = { tokens = { ['money.gainStrong'] = dsValue } }, forever = { tokens = {} } } },
+	}
+	assert(loadfile('Host/LocalTokens.lua'))('Haggler', ns)
+	local banneret = ns.Tokens.themes.banneret.tokens
+	t.truthy(banneret['money.gainStrong'] == dsValue, 'the DS value is kept as is')
+	t.same(banneret['money.gainStrong'], { 0.1, 0.2, 0.3, 1 })
+	t.truthy(banneret['money.gainTint'] ~= nil, 'a token the DS lacks is still added')
+	t.truthy(ns.Tokens.themes.forever.tokens['money.gainStrong'] ~= nil)
 end)

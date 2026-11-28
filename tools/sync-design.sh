@@ -57,15 +57,21 @@ if command -v luajit >/dev/null; then
 	"
 fi
 
+# The client's own font never ships. The DS's check reads every font's name table, not just its
+# file name; it runs on the sources, before any copy touches the add-on, and is mandatory.
+CLIENT_FONT_CHECK="$DIST/../build/check-client-fonts.ts"
+[[ -f "$CLIENT_FONT_CHECK" ]] || fail "client font check not found: $CLIENT_FONT_CHECK"
+command -v node >/dev/null || fail "node not found; the client font check needs it"
+FONT_CHECK_OUTPUT="$(node "$CLIENT_FONT_CHECK" -- "$TOKENS_SOURCE" "$ICONS_SOURCE" "$HEADING_FONT_SOURCE" "$HEADING_LICENCE_SOURCE")" ||
+	fail "client font check failed on the sources"
+# A pass prints exactly one line with a non-zero count; anything else (no files checked) fails.
+FONT_CHECK_PASS='^check-client-fonts: checked [1-9][0-9]* files, 0 findings$'
+[[ "$FONT_CHECK_OUTPUT" =~ $FONT_CHECK_PASS ]] || fail "client font check did not pass: $FONT_CHECK_OUTPUT"
+
 cp "$TOKENS_SOURCE" "$REPO_ROOT/Host/Tokens.lua"
 rm -rf "$REPO_ROOT/media/icons"
 mkdir -p "$REPO_ROOT/media/icons"
 cp -R "$ICONS_SOURCE/." "$REPO_ROOT/media/icons/"
 cp "$HEADING_FONT_SOURCE" "$REPO_ROOT/$HEADING_FONT_TARGET"
 cp "$HEADING_LICENCE_SOURCE" "$REPO_ROOT/$HEADING_LICENCE_TARGET"
-# The client's own font never ships: the DS's check reads every font's name table, not just its file name.
-CLIENT_FONT_CHECK="$DIST/../build/check-client-fonts.ts"
-if [[ -f "$CLIENT_FONT_CHECK" ]] && command -v node >/dev/null; then
-	node "$CLIENT_FONT_CHECK" -- "$REPO_ROOT/media" || fail "client font check failed on media/"
-fi
 echo "sync-design: wrote Host/Tokens.lua, media/icons/ and $HEADING_FONT_TARGET"
