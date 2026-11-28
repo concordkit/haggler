@@ -175,6 +175,7 @@ local function itemValue(fields)
 		vendorNet = 100,
 		lowestListed = 10000,
 		typicalPrice = 10000,
+		typicalAhNet = 9500,
 		confidence = HIGH,
 	}
 	for key, field in pairs(fields or {}) do
@@ -251,10 +252,30 @@ t.test('forItem: the sell/wait edge is the vendor against the usual price after 
 end)
 
 t.test('forItem: the usual price counts for the whole stack', function()
-	local stack = itemValue({ count = 20, source = 'vendor', vendorNet = 20 * 9000, lowestListed = 4000 })
+	local stack = itemValue({
+		count = 20,
+		source = 'vendor',
+		vendorNet = 20 * 9000,
+		lowestListed = 4000,
+		typicalAhNet = 20 * 9500,
+	})
 	t.eq(decisionOf(stack), 'wait', '20 x 9500 beats 20 x 9000')
 	stack.vendorNet = 20 * 9600
 	t.eq(decisionOf(stack), 'sell')
+end)
+
+t.test('forItem: wait measures the usual price as Post does, deposit risk included', function()
+	-- At the typical 10000 the sale nets 9500 after the cut, a copper over the vendor's 9499;
+	-- but the deposit lost to unsold listings at that price brings the expected net to 9300.
+	local value = itemValue({ source = 'vendor', copper = 9499, vendorNet = 9499, lowestListed = 4000 })
+	value.typicalAhNet = 9300
+	t.eq(decisionOf(value), 'sell', 'the deposit tips the usual price under the vendor')
+	value.typicalAhNet = 9500
+	t.eq(decisionOf(value), 'wait')
+	value.typicalAhNet = nil
+	t.eq(decisionOf(value), 'sell', 'no measured net at the usual price: no wait')
+	value.typicalAhNet = 0 / 0
+	t.eq(decisionOf(value), 'sell', 'NaN')
 end)
 
 t.test('forItem: low confidence is undecided, whatever else it would be', function()

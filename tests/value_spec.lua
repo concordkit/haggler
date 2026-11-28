@@ -245,4 +245,20 @@ t.test('a stack carries the market facts the bag decision reads', function()
 	local rock = assert(value:Stack(ROCK, 1, { ruleId = 'median' }))
 	t.eq(rock.lowestListed, nil)
 	t.eq(rock.typicalPrice, nil)
+	t.eq(rock.typicalAhNet, nil)
+end)
+
+t.test('a stack carries the AH net at its usual price, deposit risk counted as for its own', function()
+	local value = newValue()
+	local wool = assert(value:Stack(WOOL, 5, { ruleId = 'median' }))
+	t.eq(wool.typicalPrice, 310)
+	local expected = ns.Guardrail.opportunity({ price = 310, units = 5, vendor = 33, salesPerDay = 0.5 })
+	t.eq(wool.typicalAhNet, expected.ahNet)
+	t.truthy(wool.typicalAhNet < ns.Guardrail.saleNet(310, 5), 'under a sale a day, some deposits are lost')
+	local free = assert(newValue({
+		deposit = function()
+			return 0
+		end,
+	}):Stack(WOOL, 5, { ruleId = 'median' }))
+	t.eq(free.typicalAhNet, ns.Guardrail.saleNet(310, 5), 'no deposit, nothing to lose')
 end)

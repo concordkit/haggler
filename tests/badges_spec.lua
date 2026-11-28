@@ -6,7 +6,28 @@ local Badges, IconSet, Theme = ns.Badges, ns.IconSet, ns.Theme
 local theme = Theme.new(ns.Tokens)
 local icons = IconSet.new({ theme = theme })
 local ALL = { showValue = true, decisionBadge = true, typeBadge = true }
-local ALERT_PIXELS = ':68:124:4:60:'
+-- An icon's atlas pixels as an |T escape writes them (left, right, top, bottom), from the manifest.
+local function pixelsOf(name)
+	local coords = assert(ns.Icons.texcoords[name], name)
+	local width, height = ns.Icons.atlasWidth, ns.Icons.atlasHeight
+	local function round(value)
+		return math.floor(value + 0.5)
+	end
+	return string.format(
+		':%d:%d:%d:%d:',
+		round(coords[1] * width),
+		round(coords[2] * width),
+		round(coords[3] * height),
+		round(coords[4] * height)
+	)
+end
+local ALERT_PIXELS = pixelsOf('triangle-alert')
+
+-- An icon's left, right, top and bottom texcoords from the manifest (its row also holds size).
+local function texcoordsOf(name)
+	local coords = assert(ns.Icons.texcoords[name], name)
+	return { coords[1], coords[2], coords[3], coords[4] }
+end
 -- Forever's item button (Blizzard_ItemButton/Mainline/ItemButtonTemplate.xml): 37 square, the
 -- stack count anchored BOTTOMRIGHT at (-5, 2) in NumberFontNormal, about 14 tall.
 local BUTTON_SIZE = 37
@@ -22,6 +43,7 @@ local function value(fields)
 		vendorNet = 13,
 		lowestListed = 520,
 		typicalPrice = 520,
+		typicalAhNet = 494,
 		confidence = { level = 'high', reasons = {} },
 	}
 	for key, field in pairs(fields or {}) do
@@ -69,7 +91,7 @@ t.group('icons')
 t.test('Lookup returns the atlas texture and texcoords of a known icon', function()
 	local icon = icons:Lookup('coins')
 	t.eq(icon.texture, IconSet.BASE_PATH .. '2.png')
-	t.same(icon.texcoords, { 0.015625, 0.234375, 0.265625, 0.484375 })
+	t.same(icon.texcoords, texcoordsOf('coins'))
 	t.eq(icon.size, 56)
 	t.eq(icons:Lookup('coins', '2.5').texture, IconSet.BASE_PATH .. '2.5.png')
 end)
@@ -102,9 +124,9 @@ end)
 
 t.test('Apply sets, tints and shows a texture; an unknown icon hides it', function()
 	local texture = FakeGame.newWidget('Texture')
-	t.eq(icons:Apply(texture, 'alert-triangle', 'color.state.danger'), true)
+	t.eq(icons:Apply(texture, 'triangle-alert', 'color.state.danger'), true)
 	t.eq(texture.texture, IconSet.BASE_PATH .. '2.png')
-	t.same(texture.texcoords, { 0.265625, 0.484375, 0.015625, 0.234375 })
+	t.same(texture.texcoords, texcoordsOf('triangle-alert'))
 	local danger = theme:Color('color.state.danger')
 	t.same(texture.color, { danger.r, danger.g, danger.b, danger.a or 1 })
 	t.eq(texture.isShown, true)
@@ -114,8 +136,9 @@ end)
 
 t.test('Inline is a tinted |T escape in atlas pixels; unknown icons are empty', function()
 	local white = IconSet.new({}):Inline('coins', 12)
-	t.eq(white, '|T' .. IconSet.BASE_PATH .. '2.png:12:12:0:0:256:256:4:60:68:124:255:255:255|t')
-	t.truthy(icons:Inline('alert-triangle', 12, 'color.state.danger'):find(':68:124:4:60:', 1, true))
+	local atlasSize = ns.Icons.atlasWidth .. ':' .. ns.Icons.atlasHeight
+	t.eq(white, '|T' .. IconSet.BASE_PATH .. '2.png:12:12:0:0:' .. atlasSize .. pixelsOf('coins') .. '255:255:255|t')
+	t.truthy(icons:Inline('triangle-alert', 12, 'color.state.danger'):find(ALERT_PIXELS, 1, true))
 	t.eq(icons:Inline('no-such-icon', 12), '')
 	t.eq(IconSet.new({ manifest = { texcoords = ns.Icons.texcoords, weights = { '2' } } }):Inline('coins', 12), '')
 end)
@@ -255,6 +278,16 @@ t.test('no badge reaches the stack count, outline included', function()
 	end
 end)
 
+t.test('the outline is the DS glyph outline: four copies, left, right, up and down', function()
+	t.eq(#Badges.OUTLINE_OFFSETS, 4)
+	local seen = {}
+	for _, offset in ipairs(Badges.OUTLINE_OFFSETS) do
+		t.eq(math.abs(offset[1]) + math.abs(offset[2]), 1, 'one step on one axis')
+		seen[offset[1] .. ',' .. offset[2]] = true
+	end
+	t.same(seen, { ['-1,0'] = true, ['1,0'] = true, ['0,1'] = true, ['0,-1'] = true })
+end)
+
 t.test('the outline width is a token in whole pixels, at least one', function()
 	t.eq(Badges.OUTLINE_COLOR, 'color.text.shadow')
 	t.eq(Badges.OUTLINE_WIDTH, 'border.hairline')
@@ -329,7 +362,7 @@ t.test('the painter creates an overlay only when there is something to show, the
 	t.eq(#button.children, childCount, 'no new regions')
 	local shown = shownGlyphs(button)
 	t.eq(#shown, 1)
-	t.same(shown[1].texcoords, { 0.265625, 0.484375, 0.015625, 0.234375 }, 'the alert-triangle')
+	t.same(shown[1].texcoords, texcoordsOf('triangle-alert'), 'the triangle-alert')
 	painter:Paint(button, Badges.decide(nil, ALL, { isQuest = true }))
 	t.eq(#button.children, childCount, 'still no new regions')
 	t.eq(#shownGlyphs(button), 1)
@@ -354,6 +387,56 @@ t.test('the painter writes nothing onto the button table', function()
 	t.raises(function()
 		Badges.newPainter({})
 	end, 'needs icons')
+end)
+
+t.test('the painter leaves the top left to the client junk coin and upgrade arrow', function()
+	local painter = Badges.newPainter({ icons = icons, theme = theme })
+	local button = FakeGame.newWidget('Button')
+	button.JunkIcon = FakeGame.newWidget('Texture', button)
+	local function shownPoints()
+		local points = {}
+		for _, glyph in ipairs(shownGlyphs(button)) do
+			points[#points + 1] = (glyph:GetPoint(1))
+		end
+		table.sort(points)
+		return table.concat(points, ',')
+	end
+	painter:Paint(button, Badges.decide(value(), ALL, { isJunk = true }))
+	t.eq(shownPoints(), 'TOPRIGHT', 'the junk coin is shown: no decision badge over it')
+	t.eq(#shownTextures(button, Badges.OUTLINE_SUBLEVEL), #Badges.OUTLINE_OFFSETS, 'nor its outline')
+	button.JunkIcon:Hide()
+	painter:Paint(button, Badges.decide(value(), ALL, { isJunk = true }))
+	t.eq(shownPoints(), 'TOPLEFT,TOPRIGHT', 'the coin hidden: the decision is back')
+	button.UpgradeIcon = FakeGame.newWidget('Texture', button)
+	painter:Paint(button, Badges.decide(value(), ALL, { isJunk = true }))
+	t.eq(shownPoints(), 'TOPRIGHT', 'the upgrade arrow keeps the corner too')
+	button.UpgradeIcon:Hide()
+	painter:Paint(button, Badges.decide(value(), ALL))
+	t.eq(shownPoints(), 'TOPLEFT')
+end)
+
+t.test('the painter retextures a badge only when its icon or colour changes', function()
+	local painter = Badges.newPainter({ icons = icons, theme = theme })
+	local button = FakeGame.newWidget('Button')
+	painter:Paint(button, Badges.decide(value(), ALL))
+	local textures = shownTextures(button)
+	t.eq(#textures, #Badges.OUTLINE_OFFSETS + 1)
+	local calls = 0
+	for _, texture in ipairs(textures) do
+		local setTexture = texture.SetTexture
+		texture.SetTexture = function(self, ...)
+			calls = calls + 1
+			return setTexture(self, ...)
+		end
+	end
+	painter:Paint(button, Badges.decide(value(), ALL))
+	t.eq(calls, 0, 'the same badge again: nothing retextured')
+	painter:Clear(button)
+	painter:Paint(button, Badges.decide(value(), ALL))
+	t.eq(calls, 0, 'shown again after a clear: still the same textures')
+	t.eq(#shownTextures(button), #Badges.OUTLINE_OFFSETS + 1)
+	painter:Paint(button, Badges.decide(value({ lowestListed = 100 }), ALL))
+	t.eq(calls, #Badges.OUTLINE_OFFSETS + 1, 'a new icon: every copy retextured once')
 end)
 
 t.group('badges: the tooltip word')

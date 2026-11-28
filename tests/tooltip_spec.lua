@@ -12,8 +12,8 @@ local theme = Theme.new(ns.Tokens)
 local icons = ns.IconSet.new({ theme = theme })
 local COIN_ICONS = FakeGame.COIN_ICONS
 local coins = FakeGame.coins
-local LOW_ICON = icons:Inline('alert-triangle', 0, 'color.state.caution')
-local MEDIUM_ICON = icons:Inline('alert-triangle', 0, 'color.state.warning')
+local LOW_ICON = icons:Inline('triangle-alert', 0, 'color.state.caution')
+local MEDIUM_ICON = icons:Inline('triangle-alert', 0, 'color.state.warning')
 local INFO_ICON = icons:Inline('info', 0, 'color.text.muted')
 
 local function price(copper, level, reasons, trace)
@@ -951,7 +951,17 @@ end)
 
 t.group('tooltip: the bag decision')
 
-local GAVEL_PIXELS = ':196:252:132:188:'
+local GAVEL_PIXELS
+do
+	local coords, width, height = ns.Icons.texcoords.gavel, ns.Icons.atlasWidth, ns.Icons.atlasHeight
+	GAVEL_PIXELS = string.format(
+		':%d:%d:%d:%d:',
+		math.floor(coords[1] * width + 0.5),
+		math.floor(coords[2] * width + 0.5),
+		math.floor(coords[3] * height + 0.5),
+		math.floor(coords[4] * height + 0.5)
+	)
+end
 
 local function bagSlot(bag, slot)
 	return {
@@ -965,7 +975,6 @@ local function bagSlot(bag, slot)
 end
 
 t.test('lines: the decision reads as the badge glyph next to its word, after the prices', function()
-	local icons = ns.IconSet.new({ theme = theme })
 	local lines = build({ stackCount = 20, decision = 'post', icons = icons })
 	t.eq(lines[4].left, TooltipLines.DECISION_LABEL)
 	t.eq(lines[4].right, ns.Badges.decisionLabel('post', icons))

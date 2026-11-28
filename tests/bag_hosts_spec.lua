@@ -10,14 +10,16 @@ local NOW = 1000000
 -- AHledger rows: median, min buyout, quantity, 7- and 30-day median, 30-day low and high, sold a day.
 local AHLEDGER_ROWS = { [2589] = { 120, 95, 500, 118, 125, 90, 160, 45 }, [4306] = { 10, 9, 500, 10, 11, 8, 12, 45 } }
 -- Badges by the left and top texcoords of their icon in the atlas.
-local GLYPHS = {
-	['0.765625,0.515625'] = 'post',
-	['0.015625,0.765625'] = 'sell',
-	['0.265625,0.765625'] = 'wait',
-	['0.265625,0.015625'] = 'undecided',
-	['0.515625,0.765625'] = 'quest',
-	['0.765625,0.765625'] = 'junk',
-}
+local GLYPHS = {}
+do
+	local addon = t.loadAddon()
+	for _, styles in ipairs({ addon.Badges.DECISIONS, addon.Badges.TYPES }) do
+		for kind, style in pairs(styles) do
+			local coords = addon.Icons.texcoords[style.icon]
+			GLYPHS[coords[1] .. ',' .. coords[3]] = kind
+		end
+	end
+end
 
 local function newButton(bag, slot)
 	local button = FakeGame.newWidget('Button')
@@ -191,17 +193,56 @@ t.test('switching the module off clears every overlay and the total; hooks stay 
 	t.eq(bagHookCount(game), 1, 'not hooked twice')
 end)
 
-t.test('painting waits for the end of combat', function()
+t.test('in combat a slot that changed or emptied drops its badge; prices wait for the end', function()
 	local game = newGame()
 	local _, frame, buttons = startWithBlizzard(game)
 	game.inCombat = true
 	game.containerItems['0:3'] = { itemID = SILK, stackCount = 2, hyperlink = 'item:4306' }
+	game.containerItems['0:1'] = nil
 	frame:UpdateItems()
-	t.eq(badgesOf(buttons[3]), 'post', 'not repainted yet')
+	t.same(badgeRow(buttons), { '', 'undecided', '', '', '' }, 'no old badge on a changed or empty slot')
 	game.inCombat = false
 	game:Fire('PLAYER_REGEN_ENABLED')
 	game:RunTimers()
-	t.eq(badgesOf(buttons[3]), 'sell')
+	t.same(badgeRow(buttons), { '', 'undecided', 'sell', '', '' })
+end)
+
+t.test('a Blizzard button showing its junk coin or upgrade arrow gets no decision badge', function()
+	local game = newGame()
+	local _, frame, buttons = startWithBlizzard(game)
+	buttons[3].JunkIcon = FakeGame.newWidget('Texture', buttons[3])
+	frame:UpdateItems()
+	t.eq(badgesOf(buttons[3]), '', 'the coin keeps the top left')
+	buttons[3].JunkIcon:Hide()
+	buttons[1].UpgradeIcon = FakeGame.newWidget('Texture', buttons[1])
+	frame:UpdateItems()
+	t.same(badgeRow(buttons), { '', 'undecided', 'post', '', '' })
+end)
+
+t.test('a saved vendorBadge off carries over to the decision badge, then is dropped', function()
+	local game = newGame()
+	local addon, _, buttons = startWithBlizzard(game)
+	t.eq(addon.bags:Setting('decisionBadge'), true, 'nothing saved: on')
+	local function startWith(saved)
+		local reloaded = newGame()
+		local reloadedButtons = newButtons()
+		reloaded.env.ContainerFrameCombinedBags = newBagFrame(reloadedButtons)
+		local reloadedAddon = FakeGame.startAddon(t, reloaded, function(ns)
+			ns.store:Settings().bags = saved
+		end)
+		return reloadedAddon, reloadedButtons, saved
+	end
+	local off, offButtons, saved = startWith({ vendorBadge = false })
+	t.eq(off.bags:Setting('decisionBadge'), false)
+	t.eq(saved.vendorBadge, nil, 'the old key is gone')
+	t.same(badgeRow(offButtons), { '', '', '', '', '' })
+	local kept = startWith({ vendorBadge = false, decisionBadge = true })
+	t.eq(kept.bags:Setting('decisionBadge'), true, 'a decision badge already chosen wins')
+	local on, _, onSaved = startWith({ vendorBadge = true })
+	t.eq(on.bags:Setting('decisionBadge'), true)
+	t.eq(onSaved.vendorBadge, nil)
+	t.same(badgeRow(buttons), { 'sell', 'undecided', 'post', '', '' })
+	t.same(off.errors, {})
 end)
 
 t.test('a hidden bag frame is not repainted by a refresh', function()
