@@ -6,7 +6,7 @@
 	  Tooltip.new({ wow, theme?, onError? })                     theme defaults to ns.theme
 	  tooltips:AddProvider(owner, fun(itemId, info) -> Line[])     replaces the owner's provider
 	  tooltips:RemoveProvider(owner)
-	  info = { stackCount, modifiers = { shift, ctrl, alt } }
+	  info = { stackCount, location? = { bag, slot }, modifiers = { shift, ctrl, alt } }
 	  Line = { left, right?, color?, rightColor? }                  colours { r, g, b }
 
 	Providers run in the order they were added, each under pcall: one that fails adds no lines
@@ -69,8 +69,8 @@ function TooltipMethods:AddProvider(owner, provider)
 	self:RemoveProvider(owner)
 	self.providers[#self.providers + 1] = { owner = owner, provider = provider }
 	if #self.providers == 1 then
-		self.wow:HookItemTooltips(Tooltip.HOOK_OWNER, function(tooltip, itemId, stackCount)
-			self:Render(tooltip, itemId, stackCount)
+		self.wow:HookItemTooltips(Tooltip.HOOK_OWNER, function(tooltip, itemId, stackCount, location)
+			self:Render(tooltip, itemId, stackCount, location)
 		end)
 	end
 end
@@ -92,7 +92,7 @@ end
 
 --- The lines every provider gives for an item.
 --- @param itemId number
---- @param info table { stackCount, modifiers }
+--- @param info table { stackCount, location?, modifiers }
 --- @return table Line[]
 function TooltipMethods:Lines(itemId, info)
 	local lines = {}
@@ -114,10 +114,11 @@ function TooltipMethods:Lines(itemId, info)
 end
 
 --- Draws the providers' lines on a tooltip; shows it again only when lines were added.
-function TooltipMethods:Render(tooltip, itemId, stackCount)
+function TooltipMethods:Render(tooltip, itemId, stackCount, location)
 	local wow = self.wow
 	local info = {
 		stackCount = stackCount or 1,
+		location = location,
 		modifiers = {
 			shift = wow:IsModifierDown('shift'),
 			ctrl = wow:IsModifierDown('ctrl'),

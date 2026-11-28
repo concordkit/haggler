@@ -1,7 +1,7 @@
 local t = ...
 local FakeGame = require('tests.fake_game')
 
-local LINEN, SILK, UNKNOWN, QUEST_ITEM, GREY = 2589, 4306, 9999, 5000, 4000
+local LINEN, SILK, UNKNOWN, QUEST_ITEM, GREY, WORTHLESS = 2589, 4306, 9999, 5000, 4000, 4001
 local MARKET = 'forever/normal/alliance/us'
 local NOW = 1000000
 -- Linen posts on the AH (its lowest listing, 95, is 24% under its 30-day median of 125: not low
@@ -220,14 +220,15 @@ local function withTypedItems(game)
 	game.containerItems['0:1'] = { itemID = QUEST_ITEM, stackCount = 1, quality = 1, hyperlink = 'item:5000' }
 	game.questItems['0:1'] = { isQuestItem = true, isActive = false }
 	game.containerItems['0:2'] = { itemID = GREY, stackCount = 3, quality = 0, hyperlink = 'item:4000' }
-	game.containerItems['0:4'] = { itemID = GREY, stackCount = 1, quality = 0, hasNoValue = true }
+	game.itemInfo[WORTHLESS] = { name = 'Torn Rag', maxStack = 20, vendorPrice = 0 }
+	game.containerItems['0:4'] = { itemID = WORTHLESS, stackCount = 1, quality = 0, hasNoValue = true }
 end
 
 t.test('a quest item gets the quest badge; a grey worth vendoring the junk badge alone', function()
 	local game = newGame()
 	withTypedItems(game)
 	local addon, _, buttons = startWithBlizzard(game)
-	t.same(badgeRow(buttons), { 'quest', 'junk', 'post', '', '' }, 'a grey with no value is not junk')
+	t.same(badgeRow(buttons), { 'quest', 'junk', 'post', 'undecided', '' }, 'a grey with no value is not junk')
 	t.same(addon.errors, {})
 end)
 
@@ -260,7 +261,7 @@ t.test('the decision and type badge settings hide their badges', function()
 	local addon, _, buttons = startWithBlizzard(game)
 	addon.bags:SetSetting('decisionBadge', false)
 	game:RunTimers()
-	t.same(badgeRow(buttons), { 'quest', 'junk', '', '', '' })
+	t.same(badgeRow(buttons), { 'quest', 'junk', '', '', '' }, 'the decisions are hidden')
 	addon.bags:SetSetting('typeBadge', false)
 	game:RunTimers()
 	t.same(badgeRow(buttons), { '', '', '', '', '' })
