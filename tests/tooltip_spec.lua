@@ -480,7 +480,27 @@ end)
 
 t.group('tooltip separators')
 
-local SEPARATOR_ALPHA = 0.6
+-- The game's tooltip once blended, near-black #0b0b0b (Concord's Theme - Banneret note).
+local NATIVE_TOOLTIP_BACKGROUND = { r = 0.043, g = 0.043, b = 0.043 }
+local MIN_RULE_CONTRAST = 3
+
+local function relativeLuminance(color)
+	local function linear(channel)
+		return channel <= 0.04045 and channel / 12.92 or ((channel + 0.055) / 1.055) ^ 2.4
+	end
+	return 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+end
+
+local function blendedContrast(rgba, background)
+	local blended = {
+		r = rgba[1] * rgba[4] + background.r * (1 - rgba[4]),
+		g = rgba[2] * rgba[4] + background.g * (1 - rgba[4]),
+		b = rgba[3] * rgba[4] + background.b * (1 - rgba[4]),
+	}
+	local lighter = math.max(relativeLuminance(blended), relativeLuminance(background))
+	local darker = math.min(relativeLuminance(blended), relativeLuminance(background))
+	return (lighter + 0.05) / (darker + 0.05)
+end
 
 -- Another add-on's (or the game's) lines, added by a post-call like Haggler's own. A line is
 -- its text, { left, right } for a double line, or { money = copper } for the sell-price line.
@@ -532,7 +552,7 @@ local function shownRuleLines(game, tooltip)
 	return result
 end
 
-t.test('a separator goes above the block: a blank line with a 1px rule in the tooltip border colour at 60%', function()
+t.test('a separator goes above the block: a blank line with a 1px rule in the strong border colour', function()
 	local game, tooltips = newRegistry()
 	addOtherLines(game, { 'Linen Cloth' })
 	withHagglerBlock(tooltips)
@@ -541,9 +561,13 @@ t.test('a separator goes above the block: a blank line with a 1px rule in the to
 	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
 	t.same(shownRuleLines(game, tooltip), { 2 })
 	local rule = tooltip.children[1]
-	local border = theme:Color('color.border.tooltip')
-	t.same(rule.colorTexture, { border.r, border.g, border.b, SEPARATOR_ALPHA })
+	local border = theme:Color('color.border.strong')
+	t.same(rule.colorTexture, { border.r, border.g, border.b, border.a })
 	t.eq(rule.height, 1, 'border.hairline, a whole pixel')
+	t.truthy(
+		blendedContrast(rule.colorTexture, NATIVE_TOOLTIP_BACKGROUND) >= MIN_RULE_CONTRAST,
+		'the rule stands at 3:1 or more on the game tooltip'
+	)
 	t.eq(rule.width, 220, 'the tooltip width less the line inset on both sides')
 end)
 
