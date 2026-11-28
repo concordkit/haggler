@@ -12,7 +12,15 @@
 	            or Auctionator runs the auction house, so Haggler never fights them
 	  manual    nothing opens by itself; /hag opens it, docked
 	While Haggler's frame is closed at the auction house, a "Haggler" button sits on the auction
-	house window to bring it back. Docked, the frame goes right of the auction house, else left
+	house window to bring it back.
+
+	The window the player switches to at the auction house is remembered in the ahView setting
+	(account-wide, like every setting): the "Blizzard" and close buttons and a plain /hag that
+	closes the frame there choose Blizzard's, the "Haggler" button and a /hag that opens it choose
+	Haggler's. The next visit opens the same one, after a /reload or restart too; nothing saved
+	means Haggler's. Manual mode remembers nothing. When Haggler's frame cannot open by itself (in
+	combat, or its frames fail to build) Blizzard's window shows for that visit and the saved
+	choice stays. Docked, the frame goes right of the auction house, else left
 	of it, else centred, and always stays on screen. A frame dragged elsewhere keeps that place
 	per mode (docked, away) in the character's saved UI state.
 
@@ -55,7 +63,7 @@ local WINDOW_EVENTS = { AUCTION_HOUSE_SHOW = true, AUCTION_HOUSE_CLOSED = true }
 local buildFrame, buildTabStrip, showTab, refreshCurrentTab, onAuctionHouseShow, onAuctionHouseClosed
 local placeFrame, restoreBlizzardFrame, updateHeader, otherAuctionAddon, dispatchTabEvent, ensureReturnButton
 local updateReturnButton, runOpenCommand, openWhenBlizzardShows, ensureBlizzardShowHook, onItemLink
-local dockPoint, savedPosition, savePosition, reapplyTakeover
+local dockPoint, savedPosition, savePosition, reapplyTakeover, rememberView, openAtAuctionHouse
 
 local window = {
 	tabs = ns.WindowModel.newTabs(),
@@ -102,9 +110,11 @@ end
 
 function window:Toggle()
 	if self.frame and self.frame:IsShown() then
+		rememberView(self, 'blizzard')
 		self:Close()
 		return false
 	end
+	rememberView(self, 'haggler')
 	return self:Open()
 end
 
@@ -173,6 +183,13 @@ window.module = ns.host.AddModule({
 			label = 'At the auction house',
 			default = 'takeover',
 			choices = ns.WindowModel.AH_MODES,
+		},
+		{
+			key = 'ahView',
+			type = 'choice',
+			label = 'Window the auction house opens in (the last one switched to)',
+			default = ns.WindowModel.DEFAULT_AH_VIEW,
+			choices = ns.WindowModel.AH_VIEWS,
 		},
 		{
 			key = 'guardrail',
@@ -340,6 +357,7 @@ function buildFrame(self)
 	close:SetWidth(32)
 	close:SetPoint('TOPRIGHT', frame, 'TOPRIGHT', -8, -8)
 	close:OnClick(function()
+		rememberView(self, 'blizzard')
 		self:Close()
 	end)
 	self.closeButton = close
@@ -347,6 +365,7 @@ function buildFrame(self)
 	local blizzard = ui:Button(frame, "Blizzard's window", 'secondary')
 	blizzard:SetPoint('RIGHT', close, 'LEFT', -8, 0)
 	blizzard:OnClick(function()
+		rememberView(self, 'blizzard')
 		self:Close()
 	end)
 	self.blizzardButton = blizzard
@@ -472,7 +491,7 @@ function onAuctionHouseShow(self)
 	self.placement = ns.WindowModel.placement(self.module:Setting('ahMode'), otherAuctionAddon())
 	ensureReturnButton(self)
 	dispatchTabEvent(self, 'AUCTION_HOUSE_SHOW')
-	if self.placement == 'manual' then
+	if not ns.WindowModel.opensAtAuctionHouse(self.placement, self.module:Setting('ahView')) then
 		updateReturnButton(self)
 		self:Refresh()
 		return
@@ -480,7 +499,7 @@ function onAuctionHouseShow(self)
 	local blizzardFrame = ns.wow:Global('AuctionHouseFrame')
 	if type(blizzardFrame) == 'table' and blizzardFrame:IsShown() then
 		ensureBlizzardShowHook(self)
-		self:Open()
+		openAtAuctionHouse(self)
 		return
 	end
 	-- Blizzard's window is not shown yet (its UI loads on demand): place once it is.
@@ -501,7 +520,33 @@ function openWhenBlizzardShows(self)
 	self.isPlacementPending = false
 	ensureBlizzardShowHook(self)
 	ensureReturnButton(self)
-	self:Open()
+	openAtAuctionHouse(self)
+end
+
+-- Opens Haggler's frame by itself at the auction house. In combat, or when its frames fail to
+-- build, Blizzard's window shows for this visit instead and the saved ahView stays as it is; a
+-- build error is raised again after the fallback so the caller's handler reports it.
+function openAtAuctionHouse(self)
+	if ns.wow:IsInCombat() then
+		self:Close()
+		return
+	end
+	local ok, err = pcall(self.Open, self)
+	if not ok then
+		self:Close()
+		error(err, 0)
+	end
+end
+
+-- Saves the window the player switched to at the auction house; elsewhere, and in manual mode,
+-- it is not a switch.
+function rememberView(self, view)
+	if not self.isAtAuctionHouse or self.placement == 'manual' then
+		return
+	end
+	if self.module:Setting('ahView') ~= view then
+		pcall(self.module.SetSetting, self.module, 'ahView', view)
+	end
 end
 
 function ensureBlizzardShowHook(self)
@@ -659,6 +704,7 @@ function ensureReturnButton(self)
 	button:SetFrameStrata('HIGH')
 	button:SetPoint('TOPRIGHT', blizzardFrame, 'TOPRIGHT', -40, -2)
 	button:OnClick(function()
+		rememberView(self, 'haggler')
 		self:Open()
 	end)
 	button:Hide()
