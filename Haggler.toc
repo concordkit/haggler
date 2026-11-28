@@ -19,6 +19,7 @@ Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 
 # Host layer (Concord's API shape; dropped inside Concord)
 Host\Tokens.lua
+Host\LocalTokens.lua
 Host\Bus.lua
 Host\Settings.lua
 Host\Host.lua

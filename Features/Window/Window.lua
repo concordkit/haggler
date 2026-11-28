@@ -362,9 +362,10 @@ function buildFrame(self)
 		table.insert(specialFrames, FRAME_NAME)
 	end
 
-	local title = ui:Text(frame, 17, 'color.text.title')
+	local title = ui:Text(frame, 17, 'color.text.title', ns.Widgets.TITLE_FACE)
 	title:SetPoint('TOPLEFT', frame, 'TOPLEFT', PADDING, -14)
 	title:SetText('Haggler')
+	self.titleText = title
 	self.modeText = ui:Text(frame, 13, 'color.text.muted')
 	self.modeText:SetPoint('LEFT', title, 'RIGHT', PADDING, 0)
 

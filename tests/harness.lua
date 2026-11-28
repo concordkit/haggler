@@ -3,6 +3,7 @@ local harness = { passed = 0, failed = 0, failures = {} }
 
 local ADDON_FILES = {
 	'Host/Tokens.lua',
+	'Host/LocalTokens.lua',
 	'Host/Bus.lua',
 	'Host/Settings.lua',
 	'Host/Host.lua',
