@@ -281,6 +281,9 @@ t.test('forItem: nothing pays (no AH price, no vendor price): undecided', functi
 	}))
 	t.eq(advice.decision, 'undecided')
 	t.eq(advice.code, 'noPrice')
+	local worthless = itemValue({ source = 'vendor', isPriced = false, copper = 0, vendorNet = 0 })
+	worthless.confidence = { level = 'medium', reasons = {} }
+	t.eq(decisionOf(worthless), 'undecided', 'a vendor price of nothing is no sale')
 end)
 
 t.test('forItem: wait needs both the lowest listing and the usual price', function()

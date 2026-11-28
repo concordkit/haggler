@@ -3,14 +3,15 @@
 	no game calls, so every line is tested in luajit.
 
 	  build(input) -> Line[]
-	  input = { quote, stackCount, isUnitView, isDetail, options, theme }
+	  input = { quote, stackCount, isUnitView, isDetail, options, theme, decision?, icons? }
 	  options = { detailTrace, detailSales, detailListings, detailVendor, detailSellTime,
 	              sellTimeNote }
 
 	Compact view: a header with the data age, then one line per shown rule (default first) with
-	the stack price, or the unit price in the unit view. A low-confidence price carries an
-	explicit marker on its line, naming its top reason while the detail block is off; this
-	cannot be switched off. The detail block adds how the default rule got its price, every
+	the stack price, or the unit price in the unit view; then, for a bag slot, the decision its
+	badge shows (decision = Advice.forItem's), as the badge glyph next to its word. A
+	low-confidence price carries an explicit marker on its line, naming its top reason while the
+	detail block is off; this cannot be switched off. The detail block adds how the default rule got its price, every
 	confidence reason, sales a day, listings, vendor price and an estimated sell time with its
 	note. The last line is the price source's credit (quote.credit, "Prices from AHledger"),
 	whenever the source has prices: AHledger's terms ask for it where its prices appear.
@@ -24,6 +25,7 @@ local TooltipLines = {}
 ns.TooltipLines = TooltipLines
 
 TooltipLines.TITLE = 'Haggler'
+TooltipLines.DECISION_LABEL = 'Decision'
 TooltipLines.LOW_MARKER = '(!) low'
 TooltipLines.SELL_TIME_NOTE = 'estimate from sales per day, not in-game time'
 local SECONDS_PER_HOUR = 3600
@@ -37,7 +39,7 @@ local LEVEL_MARKERS = { low = '(!)', medium = '(?)', high = '(i)' }
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local headerLine, priceLine, traceLines, reasonLines, salesLine, listingsLine, vendorLine
 local sellTimeLines, hasAnyData, defaultEntry, color, unitsAtOrUnder, formatSellTime, lowMarkerOf, topLowReason
-local withCredit
+local withCredit, decisionLine
 
 --- Builds the lines for one item; an item Haggler knows nothing about gets none.
 --- @param input table see the file header
@@ -58,6 +60,7 @@ function TooltipLines.build(input)
 	for _, entry in ipairs(quote.prices) do
 		lines[#lines + 1] = priceLine(entry, view)
 	end
+	lines[#lines + 1] = decisionLine(input.decision, input.icons, view)
 	if not input.isDetail then
 		return withCredit(lines, quote.credit, view)
 	end
@@ -138,6 +141,20 @@ function TooltipLines.sellTimeDays(facts, unitPrice, stack)
 end
 
 -- Helpers ---------------------------------------------------------------------------------
+
+-- The bag decision in the badge's own glyph and word; nil (no line) without one.
+function decisionLine(decision, icons, view)
+	local label = type(decision) == 'string' and icons and ns.Badges.decisionLabel(decision, icons) or nil
+	if not label then
+		return nil
+	end
+	return {
+		left = TooltipLines.DECISION_LABEL,
+		right = label,
+		color = color(view, 'color.text.secondary'),
+		rightColor = color(view, 'color.text.primary'),
+	}
+end
 
 function withCredit(lines, credit, view)
 	if type(credit) == 'string' and credit ~= '' then

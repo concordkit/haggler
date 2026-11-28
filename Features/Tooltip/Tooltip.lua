@@ -3,12 +3,15 @@
 	one line per shown rule and the data age; the unit price while Shift is held. The detail
 	block shows always, on a modifier, or never. A gamepad modifier works through the client's
 	GamePadEmulateShift / Ctrl / Alt mapping. Holding or letting go of a modifier redraws the
-	tooltip at once. Switching the module off removes its lines and its event.
+	tooltip at once. Over a bag slot it also names the decision the slot's badge shows, with the
+	same glyph. Switching the module off removes its lines and its event.
 ]]
 local _, ns = ...
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
-local buildLines, isDetailShown, detailOptions
+local buildLines, isDetailShown, detailOptions, bagDecision, tooltipIcons
+-- The icon set the decision glyph comes from, made on first use.
+local icons
 
 local MODULE_KEY = 'tooltip'
 local UNIT_VIEW_MODIFIER = 'shift'
@@ -81,7 +84,32 @@ function buildLines(module, itemId, info)
 		isDetail = isDetailShown(module, modifiers),
 		options = detailOptions(module),
 		theme = ns.theme,
+		decision = bagDecision(itemId, info),
+		icons = tooltipIcons(),
 	})
+end
+
+-- The decision of the bag slot under the tooltip, as its badge decides it; nil elsewhere.
+function bagDecision(itemId, info)
+	local location = info.location
+	if type(location) ~= 'table' or not ns.values then
+		return nil
+	end
+	local item = ns.wow:ContainerItem(location.bag, location.slot)
+	if not item or item.itemId ~= itemId then
+		return nil
+	end
+	local value = ns.values:Stack(itemId, item.count, { isBound = item.isBound })
+	local advice = ns.Advice.forItem(value, {
+		isBound = item.isBound,
+		isQuest = ns.wow:IsQuestSlot(location.bag, location.slot, itemId),
+	})
+	return advice and advice.decision or nil
+end
+
+function tooltipIcons()
+	icons = icons or ns.IconSet.new({ theme = ns.theme })
+	return icons
 end
 
 function isDetailShown(module, modifiers)

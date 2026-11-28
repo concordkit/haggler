@@ -28,7 +28,8 @@ local bags = ns.host.AddModule({
 	settings = {
 		toggle('showValue', 'Value on each bag button', false),
 		toggle('showTotal', 'Total value of the bags, where the bag add-on has a spot for it', true),
-		toggle('vendorBadge', 'Badge items the vendor pays more for than the auction house', true),
+		toggle('decisionBadge', 'Decision badge, top left: post, sell, wait or undecided', true),
+		toggle('typeBadge', 'Item type badge, top right: quest or junk', true),
 	},
 	onEnable = function(module)
 		state.isOn = true
@@ -88,7 +89,8 @@ function ensureView(module)
 			return {
 				showValue = module:Setting('showValue'),
 				showTotal = module:Setting('showTotal'),
-				vendorBadge = module:Setting('vendorBadge'),
+				decisionBadge = module:Setting('decisionBadge'),
+				typeBadge = module:Setting('typeBadge'),
 			}
 		end,
 		isActive = function()

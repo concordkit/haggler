@@ -17,7 +17,9 @@
 
 	ItemValue = { itemId, count, copper, perUnit, source = 'ah'|'vendor'|'none', ruleId,
 	              rulePrice?, reason?, sellChance?, depositLoss?, deposit?, ahNet?, vendorNet?,
-	              isPriced, confidence }
+	              lowestListed?, typicalPrice?, isPriced, confidence }
+	lowestListed and typicalPrice (the 30-day median) are unit prices from PriceContext.facts;
+	Advice.forItem reads them for the bag decision.
 	Total     = { copper, count, unpriced, confidence, items = { ItemValue... } }
 
 	Confidence follows the weakest input: the rule price's reasons plus the value's own (no
@@ -151,6 +153,8 @@ function ValueMethods:Stack(itemId, count, options)
 		deposit = opportunity.deposit,
 		ahNet = opportunity.ahNet,
 		vendorNet = opportunity.vendorNet,
+		lowestListed = facts.lowestListed,
+		typicalPrice = facts.typicalPrice,
 		isPriced = price ~= nil,
 		confidence = Value.mergeConfidence({ price and price.confidence, { reasons = opportunity.reasons } }),
 	}

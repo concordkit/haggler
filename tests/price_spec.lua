@@ -162,6 +162,7 @@ t.test('facts give ages and depth from the sources', function()
 		levels = snapshot.items[LINEN].levels,
 		levelCount = 2,
 		lowestListed = 90,
+		typicalPrice = 125,
 		scanAge = 120,
 		rowAge = 3 * 3600,
 	})

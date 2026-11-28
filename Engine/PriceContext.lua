@@ -21,8 +21,8 @@
 	market than Haggler's, ctx.marketMismatch = { sourceMarket, marketKey }.
 
 	facts(ctx, itemId) reads the same sources for display: salesPerDay, salesSource, listedUnits,
-	levelCount, lowestListed, vendor, scanAge, rowAge. A value that is not a finite number reads
-	as nil.
+	levelCount, lowestListed, typicalPrice (the 30-day median), vendor, scanAge, rowAge. A value
+	that is not a finite number reads as nil.
 ]]
 local _, ns = ...
 
@@ -70,7 +70,8 @@ end
 --- Facts about one item for display; every field may be nil.
 --- @param ctx table from build
 --- @param itemId number
---- @return table { salesPerDay, listedUnits, levelCount, lowestListed, vendor, scanAge, rowAge, maxStack }
+--- @return table { salesPerDay, listedUnits, levelCount, lowestListed, typicalPrice, vendor, scanAge, rowAge,
+---   maxStack }
 function PriceContext.facts(ctx, itemId)
 	local row, updated = callSource(ctx.priceRow, itemId)
 	row = type(row) == 'table' and row or nil
@@ -88,6 +89,7 @@ function PriceContext.facts(ctx, itemId)
 		levels = levels,
 		levelCount = levels and #levels or nil,
 		lowestListed = finiteOrNil(scanItem and scanItem.min) or finiteOrNil(row and row.min),
+		typicalPrice = finiteOrNil(row and row.m30),
 		vendor = finiteOrNil(info and info.vendorPrice),
 		maxStack = finiteOrNil(info and info.maxStack),
 		scanAge = scanItem and ageOrNil(ctx.now, scannedAt) or nil,

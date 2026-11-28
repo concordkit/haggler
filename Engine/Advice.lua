@@ -6,6 +6,17 @@
 	  Advice.forAuction(auction, facts, options?) -> Advice
 	  Advice.cheapestOther(levels, own) -> copper|nil   the cheapest price not only ours
 	  Advice.untracked(owned, tracked) -> { owned entry }   active auctions that belong to no venture
+	  Advice.forItem(value, item?) -> BagAdvice|nil   what to do with an item in the bags
+	  Advice.isMarketLow(lowest, typical) -> boolean
+
+	BagAdvice = { decision = 'post'|'sell'|'wait'|'undecided', code }, checked in this order:
+	  undecided  the value is a guess (low or no confidence: lowConfidence) or nothing pays
+	             (noPrice)
+	  wait       the lowest listing is WAIT_UNDER_TYPICAL_PERCENT or more under the 30-day median
+	             and a sale at that median would net more than the vendor (marketLow)
+	  post       the AH nets more than the vendor (ah), as Value's opportunity picks it
+	  sell       the vendor pays at least as much (vendor)
+	A bound or quest item gets none: it cannot go to the AH.
 
 	auction = { itemId, unitPrice, listed, deposit? }   a tracked auction (AuctionTracker)
 	facts   = { cheapestOther?, rulePrice?, step, vendor?, breakEven?, scanAgeSeconds?,
@@ -33,9 +44,13 @@ local Advice = {}
 ns.Advice = Advice
 
 Advice.THRESHOLD_PERCENT = 5
+-- Product choice (proposed, not settled): how far under its 30-day median the lowest listing
+-- must be before a bag item reads Wait instead of Post or Sell.
+Advice.WAIT_UNDER_TYPICAL_PERCENT = 25
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local hold, relist, confidenceOf, isFinitePositive, isFiniteNonNegative, percentApart, claimPendingPost
+local isWorthWaiting
 
 --- Advice for one listed auction.
 --- @param auction table see the file header
@@ -107,6 +122,46 @@ function Advice.forAuction(auction, facts, options)
 	end
 	advice.usesRulePrice = isRuleTarget or nil
 	return advice
+end
+
+--- What to do with an item in the bags, for its badge and its tooltip line.
+--- @param value table|nil ItemValue (Value:Stack), with lowestListed and typicalPrice
+--- @param item table|nil { isBound?, isQuest? }
+--- @return table|nil BagAdvice; nil for a bound or quest item, or no value
+function Advice.forItem(value, item)
+	if type(value) ~= 'table' then
+		return nil
+	end
+	if type(item) == 'table' and (item.isBound == true or item.isQuest == true) then
+		return nil
+	end
+	local confidence = value.confidence
+	if type(confidence) ~= 'table' or confidence.level == 'low' then
+		return { decision = 'undecided', code = 'lowConfidence' }
+	end
+	local isPaying = value.source == 'ah' or (value.source == 'vendor' and isFinitePositive(value.vendorNet))
+	if not isPaying then
+		return { decision = 'undecided', code = 'noPrice' }
+	end
+	if Advice.isMarketLow(value.lowestListed, value.typicalPrice) and isWorthWaiting(value) then
+		return { decision = 'wait', code = 'marketLow' }
+	end
+	if value.source == 'ah' then
+		return { decision = 'post', code = 'ah' }
+	end
+	return { decision = 'sell', code = 'vendor' }
+end
+
+--- True when the lowest listing is at least WAIT_UNDER_TYPICAL_PERCENT (whole percent) under
+--- the usual price.
+--- @param lowest number|nil copper a unit
+--- @param typical number|nil copper a unit
+--- @return boolean
+function Advice.isMarketLow(lowest, typical)
+	if not isFinitePositive(lowest) or not isFinitePositive(typical) or lowest >= typical then
+		return false
+	end
+	return percentApart(typical, lowest) >= Advice.WAIT_UNDER_TYPICAL_PERCENT
 end
 
 --- The cheapest price in the scan that is not only our own units.
@@ -201,6 +256,13 @@ end
 -- How far apart two prices are, in whole percent of the higher one.
 function percentApart(high, low)
 	return math.floor((high - low) * 100 / high)
+end
+
+-- Waiting pays only when a sale at the usual price, after the cut, nets more than the vendor.
+function isWorthWaiting(value)
+	local count = isFinitePositive(value.count) and value.count or 1
+	local vendorNet = isFiniteNonNegative(value.vendorNet) and value.vendorNet or 0
+	return ns.Guardrail.saleNet(value.typicalPrice, count) > vendorNet
 end
 
 -- Takes the first pending venture post that matches an owned entry; true when one did.
