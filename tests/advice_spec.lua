@@ -37,6 +37,8 @@ t.test('the floor: never relist under break-even or the vendor price', function(
 	t.eq(advice.code, 'underFloor')
 	advice = Advice.forAuction(auction(10000), { cheapestOther = 5000, step = 1, vendor = 7000, scanAgeSeconds = 60 })
 	t.eq(advice.code, 'underFloor')
+	t.eq(advice.text, 'the cheapest listing is under your floor, so wait or take it out')
+	t.eq(advice.text:find(';', 1, true), nil, 'one sentence, no semicolon')
 end)
 
 t.test('a relist that nets no more than a vendor after the lost deposit: hold', function()
