@@ -239,6 +239,48 @@ t.test('legacy panel switches flip settings and open the window', function()
 	t.truthy(addon.window:IsOpen())
 end)
 
+local OWN_CREDIT = 'Prices from AHledger (ahledger.com), test feed'
+
+local function startWithCredit(prepare)
+	local game = FakeGame.new({ now = NOW })
+	game.env.AHledgerAPI =
+		FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 3600, rows = {}, credit = OWN_CREDIT })
+	prepare(game)
+	return game, FakeGame.startAddon(t, game)
+end
+
+t.test("the Settings entry shows AHledger's own credit", function()
+	local game, addon = startWithCredit(FakeGame.addSettingsApi)
+	local credit
+	for _, initializer in ipairs(game.settingsApi.initializers) do
+		if initializer.kind == 'sectionHeader' then
+			credit = initializer.name
+		end
+	end
+	t.eq(credit, OWN_CREDIT, 'read from AHledgerAPI.CREDIT')
+	t.same(addon.errors, {})
+end)
+
+t.test('the legacy panel shows the credit too', function()
+	local added = {}
+	local _, addon = startWithCredit(function(g)
+		g.env.InterfaceOptions_AddCategory = function(panel)
+			added[#added + 1] = panel
+		end
+	end)
+	t.eq(added[1].credit:GetText(), OWN_CREDIT)
+	t.same(addon.errors, {})
+end)
+
+t.test('without a usable credit the options fall back to the default line', function()
+	local game = FakeGame.new({ now = NOW })
+	game.env.AHledgerAPI = FakeGame.newAHledgerAPI({ market = MARKET, updated = NOW - 3600, rows = {}, credit = '' })
+	FakeGame.addSettingsApi(game)
+	local addon = FakeGame.startAddon(t, game)
+	t.eq(addon.Options.credit(), addon.PriceData.DEFAULT_CREDIT)
+	t.same(addon.errors, {})
+end)
+
 t.test('toggleEntries refuses missing arguments', function()
 	t.raises(function()
 		ns.Options.toggleEntries(nil, tostring)

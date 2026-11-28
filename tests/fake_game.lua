@@ -806,6 +806,9 @@ function FakeGame.addSettingsApi(game)
 	game.env.CreateSettingsButtonInitializer = function(name, buttonText, onClick, tooltip, addSearchTags)
 		return { name = name, buttonText = buttonText, onClick = onClick, tooltip = tooltip, tags = addSearchTags }
 	end
+	game.env.CreateSettingsListSectionHeaderInitializer = function(name, tooltip)
+		return { kind = 'sectionHeader', name = name, tooltip = tooltip }
+	end
 end
 
 function FakeGame.new(options)

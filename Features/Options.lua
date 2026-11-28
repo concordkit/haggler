@@ -2,12 +2,15 @@
 	Options: Haggler's entry under Settings → AddOns. It lists every on/off switch of every
 	module (each module's Enabled first) as a checkbox bound to the host's settings, so the
 	panel, /hag and the Haggler window always agree, and a button that opens the Haggler window.
+	It also carries the price source's credit (AHledgerAPI.CREDIT, through PriceData), which
+	AHledger's terms ask for where its prices appear; the item tooltip does not.
 
 	Clients with the Settings API get a vertical-layout category; the registration runs in
 	pcall, and when it fails, or the client has no Settings API, an old Interface Options panel
 	takes its place, with the same switches as buttons.
 
 	  ns.Options.toggleEntries(settings, labelOf) -> { { moduleKey, key, label, variable }, ... }
+	  ns.Options.credit()                          -> the credit line, PriceData.DEFAULT_CREDIT without one
 	  /hag options                                   opens the entry
 ]]
 local _, ns = ...
@@ -22,7 +25,7 @@ local ROW_HEIGHT = 36
 
 -- Helpers live at the bottom of the file; declared here so they stay local.
 local registerCategory, registerWithSettingsApi, registerLegacyPanel, addOpenButton, moduleLabel, openWindow
-local refreshLegacyPanel
+local refreshLegacyPanel, addCredit
 
 --- The on/off switches of every module, in module order and each module's schema order.
 --- @param settings table the host's settings store (Modules, Schema)
@@ -47,6 +50,13 @@ function Options.toggleEntries(settings, labelOf)
 		end
 	end
 	return entries
+end
+
+--- The price source's credit line (PriceData reads AHledgerAPI.CREDIT), or the default one.
+--- @return string
+function Options.credit()
+	local status = ns.prices and ns.prices:SourceStatus()
+	return status and status.credit or ns.PriceData.DEFAULT_CREDIT
 end
 
 local options = ns.host.AddModule({
@@ -113,8 +123,19 @@ function registerWithSettingsApi(api, entries)
 		createCheckbox(category, setting, nil)
 	end
 	addOpenButton(layout)
+	addCredit(layout)
 	api.RegisterAddOnCategory(category)
 	return category
+end
+
+-- The credit as a line of the category; a client without the initializer leaves it out, as it
+-- does the button.
+function addCredit(layout)
+	local createHeader = ns.wow:Global('CreateSettingsListSectionHeaderInitializer')
+	if type(createHeader) ~= 'function' or type(layout) ~= 'table' or type(layout.AddInitializer) ~= 'function' then
+		return
+	end
+	layout:AddInitializer(createHeader(Options.credit()))
 end
 
 -- The button is a nicety: a client without the initializer still gets the switches.
@@ -134,8 +155,12 @@ function registerLegacyPanel(entries)
 	local title = ui:Text(panel, 17, 'color.text.title', ns.Widgets.HEADING_FACE)
 	title:SetPoint('TOPLEFT', panel, 'TOPLEFT', PADDING, -PADDING)
 	title:SetText(Options.CATEGORY_NAME)
+	local credit = ui:Text(panel, 12, 'color.text.muted')
+	credit:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
+	credit:SetText(Options.credit())
+	panel.credit = credit
 	local openButton = ui:Button(panel, 'Open Haggler', 'primary')
-	openButton:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -12)
+	openButton:SetPoint('TOPLEFT', credit, 'BOTTOMLEFT', 0, -12)
 	openButton:OnClick(openWindow)
 	panel.openButton = openButton
 	panel.toggles = {}
