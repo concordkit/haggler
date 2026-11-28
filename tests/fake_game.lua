@@ -288,24 +288,84 @@ local function newFrame(unknownEvents)
 	return frame
 end
 
+-- A line's left font string, as the client names it (<tooltip>TextLeft<n>) and reuses it from
+-- one build to the next. Its text is the line's left, so a test reads both the same way.
+local function lineFontString(game, tooltip, index)
+	local globalName = tooltip.name .. 'TextLeft' .. index
+	local fontString = game.env[globalName]
+	if fontString then
+		return fontString
+	end
+	fontString = { index = index, left = tooltip.left + 10 }
+	function fontString:GetText()
+		local line = tooltip.lines[self.index]
+		return line and line.left
+	end
+	function fontString:SetText(text)
+		local line = tooltip.lines[self.index]
+		if line then
+			line.left = text
+		end
+	end
+	function fontString:GetLeft()
+		return self.left
+	end
+	game.env[globalName] = fontString
+	return fontString
+end
+
 local function newTooltip(game, name)
-	local tooltip = { name = name, lines = {}, shownCount = 0, isShown = true, scripts = {} }
+	local tooltip = {
+		name = name,
+		lines = {},
+		shownCount = 0,
+		isShown = true,
+		scripts = {},
+		children = {},
+		left = 100,
+		width = 240,
+	}
+	local function addLine(line)
+		tooltip.lines[#tooltip.lines + 1] = line
+		lineFontString(game, tooltip, #tooltip.lines)
+	end
 	function tooltip:SetOwner(owner, anchor)
 		self.owner, self.anchor = owner, anchor
 	end
+	-- Like the client, clearing runs OnTooltipCleared.
 	function tooltip:ClearLines()
 		self.lines = {}
+		if self.scripts.OnTooltipCleared then
+			self.scripts.OnTooltipCleared(self)
+		end
 	end
 	function tooltip:Hide()
 		self.isShown = false
 		self.hiddenCount = (self.hiddenCount or 0) + 1
 	end
 	function tooltip:AddLine(text, r, g, b, wrap)
-		self.lines[#self.lines + 1] = { left = text, r = r, g = g, b = b, wrap = wrap }
+		addLine({ left = text, r = r, g = g, b = b, wrap = wrap })
 	end
 	function tooltip:AddDoubleLine(left, right, lr, lg, lb, rr, rg, rb)
-		self.lines[#self.lines + 1] =
-			{ left = left, right = right, lr = lr, lg = lg, lb = lb, rr = rr, rg = rg, rb = rb }
+		addLine({ left = left, right = right, lr = lr, lg = lg, lb = lb, rr = rr, rg = rg, rb = rb })
+	end
+	function tooltip:NumLines()
+		return #self.lines
+	end
+	function tooltip:GetName()
+		return self.name
+	end
+	function tooltip:GetLeft()
+		return self.left
+	end
+	function tooltip:GetWidth()
+		return self.width
+	end
+	function tooltip:CreateTexture(_, layer)
+		local texture = FakeGame.newWidget('Texture', self)
+		texture.layer = layer
+		self.children[#self.children + 1] = texture
+		return texture
 	end
 	function tooltip:Show()
 		self.shownCount = self.shownCount + 1
@@ -322,12 +382,18 @@ local function newTooltip(game, name)
 	function tooltip:GetOwner()
 		return self.owner
 	end
+	-- Runs after the script already set, as the client chains hooks.
 	function tooltip:HookScript(script, handler)
-		self.scripts[script] = handler
+		local previous = self.scripts[script]
+		self.scripts[script] = function(...)
+			if previous then
+				previous(...)
+			end
+			handler(...)
+		end
 	end
 	function tooltip:RefreshData()
 		self.refreshed = (self.refreshed or 0) + 1
-		self.lines = {}
 		game:ShowItemTooltip(self.shownItemId, self)
 	end
 	return tooltip
@@ -963,7 +1029,7 @@ function FakeGame.new(options)
 	--- Builds an item tooltip: clears it and runs the post-calls (or the script hook).
 	function game:ShowItemTooltip(itemId, tooltip)
 		tooltip = tooltip or self.env.GameTooltip
-		tooltip.lines = {}
+		tooltip:ClearLines()
 		tooltip.shownItemId = itemId
 		tooltip.itemLink = '|cffffffff|Hitem:' .. itemId .. '::::|h[Item]|h|r'
 		for _, postCall in ipairs(self.postCalls) do

@@ -424,6 +424,148 @@ t.test('modifiers reach the providers; a forbidden tooltip is skipped', function
 	t.eq(#game:ShowItemTooltip(LINEN), 0)
 end)
 
+t.group('tooltip separators')
+
+local SEPARATOR_ALPHA = 0.6
+
+-- Another add-on's (or the game's) lines, added by a post-call like Haggler's own.
+local function addOtherLines(game, lineTexts, shouldShowAfter)
+	game.env.TooltipDataProcessor.AddTooltipPostCall(game.env.Enum.TooltipDataType.Item, function(tooltip)
+		for _, text in ipairs(lineTexts) do
+			tooltip:AddLine(text)
+		end
+		if shouldShowAfter then
+			tooltip:Show()
+		end
+	end)
+end
+
+local function withHagglerBlock(tooltips)
+	tooltips:AddProvider('haggler', function()
+		return { { left = 'Haggler', right = '12 min' }, { left = 'Realistic', right = '94c' } }
+	end)
+end
+
+local function leftTexts(tooltip)
+	local result = {}
+	for index, line in ipairs(tooltip.lines) do
+		result[index] = line.left
+	end
+	return result
+end
+
+-- The rules shown, as the line index each sits on.
+local function shownRuleLines(game, tooltip)
+	local result = {}
+	for _, texture in ipairs(tooltip.children) do
+		if texture.isShown and texture.colorTexture then
+			local _, relativeTo = texture:GetPoint(1)
+			for index = 1, #tooltip.lines do
+				if game.env[tooltip.name .. 'TextLeft' .. index] == relativeTo then
+					result[#result + 1] = index
+				end
+			end
+		end
+	end
+	table.sort(result)
+	return result
+end
+
+t.test('a separator goes above the block: a blank line with a 1px rule in the tooltip border colour at 60%', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), { 2 })
+	local rule = tooltip.children[1]
+	local border = theme:Color('color.border.tooltip')
+	t.same(rule.colorTexture, { border.r, border.g, border.b, SEPARATOR_ALPHA })
+	t.eq(rule.height, 1, 'border.hairline, a whole pixel')
+	t.eq(rule.width, 220, 'the tooltip width less the line inset on both sides')
+end)
+
+t.test('no doubled separator: a blank line above the block is used as it is', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth', ' ' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '' })
+	t.same(shownRuleLines(game, tooltip), {})
+end)
+
+t.test('Haggler last: no separator at the end of the tooltip', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:Show()
+	t.eq(tooltip.lines[#tooltip.lines].left, '', 'the closing separator collapses to an empty line')
+	t.same(shownRuleLines(game, tooltip), { 2 }, 'only the one above shows')
+end)
+
+t.test('lines another add-on adds after the block get the separator below', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', ' ', 'Other add-on' })
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('the separator below waits for the next Show when the later add-on does not show', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' })
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:Show()
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+end)
+
+t.test('no doubled separator below: a blank line after the block keeps the closing one collapsed', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { ' ', 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth', ' ', 'Haggler', 'Realistic', '', ' ', 'Other add-on' })
+	t.same(shownRuleLines(game, tooltip), { 2 })
+end)
+
+t.test('clearing the tooltip hides the rules; a rebuild reuses them', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	withHagglerBlock(tooltips)
+	addOtherLines(game, { 'Other add-on' }, true)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	tooltip:ClearLines()
+	t.eq(#tooltip.children, 2)
+	t.eq(tooltip.children[1].isShown or tooltip.children[2].isShown, false)
+	game:ShowItemTooltip(WOOL)
+	t.same(shownRuleLines(game, tooltip), { 2, 5 })
+	t.eq(#tooltip.children, 2, 'no new textures')
+end)
+
+t.test('no Haggler lines: no separators either', function()
+	local game, tooltips = newRegistry()
+	addOtherLines(game, { 'Linen Cloth' })
+	tooltips:AddProvider('quiet', function()
+		return {}
+	end)
+	local tooltip = game.env.GameTooltip
+	game:ShowItemTooltip(LINEN)
+	t.same(leftTexts(tooltip), { 'Linen Cloth' })
+end)
+
 t.group('wow events')
 
 t.test('several owners can listen to one event; each is removed on its own', function()
